@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ModelShell from './components/ModelShell.jsx';
 import Toolbar from './components/Toolbar.jsx';
 import WhiteboardStage from './components/WhiteboardStage.jsx';
 import { createInitialProblemState } from './state/problemState.js';
@@ -142,6 +143,8 @@ export default function App() {
         onRedo={() => engineRef.current?.redo()}
         onClear={() => engineRef.current?.clear()}
       />
+
+      <ModelShell />
 
       <button
         className={`reset-window-btn ${showReset ? 'visible' : ''}`}
