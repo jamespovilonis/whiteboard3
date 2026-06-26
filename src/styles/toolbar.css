@@ -1,0 +1,351 @@
+.toolbar {
+  position: absolute;
+  bottom: 36px;
+  left: 50%;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  width: auto;
+  min-width: 52px;
+  min-height: 52px;
+  max-width: 52px;
+  padding: 4px;
+  overflow: hidden;
+  user-select: none;
+  cursor: pointer;
+  background: var(--toolbar-bg);
+  border: 1px solid var(--toolbar-border);
+  border-radius: var(--toolbar-radius);
+  box-shadow: var(--toolbar-shadow);
+  transform: translateX(-50%);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  transition: max-width 0.45s cubic-bezier(0.16, 1, 0.3, 1),
+              padding 0.45s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.toolbar:hover,
+.toolbar:focus-within,
+.toolbar.is-open {
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  max-width: min(720px, calc(100vw - 32px));
+  padding: 8px 10px;
+  overflow: visible;
+  cursor: default;
+  box-shadow: var(--toolbar-shadow), 0 0 0 4px var(--accent-glow);
+}
+
+.toolbar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  opacity: 1;
+  transition: opacity 0.2s ease, min-width 0.2s ease, margin 0.2s ease;
+}
+
+.toolbar:hover .toolbar-toggle,
+.toolbar:focus-within .toolbar-toggle,
+.toolbar.is-open .toolbar-toggle {
+  width: 0;
+  min-width: 0;
+  height: 0;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toolbar-content {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.toolbar:hover .toolbar-content,
+.toolbar:focus-within .toolbar-content,
+.toolbar.is-open .toolbar-content {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 0.3s ease 0.18s;
+}
+
+.toolbar.force-collapsed,
+.toolbar.force-collapsed:hover,
+.toolbar.force-collapsed:focus-within {
+  width: 52px;
+  min-width: 52px;
+  height: 52px;
+  min-height: 52px;
+  max-width: 52px;
+  padding: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  box-shadow: var(--toolbar-shadow);
+}
+
+.toolbar.is-closing,
+.toolbar.is-closing:hover,
+.toolbar.is-closing:focus-within {
+  max-width: 52px;
+  padding: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  box-shadow: var(--toolbar-shadow);
+}
+
+.toolbar.force-collapsed .toolbar-toggle,
+.toolbar.force-collapsed:hover .toolbar-toggle,
+.toolbar.force-collapsed:focus-within .toolbar-toggle,
+.toolbar.is-closing .toolbar-toggle,
+.toolbar.is-closing:hover .toolbar-toggle,
+.toolbar.is-closing:focus-within .toolbar-toggle {
+  display: flex;
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  min-height: 42px;
+  margin: 0;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.toolbar.is-closing .toolbar-toggle {
+  animation: toolbar-toggle-return 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.toolbar.force-collapsed .toolbar-content,
+.toolbar.force-collapsed:hover .toolbar-content,
+.toolbar.force-collapsed:focus-within .toolbar-content,
+.toolbar.is-closing .toolbar-content,
+.toolbar.is-closing:hover .toolbar-content,
+.toolbar.is-closing:focus-within .toolbar-content {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+@keyframes toolbar-toggle-return {
+  from {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  18% {
+    opacity: 1;
+    transform: scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.tool-icon {
+  width: 22px;
+  height: 22px;
+  display: block;
+  color: currentColor;
+  pointer-events: none;
+  filter: brightness(0) invert(1);
+  object-fit: contain;
+  user-select: none;
+}
+
+.tool-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 9px;
+  border: 0;
+  border-radius: var(--btn-radius);
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.tool-btn:hover {
+  color: var(--text-color);
+  background: var(--hover-bg);
+}
+
+.tool-btn:active {
+  transform: scale(0.92);
+}
+
+.tool-btn.active {
+  color: var(--active-color);
+  background: var(--active-bg);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.toolbar-divider {
+  width: 1px;
+  height: 29px;
+  margin: 0 8px;
+  border-radius: 1px;
+  background: var(--divider-color);
+}
+
+.color-picker-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+}
+
+.color-btn {
+  width: 29px;
+  height: 29px;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.color-btn:hover {
+  border-color: #fff;
+  transform: scale(1.12);
+}
+
+.color-picker-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  max-height: 0;
+  padding: 0 6px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  background: var(--toolbar-bg);
+  border: 1px solid var(--toolbar-border);
+  border-radius: var(--toolbar-radius);
+  box-shadow: var(--toolbar-shadow);
+  transform: translateX(-50%);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  transition: max-height 0.45s cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1),
+              padding 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.color-picker-wrap:hover .color-picker-dropdown,
+.color-picker-wrap:focus-within .color-picker-dropdown {
+  max-height: 400px;
+  padding: 10px 8px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.color-swatch {
+  width: 23px;
+  height: 23px;
+  padding: 0;
+  flex-shrink: 0;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.color-swatch:hover {
+  border-color: rgba(255, 255, 255, 0.6);
+  transform: scale(1.15);
+}
+
+.color-swatch.active {
+  border-color: #fff;
+  box-shadow: 0 0 10px var(--accent-glow);
+  transform: scale(1.15);
+}
+
+#sizePicker {
+  width: 83px;
+  height: 4px;
+  border-radius: 100px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+#sizePicker::-webkit-slider-thumb {
+  width: 21px;
+  height: 21px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+#sizePicker::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+
+#sizePicker::-moz-range-thumb {
+  width: 21px;
+  height: 21px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
+#sizeValue {
+  min-width: 29px;
+  color: var(--text-color);
+  font-size: 16px;
+  font-weight: 600;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 700px) {
+  .toolbar {
+    bottom: 20px;
+  }
+
+  .toolbar:hover,
+  .toolbar:focus-within {
+    max-width: calc(100vw - 16px);
+  }
+
+  .toolbar-content {
+    gap: 1px;
+  }
+
+  .tool-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  #sizePicker {
+    width: 62px;
+  }
+}

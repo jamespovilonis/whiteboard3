@@ -9,11 +9,15 @@ export default function WhiteboardStage({
   activeTool,
   penColor,
   penWidth,
-  problem,
+  problems,
+  debugBoxesEnabled,
   isPanning,
   onEngineReady,
   onViewportChange,
-  onPanStateChange
+  onPanStateChange,
+  onStrokeFinalized,
+  onStrokesChanged,
+  onPenStrokeStart
 }) {
   const bgCanvasRef = useRef(null);
   const fgCanvasRef = useRef(null);
@@ -35,7 +39,10 @@ export default function WhiteboardStage({
       penColor,
       penWidth,
       onViewportChange,
-      onPanStateChange
+      onPanStateChange,
+      onStrokeFinalized,
+      onStrokesChanged,
+      onPenStrokeStart
     });
 
     engineRef.current = engine;
@@ -58,6 +65,22 @@ export default function WhiteboardStage({
   }, [viewport]);
 
   useEffect(() => {
+    engineRef.current?.setCallbacks({
+      onViewportChange,
+      onPanStateChange,
+      onStrokeFinalized,
+      onStrokesChanged,
+      onPenStrokeStart
+    });
+  }, [
+    onPanStateChange,
+    onPenStrokeStart,
+    onStrokeFinalized,
+    onStrokesChanged,
+    onViewportChange
+  ]);
+
+  useEffect(() => {
     engineRef.current?.setTool(activeTool);
   }, [activeTool]);
 
@@ -73,7 +96,11 @@ export default function WhiteboardStage({
     <div className={`whiteboard-stage tool-${activeTool} ${isPanning ? 'is-panning' : ''}`}>
       <canvas ref={bgCanvasRef} className="whiteboard-canvas whiteboard-bg" aria-hidden="true" />
       <canvas ref={fgCanvasRef} className="whiteboard-canvas whiteboard-fg" aria-label="Whiteboard drawing surface" />
-      <ProblemLayer problem={problem} viewport={viewport} />
+      <ProblemLayer
+        problems={problems}
+        viewport={viewport}
+        debugBoxesEnabled={debugBoxesEnabled}
+      />
     </div>
   );
 }

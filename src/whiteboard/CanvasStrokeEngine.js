@@ -1,5 +1,6 @@
 import { DEFAULT_PEN_COLOR, DEFAULT_PEN_WIDTH } from './constants.js';
 import { computePolygonBbox, bboxOverlap, polygonsIntersect } from './geometry.js';
+import { CanvasRenderer } from './CanvasRenderer.js';
 import { StrokeSmoother } from './StrokeSmoother.js';
 import { screenToBoard } from './viewport.js';
 
@@ -18,22 +19,29 @@ export class CanvasStrokeEngine {
     penColor = DEFAULT_PEN_COLOR,
     penWidth = DEFAULT_PEN_WIDTH,
     onViewportChange,
-    onPanStateChange
+    onPanStateChange,
+    onStrokeFinalized,
+    onStrokesChanged,
+    onPenStrokeStart
   }) {
     this.bgCanvas = bgCanvas;
     this.fgCanvas = fgCanvas;
-    this.bgCtx = bgCanvas.getContext('2d');
-    this.fgCtx = fgCanvas.getContext('2d');
     this.strokeStore = strokeStore;
     this.boardSize = boardSize;
     this.viewport = { ...viewport };
+    this.renderer = new CanvasRenderer({ bgCanvas, fgCanvas, viewport });
     this.tool = tool;
     this.penColor = penColor;
     this.penWidth = penWidth;
-    this.onViewportChange = onViewportChange;
-    this.onPanStateChange = onPanStateChange;
+    this.callbacks = {};
+    this.setCallbacks({
+      onViewportChange,
+      onPanStateChange,
+      onStrokeFinalized,
+      onStrokesChanged,
+      onPenStrokeStart
+    });
 
-    this.dpr = window.devicePixelRatio || 1;
     this.strokeSmoother = new StrokeSmoother({ size: penWidth });
     this.eraserSmoother = new StrokeSmoother({
       size: ERASER_SIZE,
@@ -55,6 +63,7 @@ export class CanvasStrokeEngine {
     this.lastCheckedPosition = null;
     this.panStart = null;
     this.rafPending = false;
+    this.redrawRaf = null;
     this.pendingRawPoints = null;
     this.pendingColor = null;
 
@@ -79,34 +88,35 @@ export class CanvasStrokeEngine {
     this.fgCanvas.removeEventListener('pointerup', this.handlePointerUp);
     this.fgCanvas.removeEventListener('pointercancel', this.handlePointerUp);
     this.fgCanvas.removeEventListener('pointerleave', this.handlePointerLeave);
+    if (this.redrawRaf) {
+      cancelAnimationFrame(this.redrawRaf);
+      this.redrawRaf = null;
+    }
   }
 
   resize() {
-    const width = this.fgCanvas.clientWidth;
-    const height = this.fgCanvas.clientHeight;
-    this.dpr = window.devicePixelRatio || 1;
-
-    for (const canvas of [this.bgCanvas, this.fgCanvas]) {
-      canvas.width = Math.max(1, Math.round(width * this.dpr));
-      canvas.height = Math.max(1, Math.round(height * this.dpr));
-      const ctx = canvas.getContext('2d');
-      ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    }
-
+    this.renderer.resize();
     this.redraw();
   }
 
   redraw() {
-    this.clearContext(this.bgCtx);
-    this.drawBoardSurface();
-    this.withBoardTransform(this.bgCtx, () => {
-      for (const stroke of this.strokeStore.getStrokes()) {
-        if (stroke.outlinePoints && stroke.outlinePoints.length >= 3) {
-          this.strokeSmoother.render(this.bgCtx, stroke.outlinePoints, stroke.color);
-        }
-      }
+    this.renderer.redraw(this.strokeStore.getStrokes(), this.strokeSmoother);
+  }
+
+  requestRedraw() {
+    if (this.redrawRaf) return;
+
+    this.redrawRaf = requestAnimationFrame(() => {
+      this.redrawRaf = null;
+      this.redraw();
     });
-    this.clearForeground();
+  }
+
+  setCallbacks(callbacks = {}) {
+    this.callbacks = {
+      ...this.callbacks,
+      ...callbacks
+    };
   }
 
   undo() {
@@ -117,6 +127,7 @@ export class CanvasStrokeEngine {
 
     this.strokeStore.restore(this.undoStack.pop());
     this.redraw();
+    this.notifyStrokesChanged('undo');
   }
 
   redo() {
@@ -127,6 +138,7 @@ export class CanvasStrokeEngine {
 
     this.strokeStore.restore(this.redoStack.pop());
     this.redraw();
+    this.notifyStrokesChanged('redo');
   }
 
   clear() {
@@ -134,6 +146,7 @@ export class CanvasStrokeEngine {
     this.pushUndoState();
     this.strokeStore.clear();
     this.redraw();
+    this.notifyStrokesChanged('clear');
   }
 
   setTool(tool) {
@@ -152,7 +165,8 @@ export class CanvasStrokeEngine {
 
   setViewport(viewport) {
     this.viewport = { ...viewport };
-    this.redraw();
+    this.renderer.setViewport(this.viewport);
+    this.requestRedraw();
   }
 
   handlePointerDown(event) {
@@ -166,7 +180,7 @@ export class CanvasStrokeEngine {
         screenPoint,
         viewport: { ...this.viewport }
       };
-      this.onPanStateChange?.(true);
+      this.callbacks.onPanStateChange?.(true);
       return;
     }
 
@@ -174,6 +188,7 @@ export class CanvasStrokeEngine {
       const point = this.getBoardPoint(event);
       this.isDrawing = true;
       this.rawPoints = [{ ...point, pressure: event.pressure || 0.5 }];
+      this.callbacks.onPenStrokeStart?.();
       this.strokeStore.startStroke(
         point.x,
         point.y,
@@ -204,8 +219,9 @@ export class CanvasStrokeEngine {
         y: this.panStart.viewport.y - dy / this.viewport.scale
       };
       this.viewport = nextViewport;
-      this.redraw();
-      this.onViewportChange?.(nextViewport);
+      this.renderer.setViewport(nextViewport);
+      this.requestRedraw();
+      this.callbacks.onViewportChange?.(nextViewport);
       return;
     }
 
@@ -251,7 +267,7 @@ export class CanvasStrokeEngine {
     if (this.isPanning) {
       this.isPanning = false;
       this.panStart = null;
-      this.onPanStateChange?.(false);
+      this.callbacks.onPanStateChange?.(false);
       return;
     }
 
@@ -286,19 +302,25 @@ export class CanvasStrokeEngine {
     const color = this.penColor || DEFAULT_PEN_COLOR;
     this.pushUndoState();
 
+    let finalizedStroke = null;
+
     if (this.rawPoints.length === 1) {
       const point = this.rawPoints[0];
       const outline = createDotOutline(point.x, point.y, this.strokeSmoother.opts.size || DEFAULT_PEN_WIDTH);
-      this.strokeStore.endStroke(outline, color);
+      finalizedStroke = this.strokeStore.endStroke(outline, color);
     } else if (this.rawPoints.length >= 2) {
       const outline = this.strokeSmoother.smooth(this.rawPoints);
-      this.strokeStore.endStroke(outline, color);
+      finalizedStroke = this.strokeStore.endStroke(outline, color);
     }
 
     this.isDrawing = false;
     this.rawPoints = [];
     this.clearForeground();
     this.redraw();
+    if (finalizedStroke) {
+      this.callbacks.onStrokeFinalized?.(finalizedStroke);
+      this.notifyStrokesChanged('draw');
+    }
   }
 
   performErase() {
@@ -322,6 +344,7 @@ export class CanvasStrokeEngine {
       this.pushUndoState();
       this.strokeStore.removeStrokes(toRemove);
       this.redraw();
+      this.notifyStrokesChanged('erase');
     }
   }
 
@@ -338,7 +361,7 @@ export class CanvasStrokeEngine {
     if (this.isPanning) {
       this.isPanning = false;
       this.panStart = null;
-      this.onPanStateChange?.(false);
+      this.callbacks.onPanStateChange?.(false);
     }
     this.clearForeground();
   }
@@ -361,24 +384,12 @@ export class CanvasStrokeEngine {
   renderLiveStroke(rawPoints, color) {
     if (!rawPoints || rawPoints.length < 2) return;
 
-    this.clearForeground();
     const outline = this.strokeSmoother.smooth(rawPoints);
-    this.withBoardTransform(this.fgCtx, () => {
-      this.strokeSmoother.render(this.fgCtx, outline, color);
-    });
+    this.renderer.renderLiveStroke(outline, color, this.strokeSmoother);
   }
 
   renderEraserPreview(point) {
-    this.clearForeground();
-    this.withBoardTransform(this.fgCtx, () => {
-      this.fgCtx.beginPath();
-      this.fgCtx.arc(point.x, point.y, ERASER_SIZE / 2, 0, Math.PI * 2);
-      this.fgCtx.strokeStyle = 'rgba(180, 180, 200, 0.6)';
-      this.fgCtx.lineWidth = 2 / this.viewport.scale;
-      this.fgCtx.stroke();
-      this.fgCtx.fillStyle = 'rgba(180, 180, 200, 0.15)';
-      this.fgCtx.fill();
-    });
+    this.renderer.renderEraserPreview(point, ERASER_SIZE);
   }
 
   shouldCheckErase(point) {
@@ -395,6 +406,10 @@ export class CanvasStrokeEngine {
     this.redoStack = [];
   }
 
+  notifyStrokesChanged(reason) {
+    this.callbacks.onStrokesChanged?.(this.strokeStore.getStrokes(), reason);
+  }
+
   getScreenPoint(event) {
     const rect = this.fgCanvas.getBoundingClientRect();
     return {
@@ -407,27 +422,8 @@ export class CanvasStrokeEngine {
     return screenToBoard(this.getScreenPoint(event), this.viewport);
   }
 
-  clearContext(ctx) {
-    ctx.clearRect(0, 0, this.bgCanvas.width / this.dpr, this.bgCanvas.height / this.dpr);
-  }
-
   clearForeground() {
-    this.clearContext(this.fgCtx);
-  }
-
-  drawBoardSurface() {
-    this.bgCtx.save();
-    this.bgCtx.fillStyle = '#fefff1';
-    this.bgCtx.fillRect(0, 0, this.bgCanvas.width / this.dpr, this.bgCanvas.height / this.dpr);
-    this.bgCtx.restore();
-  }
-
-  withBoardTransform(ctx, draw) {
-    ctx.save();
-    ctx.translate(-this.viewport.x * this.viewport.scale, -this.viewport.y * this.viewport.scale);
-    ctx.scale(this.viewport.scale, this.viewport.scale);
-    draw();
-    ctx.restore();
+    this.renderer.clearForeground();
   }
 }
 

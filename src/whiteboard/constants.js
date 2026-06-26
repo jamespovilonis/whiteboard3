@@ -11,11 +11,16 @@ export const INITIAL_VIEWPORT = Object.freeze({
 
 export const RESET_DRIFT_THRESHOLD = 220;
 
-export const DEFAULT_PROBLEM = Object.freeze({
-  id: 'placeholder-1',
-  status: 'solving',
-  latex: '2x + 3 = 11'
+export const PROBLEM_BOX = Object.freeze({
+  topOffset: 92,
+  leftPadding: 80,
+  rightPadding: 80,
+  minWidth: 760,
+  height: 340
 });
+
+export const ANSWER_BOX_PADDING = 90;
+export const NEXT_PROBLEM_GAP = 150;
 
 export const DEFAULT_TOOL = 'pen';
 export const DEFAULT_PEN_COLOR = '#000000';

@@ -1,0 +1,87 @@
+:root {
+  --page-bg: #eeece1;
+  --bg-color: #fefff1;
+  --toolbar-bg: rgba(28, 28, 30, 0.72);
+  --toolbar-border: rgba(255, 255, 255, 0.12);
+  --toolbar-shadow: 0 1px 3px rgba(0, 0, 0, 0.08),
+                    0 4px 16px rgba(0, 0, 0, 0.16),
+                    0 8px 40px rgba(0, 0, 0, 0.08);
+  --text-color: rgba(255, 255, 255, 0.85);
+  --text-muted: rgba(255, 255, 255, 0.55);
+  --active-bg: #5e5ce6;
+  --active-color: #fff;
+  --accent: #5e5ce6;
+  --accent-glow: rgba(94, 92, 230, 0.35);
+  --divider-color: rgba(255, 255, 255, 0.15);
+  --hover-bg: rgba(255, 255, 255, 0.10);
+  --toolbar-radius: 32px;
+  --btn-radius: 100px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: var(--page-bg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.app-shell {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--page-bg);
+}
+
+.reset-window-btn {
+  position: absolute;
+  left: 24px;
+  bottom: 32px;
+  z-index: 11;
+  padding: 11px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(28, 28, 30, 0.74);
+  box-shadow: var(--toolbar-shadow);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(12px);
+  pointer-events: none;
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  transition: opacity 0.22s ease, transform 0.22s ease, background 0.18s ease;
+}
+
+.reset-window-btn.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.reset-window-btn:hover {
+  background: rgba(28, 28, 30, 0.88);
+}
+
+@media (max-width: 700px) {
+  .reset-window-btn {
+    left: 16px;
+    bottom: 82px;
+  }
+}

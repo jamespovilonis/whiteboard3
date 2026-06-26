@@ -19,6 +19,29 @@ export function bboxOverlap(a, b) {
     a.yMin <= b.yMax && a.yMax >= b.yMin;
 }
 
+export function unionBbox(a, b) {
+  if (!a) return b ? { ...b } : null;
+  if (!b) return { ...a };
+
+  return {
+    xMin: Math.min(a.xMin, b.xMin),
+    yMin: Math.min(a.yMin, b.yMin),
+    xMax: Math.max(a.xMax, b.xMax),
+    yMax: Math.max(a.yMax, b.yMax)
+  };
+}
+
+export function padBbox(bbox, padding) {
+  if (!bbox) return null;
+
+  return {
+    xMin: bbox.xMin - padding,
+    yMin: bbox.yMin - padding,
+    xMax: bbox.xMax + padding,
+    yMax: bbox.yMax + padding
+  };
+}
+
 export function polygonsIntersect(polyA, polyB) {
   for (let i = 0; i < polyA.length; i += 1) {
     const a1 = polyA[i];

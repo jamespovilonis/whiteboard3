@@ -1,4 +1,7 @@
+import { useEffect, useRef, useState } from 'react';
 import { COLOR_SWATCHES } from '../whiteboard/constants.js';
+
+const TOOLBAR_TRANSITION_MS = 450;
 
 const TOOLS = [
   { id: 'mouse', label: 'Pan tool', icon: '/toolbar-icons/cursor.png', shortcut: 'M' },
@@ -16,18 +19,62 @@ export default function Toolbar({
   activeTool,
   penColor,
   sliderValue,
-  penWidth,
   onToolChange,
   onColorChange,
   onSliderChange,
   onUndo,
   onRedo,
-  onClear
+  onClear,
+  forceCollapsed,
+  onRequestOpen
 }) {
+  const [isPointerOpen, setIsPointerOpen] = useState(false);
+  const [isClosing, setIsClosing] = useState(false);
+  const closeTimerRef = useRef(null);
   const activeToolConfig = TOOLS.find((tool) => tool.id === activeTool) || TOOLS[1];
+  const isFullyCollapsed = forceCollapsed && !isClosing;
+  const isOpen = isPointerOpen && !forceCollapsed && !isClosing;
+
+  useEffect(() => {
+    if (!forceCollapsed) {
+      if (closeTimerRef.current) {
+        window.clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
+      setIsClosing(false);
+      return undefined;
+    }
+
+    setIsPointerOpen(false);
+    setIsClosing(true);
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      setIsClosing(false);
+    }, TOOLBAR_TRANSITION_MS);
+
+    return () => {
+      if (closeTimerRef.current) {
+        window.clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
+    };
+  }, [forceCollapsed]);
 
   return (
-    <div className="toolbar" role="toolbar" aria-label="Drawing tools">
+    <div
+      className={`toolbar ${isOpen ? 'is-open' : ''} ${isClosing ? 'is-closing' : ''} ${isFullyCollapsed ? 'force-collapsed' : ''}`}
+      role="toolbar"
+      aria-label="Drawing tools"
+      onPointerEnter={() => {
+        if (isClosing) return;
+        setIsPointerOpen(true);
+        onRequestOpen?.();
+      }}
+      onPointerLeave={() => setIsPointerOpen(false)}
+      onPointerDown={() => {
+        if (forceCollapsed) onRequestOpen?.();
+      }}
+    >
       <span className="toolbar-toggle" aria-hidden="true">
         <IconImage src={activeToolConfig.icon} alt="" />
       </span>
@@ -63,7 +110,7 @@ export default function Toolbar({
           aria-label="Brush size"
           onChange={(event) => onSliderChange(event.target.value)}
         />
-        <span id="sizeValue" aria-live="polite">{penWidth}</span>
+        <span id="sizeValue" aria-live="polite">{sliderValue}</span>
 
         <div className="toolbar-divider" role="separator" />
 
