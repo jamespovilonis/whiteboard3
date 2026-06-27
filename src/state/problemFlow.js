@@ -36,6 +36,16 @@ export function getActiveModelResponse(flow) {
   };
 }
 
+export function getCompletedRecognitionResults(flow) {
+  return flow.problems
+    .filter((problem) => problem.status === 'submitted')
+    .map((problem) => ({
+      problemId: problem.id,
+      problemLatex: problem.latex,
+      recognition: problem.recognition
+    }));
+}
+
 export function reconcileProblemFlowWithStrokes(flow, strokes) {
   const activeProblem = getActiveProblem(flow);
   if (!activeProblem || activeProblem.status !== 'solving') {
@@ -71,7 +81,12 @@ export function submitActiveProblem(flow, viewportWidth) {
   const completedFlow = updateProblem(flow, activeProblem.id, (problem) => ({
     ...problem,
     status: 'submitted',
-    answerBoxFrozen: true
+    answerBoxFrozen: true,
+    recognition: {
+      ...problem.recognition,
+      status: problem.answerStrokeIds.length > 0 ? 'pending' : 'empty',
+      error: null
+    }
   }));
 
   const nextIndex = activeProblem.index + 1;
@@ -111,6 +126,31 @@ export function submitActiveProblem(flow, viewportWidth) {
   };
 }
 
+export function applyProblemRecognitionResult(flow, problemId, result) {
+  return updateProblem(flow, problemId, (problem) => ({
+    ...problem,
+    recognition: {
+      ...problem.recognition,
+      status: 'complete',
+      error: null,
+      result,
+      completedAt: Date.now()
+    }
+  }));
+}
+
+export function applyProblemRecognitionError(flow, problemId, error) {
+  return updateProblem(flow, problemId, (problem) => ({
+    ...problem,
+    recognition: {
+      ...problem.recognition,
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error || 'Recognition failed'),
+      failedAt: Date.now()
+    }
+  }));
+}
+
 export function viewportForProblemPosition(boardPosition, viewportWidth) {
   return {
     x: boardPosition.x - viewportWidth * 0.25,
@@ -131,7 +171,12 @@ function createProblemSession({ definition, index, boardPosition, viewportWidth,
     answerStrokeIds: [],
     answerContentBox: null,
     answerBox: null,
-    answerBoxFrozen: false
+    answerBoxFrozen: false,
+    recognition: {
+      status: 'idle',
+      error: null,
+      result: null
+    }
   };
 }
 

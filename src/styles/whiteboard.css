@@ -81,3 +81,45 @@
   border: 2px solid rgba(142, 36, 170, 0.66);
   background: rgba(142, 36, 170, 0.06);
 }
+
+.debug-board-box-candidate-selected,
+.debug-board-box-candidate-discarded,
+.debug-board-box-candidate-failed {
+  border-width: 2px;
+  border-style: solid;
+}
+
+.debug-board-box-candidate-selected {
+  border-color: rgba(20, 132, 82, 0.92);
+  background: rgba(20, 132, 82, 0.24);
+}
+
+.debug-board-box-candidate-discarded {
+  border-color: rgba(196, 127, 18, 0.84);
+  background: rgba(196, 127, 18, 0.18);
+}
+
+.debug-board-box-candidate-failed {
+  border-color: rgba(190, 56, 48, 0.88);
+  background: rgba(190, 56, 48, 0.18);
+}
+
+.debug-board-box-label {
+  position: absolute;
+  top: 0;
+  left: -2px;
+  z-index: 1;
+  max-width: 180px;
+  padding: 3px 7px;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.94);
+  background: rgba(28, 28, 30, 0.88);
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  will-change: transform;
+}

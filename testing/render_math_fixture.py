@@ -15,11 +15,13 @@ try:
         build_board,
         family_names,
         fixture_payload,
+        gap_pattern_names,
         iter_selected_problems,
+        line_gaps_for_pattern,
         placements_for,
         slug,
     )
-    from .synthetic_handwriting import save_board_png
+    from .synthetic_handwriting import available_ink_styles, save_board_png
 except ImportError:
     from fixture_catalog import (
         RESULTS_DIR,
@@ -27,11 +29,13 @@ except ImportError:
         build_board,
         family_names,
         fixture_payload,
+        gap_pattern_names,
         iter_selected_problems,
+        line_gaps_for_pattern,
         placements_for,
         slug,
     )
-    from synthetic_handwriting import save_board_png
+    from synthetic_handwriting import available_ink_styles, save_board_png
 
 
 def parse_line_gaps(value: Optional[str]) -> Optional[List[float]]:
@@ -67,10 +71,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--all", action="store_true", help="Render every problem fixture")
     parser.add_argument("--spacing", choices=sorted(SPACING_VARIANTS), default="standard")
     parser.add_argument("--all-spacings", action="store_true", help="Render every spacing variant")
+    parser.add_argument("--ink-style", choices=available_ink_styles(), default="normal")
     parser.add_argument("--line-gaps", type=parse_line_gaps, help="Comma-separated custom gaps between lines")
+    parser.add_argument("--gap-pattern", choices=gap_pattern_names(), help="Named non-uniform line gap pattern")
     parser.add_argument("--seed", type=int, default=300)
     parser.add_argument("--output-dir", default=str(RESULTS_DIR), help="Directory under testing/results")
     args = parser.parse_args(argv)
+    if args.line_gaps is not None and args.gap_pattern:
+        parser.error("--line-gaps and --gap-pattern cannot be used together")
 
     output_dir = assert_results_child(Path(args.output_dir))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -89,14 +97,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for problem in problems:
         for spacing in spacings:
             seed += 17
-            _, _, _, gaps = placements_for(problem, spacing, args.line_gaps)
-            board = build_board(problem.name, spacing=spacing, line_gaps=args.line_gaps, seed=seed)
-            name = slug(problem.name, spacing)
+            line_gaps = args.line_gaps
+            pattern_label = None
+            if args.gap_pattern:
+                line_gaps = line_gaps_for_pattern(len(problem.lines), args.gap_pattern)
+                pattern_label = args.gap_pattern
+            _, _, _, gaps = placements_for(problem, spacing, line_gaps)
+            board = build_board(problem.name, spacing=spacing, line_gaps=line_gaps, seed=seed, ink_style=args.ink_style)
+            name_parts = [problem.name, spacing]
+            if pattern_label:
+                name_parts.append(pattern_label)
+            if args.ink_style != "normal":
+                name_parts.append(args.ink_style)
+            name = slug(*name_parts)
             png_path = output_dir / f"{name}.png"
             json_path = output_dir / f"{name}.json"
             save_board_png(board, str(png_path))
             json_path.write_text(
-                json.dumps(fixture_payload(problem, spacing, gaps, board), indent=2),
+                json.dumps(fixture_payload(problem, spacing, gaps, board, ink_style=args.ink_style), indent=2),
                 encoding="utf-8",
             )
             wrote.append((png_path, json_path))

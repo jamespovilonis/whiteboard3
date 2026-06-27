@@ -38,9 +38,10 @@ export default function App() {
   const {
     problemFlow,
     modelResponse,
+    recognitionResults,
     reconcileStrokes,
     submitAnswer
-  } = useProblemFlowController({ moveHomeViewport });
+  } = useProblemFlowController({ moveHomeViewport, engineRef });
 
   const penWidth = sliderToWidth(sliderValue);
 
@@ -96,6 +97,8 @@ export default function App() {
 
       <ModelShell
         response={modelResponse}
+        recognitionResults={recognitionResults}
+        debugMode={debugBoxesEnabled}
         onSubmitAnswer={submitAnswer}
       />
 

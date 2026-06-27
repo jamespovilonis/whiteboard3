@@ -11,8 +11,20 @@ TESTING_DIR = Path(__file__).resolve().parent
 if str(TESTING_DIR) not in sys.path:
     sys.path.insert(0, str(TESTING_DIR))
 
-from fixture_catalog import PROBLEMS, build_board, gaps_for_spacing, get_problem, placements_for
-from synthetic_handwriting import normalize_latex, place_handwriting_lines, render_handwriting
+from fixture_catalog import (
+    PROBLEMS,
+    RESULTS_DIR,
+    build_board,
+    fixture_payload,
+    gap_pattern_names,
+    gaps_for_spacing,
+    get_problem,
+    line_gaps_for_pattern,
+    parse_line_gaps,
+    placements_for,
+)
+from render_math_fixture import main as render_fixture_main
+from synthetic_handwriting import available_ink_styles, normalize_latex, place_handwriting_lines, render_handwriting
 
 
 class SyntheticHandwritingTests(unittest.TestCase):
@@ -31,6 +43,17 @@ class SyntheticHandwritingTests(unittest.TestCase):
         self.assertGreater(fixture.width, 100)
         self.assertGreater(fixture.height, 40)
         self.assertGreater(len(fixture.contours), 5)
+
+    def test_renders_explicit_writer_style_variants(self):
+        self.assertIn("messy", available_ink_styles())
+        normal = render_handwriting("x = 4", seed=4, ink_style="normal")
+        compact = render_handwriting("x = 4", seed=4, ink_style="compact")
+        messy = render_handwriting("x = 4", seed=4, ink_style="messy")
+
+        self.assertGreater(len(compact.contours), 0)
+        self.assertGreater(len(messy.contours), 0)
+        self.assertLess(compact.width, normal.width)
+        self.assertNotEqual(messy.data_url, normal.data_url)
 
     def test_normalizes_token_spaced_latex_for_mathtext(self):
         self.assertEqual(normalize_latex(r"x ^ { 3 } + 2 x ^ { 2 }"), r"x^{3}+ 2 x^{2}")
@@ -113,13 +136,38 @@ class SyntheticHandwritingTests(unittest.TestCase):
 class FixtureCatalogTests(unittest.TestCase):
     def test_catalog_contains_required_problem_families(self):
         families = {problem.family for problem in PROBLEMS}
-        self.assertTrue({"algebra", "rational", "logarithmic", "derivative", "integral"} <= families)
+        self.assertTrue({"algebra", "rational", "logarithmic", "derivative", "integral", "symbol-context"} <= families)
+
+    def test_fixture_payload_keeps_problem_context_separate_from_student_lines(self):
+        problem = get_problem("algebra_prompt_context")
+        board = build_board(problem.name, spacing="standard", seed=76, ink_style="compact")
+        _, _, _, gaps = placements_for(problem, "standard")
+        payload = fixture_payload(problem, "standard", gaps, board, ink_style="compact")
+
+        self.assertEqual(problem.context_latex, r"2 x + 3 = 11")
+        self.assertNotEqual(problem.context_latex, problem.lines[0])
+        self.assertEqual(payload["fixture"]["problemLatex"], r"2 x + 3 = 11")
+        self.assertEqual(payload["fixture"]["inkStyle"], "compact")
+        self.assertEqual(payload["fixture"]["expectedLatexLines"], list(problem.lines))
+
+    def test_symbol_context_fixture_uses_greek_problem_context(self):
+        problem = get_problem("symbol_context_eta")
+        board = build_board(problem.name, spacing="dense", seed=88, ink_style="messy")
+        _, _, _, gaps = placements_for(problem, "dense")
+        payload = fixture_payload(problem, "dense", gaps, board, ink_style="messy")
+
+        self.assertEqual(problem.context_latex, r"\eta + 1 = 6")
+        self.assertEqual(payload["fixture"]["problemLatex"], r"\eta + 1 = 6")
+        self.assertIn(r"\eta = 5", payload["fixture"]["expectedLatexLines"])
+        self.assertEqual(len(board.lines), 2)
 
     def test_builds_representative_simple_and_complex_boards(self):
         for problem_name in [
             "algebra_simple",
             "algebra_steps",
             "rational_quadratic_solve",
+            "rational_mixed_fraction_operations",
+            "symbol_context_eta",
             "logarithmic_solve",
             "derivative_evaluate",
             "integral_evaluate",
@@ -156,6 +204,40 @@ class FixtureCatalogTests(unittest.TestCase):
     def test_build_board_rejects_wrong_custom_line_gap_count(self):
         with self.assertRaises(ValueError):
             build_board("derivative_evaluate", line_gaps=[64, 12], seed=91)
+
+    def test_named_gap_patterns_generate_problem_sized_variability(self):
+        problem = get_problem("rational_two_fraction_solve")
+        self.assertIn("accordion", gap_pattern_names())
+
+        gaps = line_gaps_for_pattern(len(problem.lines), "accordion")
+
+        self.assertEqual(len(gaps), len(problem.lines) - 1)
+        self.assertIn(0.0, gaps)
+        self.assertGreater(len(set(gaps)), 2)
+
+    def test_parse_line_gaps_rejects_empty_or_negative_specs(self):
+        self.assertEqual(parse_line_gaps("4, 12,0"), [4.0, 12.0, 0.0])
+        with self.assertRaises(ValueError):
+            parse_line_gaps("")
+        with self.assertRaises(ValueError):
+            parse_line_gaps("4,-1")
+
+    def test_render_cli_accepts_named_gap_pattern(self):
+        output_dir = RESULTS_DIR / "test-render-cli"
+        exit_code = render_fixture_main([
+            "--problem", "square_root_solve",
+            "--spacing", "dense",
+            "--gap-pattern", "pinched-middle",
+            "--ink-style", "compact",
+            "--output-dir", str(output_dir),
+        ])
+
+        self.assertEqual(exit_code, 0)
+        payload_path = output_dir / "square-root-solve_dense_pinched-middle_compact.json"
+        self.assertTrue(payload_path.exists())
+        payload = payload_path.read_text(encoding="utf-8")
+        self.assertIn('"problem": "square_root_solve"', payload)
+        self.assertIn('"lineGaps"', payload)
 
 
 if __name__ == "__main__":

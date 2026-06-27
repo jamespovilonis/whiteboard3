@@ -1,4 +1,5 @@
 export const TEST_PROBLEMS = Object.freeze([
+  // Temporary visual-debug fixtures until the full grading system is connected.
   {
     id: 'problem-1',
     latex: '2x + 3 = 11',
@@ -10,20 +11,20 @@ export const TEST_PROBLEMS = Object.freeze([
   },
   {
     id: 'problem-2',
-    latex: '3y - 4 = 14',
+    latex: '\\frac{x + 1}{2} = \\frac{5}{3}',
     modelResponse: {
-      before: 'For this one, isolate the variable term first.',
-      latex: '3y = 18',
-      after: 'Keep the operation balanced on both sides.'
+      before: 'Clear the denominators with a common multiplier.',
+      latex: '3(x + 1) = 10',
+      after: 'Then distribute and isolate the variable term.'
     }
   },
   {
     id: 'problem-3',
-    latex: '\\frac{x}{5} + 2 = 9',
+    latex: '\\log_{2}(x) + 3 = 7',
     modelResponse: {
-      before: 'Start by removing the constant from both sides.',
-      latex: '\\frac{x}{5} = 7',
-      after: 'Then use the inverse operation to finish.'
+      before: 'Move the constant before rewriting the logarithm.',
+      latex: '\\log_{2}(x) = 4',
+      after: 'Use the matching exponential form when you are ready.'
     }
   }
 ]);

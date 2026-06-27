@@ -57,6 +57,19 @@
   transform-origin: top left;
 }
 
+.model-shell-panel.is-debug {
+  display: flex;
+  flex-direction: column;
+  left: auto;
+  right: 22px;
+  width: min(420px, calc(100vw - 44px));
+  max-height: calc(100vh - 44px);
+  min-height: 280px;
+  padding: 18px;
+  overflow: hidden;
+  transform-origin: top right;
+}
+
 .model-shell-panel.is-closing {
   pointer-events: none;
   animation: model-shell-close 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards;
@@ -117,10 +130,297 @@
   font-size: 26px;
 }
 
+.model-shell-recognition {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(32, 34, 40, 0.10);
+}
+
+.recognition-debug {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+.recognition-debug-heading,
+.recognition-debug-candidate-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.recognition-debug-heading span:first-child {
+  color: #303038;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.recognition-debug-heading span:last-child,
+.recognition-debug-candidate-top span:last-child {
+  color: rgba(48, 48, 56, 0.56);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.recognition-debug-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 13px;
+  border-top: 1px solid rgba(32, 34, 40, 0.10);
+}
+
+.recognition-debug-result:first-of-type {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.recognition-debug-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.recognition-debug-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recognition-debug-candidate {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(32, 34, 40, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.recognition-debug-candidate[data-status="selected"] {
+  border-color: rgba(20, 132, 82, 0.42);
+  background: rgba(20, 132, 82, 0.08);
+}
+
+.recognition-debug-candidate[data-status="discarded"] {
+  border-color: rgba(196, 127, 18, 0.34);
+  background: rgba(196, 127, 18, 0.07);
+}
+
+.recognition-debug-candidate[data-status="failed"] {
+  border-color: rgba(190, 56, 48, 0.38);
+  background: rgba(190, 56, 48, 0.07);
+}
+
+.recognition-debug-candidate-top span:first-child {
+  color: rgba(48, 48, 56, 0.9);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.recognition-debug-crop {
+  display: block;
+  width: 100%;
+  max-height: 118px;
+  object-fit: contain;
+  background: #ffffff;
+  border: 1px solid rgba(32, 34, 40, 0.10);
+  border-radius: 6px;
+}
+
+.recognition-debug-detail {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px 9px;
+  margin: 0;
+}
+
+.recognition-debug-detail div {
+  min-width: 0;
+}
+
+.recognition-debug-detail dt {
+  margin: 0 0 2px;
+  color: rgba(48, 48, 56, 0.52);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.recognition-debug-detail dd {
+  margin: 0;
+  overflow: hidden;
+  color: rgba(48, 48, 56, 0.76);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recognition-debug-final {
+  padding-top: 10px;
+  border-top: 1px solid rgba(32, 34, 40, 0.10);
+}
+
+.recognition-debug-final > span {
+  display: block;
+  color: rgba(48, 48, 56, 0.86);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.recognition-result {
+  padding: 10px 0 0;
+}
+
+.recognition-result + .recognition-result {
+  border-top: 1px solid rgba(32, 34, 40, 0.08);
+}
+
+.recognition-result-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: rgba(48, 48, 56, 0.68);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.recognition-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: #303038;
+  font-size: 14px;
+}
+
+.recognition-lines li::marker {
+  color: rgba(48, 48, 56, 0.45);
+  font-size: 12px;
+}
+
+.recognition-lines .katex {
+  font-size: 15px;
+}
+
+.recognition-evidence {
+  margin-top: 8px;
+  color: rgba(48, 48, 56, 0.74);
+  font-size: 11px;
+}
+
+.recognition-evidence summary {
+  cursor: pointer;
+  font-weight: 700;
+  letter-spacing: 0;
+  list-style-position: inside;
+}
+
+.recognition-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.recognition-metrics div {
+  min-width: 0;
+}
+
+.recognition-metrics dt {
+  margin: 0 0 2px;
+  color: rgba(48, 48, 56, 0.52);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.recognition-metrics dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recognition-evidence-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recognition-evidence-title {
+  display: block;
+  color: rgba(48, 48, 56, 0.86);
+  font-weight: 700;
+}
+
+.recognition-evidence-profiles {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recognition-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 5px 0 0;
+  padding-left: 18px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+}
+
+.recognition-candidates li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.recognition-candidates span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recognition-message {
+  margin: 7px 0 0;
+  color: rgba(48, 48, 56, 0.72);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .model-shell-actions {
   display: flex;
   gap: 10px;
   margin-top: 28px;
+}
+
+.model-shell-actions.is-debug {
+  flex-shrink: 0;
+  margin: 12px -18px -18px;
+  padding: 12px 18px 16px;
+  background: rgba(255, 255, 255, 0.94);
+  border-top: 1px solid rgba(32, 34, 40, 0.10);
+  box-shadow: 0 -10px 20px rgba(30, 30, 50, 0.08);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
 }
 
 .model-shell-actions button {
@@ -198,5 +498,12 @@
 
   .model-shell-panel {
     width: min(270px, calc(100vw - 32px));
+  }
+
+  .model-shell-panel.is-debug {
+    left: 16px;
+    right: 16px;
+    width: auto;
+    max-height: calc(100vh - 32px);
   }
 }

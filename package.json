@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5500",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 5500"
+    "preview": "vite preview --host 0.0.0.0 --port 5500",
+    "test:segmentation": "python3 -m unittest testing.test_line_segmentation_pipeline testing.test_latex_semantics && node --test testing/test_recognition_pipeline.mjs",
+    "test:segmentation:matrix": "python3 testing/run_segmentation_matrix.py"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

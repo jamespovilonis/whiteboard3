@@ -35,6 +35,62 @@ Point = Tuple[float, float]
 Placement = Dict[str, Any]
 
 
+INK_STYLES: Dict[str, Dict[str, float]] = {
+    "normal": {
+        "x_scale": 1.0,
+        "y_scale": 1.0,
+        "dx": 9.0,
+        "dy": 5.0,
+        "angle_mean": -1.5,
+        "angle_std": 1.8,
+        "shear_mean": -0.035,
+        "shear_std": 0.025,
+        "noise": 5.0,
+        "threshold": 34.0,
+        "stroke_iterations": 1.0,
+    },
+    "compact": {
+        "x_scale": 0.84,
+        "y_scale": 0.95,
+        "dx": 6.0,
+        "dy": 3.5,
+        "angle_mean": -1.0,
+        "angle_std": 1.2,
+        "shear_mean": -0.02,
+        "shear_std": 0.018,
+        "noise": 4.0,
+        "threshold": 36.0,
+        "stroke_iterations": 1.0,
+    },
+    "loose": {
+        "x_scale": 1.08,
+        "y_scale": 1.03,
+        "dx": 11.0,
+        "dy": 6.0,
+        "angle_mean": -2.0,
+        "angle_std": 2.2,
+        "shear_mean": -0.045,
+        "shear_std": 0.03,
+        "noise": 5.5,
+        "threshold": 33.0,
+        "stroke_iterations": 1.0,
+    },
+    "messy": {
+        "x_scale": 0.96,
+        "y_scale": 1.04,
+        "dx": 14.0,
+        "dy": 8.0,
+        "angle_mean": -2.5,
+        "angle_std": 3.4,
+        "shear_mean": -0.06,
+        "shear_std": 0.045,
+        "noise": 8.0,
+        "threshold": 32.0,
+        "stroke_iterations": 2.0,
+    },
+}
+
+
 @dataclass(frozen=True)
 class SyntheticHandwriting:
     width: int
@@ -220,13 +276,34 @@ def fit_mask(mask: np.ndarray, max_width: int, max_height: int) -> np.ndarray:
     return cropped
 
 
-def elastic_ink(mask: np.ndarray, seed: int) -> np.ndarray:
+def available_ink_styles() -> List[str]:
+    return sorted(INK_STYLES)
+
+
+def resolve_ink_style(ink_style: str) -> Dict[str, float]:
+    try:
+        return INK_STYLES[ink_style]
+    except KeyError as exc:
+        known = ", ".join(available_ink_styles())
+        raise KeyError(f"Unknown ink style {ink_style!r}. Known styles: {known}") from exc
+
+
+def elastic_ink(mask: np.ndarray, seed: int, ink_style: str = "normal") -> np.ndarray:
     rng = np.random.default_rng(seed)
+    profile = resolve_ink_style(ink_style)
+    x_scale = float(profile["x_scale"])
+    y_scale = float(profile["y_scale"])
+    if abs(x_scale - 1.0) > 0.001 or abs(y_scale - 1.0) > 0.001:
+        mask = cv2.resize(
+            mask,
+            (max(1, int(round(mask.shape[1] * x_scale))), max(1, int(round(mask.shape[0] * y_scale)))),
+            interpolation=cv2.INTER_LINEAR,
+        )
     h, w = mask.shape
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     noise_scale = max(7, min(w, h) // 6)
-    dx = cv2.GaussianBlur(rng.normal(0, 1.0, (h, w)).astype(np.float32), (0, 0), noise_scale) * 9.0
-    dy = cv2.GaussianBlur(rng.normal(0, 1.0, (h, w)).astype(np.float32), (0, 0), noise_scale) * 5.0
+    dx = cv2.GaussianBlur(rng.normal(0, 1.0, (h, w)).astype(np.float32), (0, 0), noise_scale) * float(profile["dx"])
+    dy = cv2.GaussianBlur(rng.normal(0, 1.0, (h, w)).astype(np.float32), (0, 0), noise_scale) * float(profile["dy"])
     warped = cv2.remap(
         mask,
         xx + dx,
@@ -236,8 +313,8 @@ def elastic_ink(mask: np.ndarray, seed: int) -> np.ndarray:
         borderValue=0,
     )
 
-    angle = float(rng.normal(-1.5, 1.8))
-    shear = float(rng.normal(-0.035, 0.025))
+    angle = float(rng.normal(float(profile["angle_mean"]), float(profile["angle_std"])))
+    shear = float(rng.normal(float(profile["shear_mean"]), float(profile["shear_std"])))
     matrix = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
     matrix[0, 1] += shear
     warped = cv2.warpAffine(
@@ -250,13 +327,14 @@ def elastic_ink(mask: np.ndarray, seed: int) -> np.ndarray:
     )
 
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+    iterations = max(1, int(round(float(profile["stroke_iterations"]))))
     if seed % 2:
-        warped = cv2.dilate(warped, kernel, iterations=1)
+        warped = cv2.dilate(warped, kernel, iterations=iterations)
     else:
-        warped = cv2.morphologyEx(warped, cv2.MORPH_CLOSE, kernel, iterations=1)
-    paper = rng.normal(0, 5, (h, w)).astype(np.int16)
+        warped = cv2.morphologyEx(warped, cv2.MORPH_CLOSE, kernel, iterations=iterations)
+    paper = rng.normal(0, float(profile["noise"]), (h, w)).astype(np.int16)
     ink = np.clip(warped.astype(np.int16) + paper, 0, 255).astype(np.uint8)
-    _, binary = cv2.threshold(ink, 34, 255, cv2.THRESH_BINARY)
+    _, binary = cv2.threshold(ink, float(profile["threshold"]), 255, cv2.THRESH_BINARY)
     return binary
 
 
@@ -291,10 +369,11 @@ def render_handwriting(
     max_width: int = 1080,
     max_height: int = 190,
     seed: int = 0,
+    ink_style: str = "normal",
 ) -> SyntheticHandwriting:
     mask = render_latex_mask(latex)
     mask = fit_mask(mask, max_width=max_width, max_height=max_height)
-    mask = elastic_ink(mask, seed=seed)
+    mask = elastic_ink(mask, seed=seed, ink_style=ink_style)
     contours = contours_from_mask(mask)
     return SyntheticHandwriting(
         width=int(mask.shape[1]),
@@ -376,6 +455,7 @@ def place_handwriting_lines(
     max_line_width: Optional[int] = None,
     max_line_height: int = 132,
     line_gaps: Optional[Sequence[float]] = None,
+    ink_style: str = "normal",
 ) -> BoardFixture:
     """Render and position multiple handwritten math lines on one board."""
     validate_line_gaps(len(latex_lines), line_gaps)
@@ -397,6 +477,7 @@ def place_handwriting_lines(
             max_width=max_width,
             max_height=max_line_height,
             seed=seed + index + 1,
+            ink_style=ink_style,
         )
         placement = placements[index] if index < len(placements) else {}
         if "anchor" in placement:

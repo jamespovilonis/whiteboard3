@@ -410,6 +410,10 @@ export class CanvasStrokeEngine {
     this.callbacks.onStrokesChanged?.(this.strokeStore.getStrokes(), reason);
   }
 
+  getStrokes() {
+    return this.strokeStore.getStrokes();
+  }
+
   getScreenPoint(event) {
     const rect = this.fgCanvas.getBoundingClientRect();
     return {

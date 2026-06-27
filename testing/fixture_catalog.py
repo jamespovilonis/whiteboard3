@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:
-    from .synthetic_handwriting import BoardFixture, Placement, place_handwriting_lines, save_board_png
+    from .synthetic_handwriting import BoardFixture, Placement, available_ink_styles, place_handwriting_lines, save_board_png
 except ImportError:
-    from synthetic_handwriting import BoardFixture, Placement, place_handwriting_lines, save_board_png
+    from synthetic_handwriting import BoardFixture, Placement, available_ink_styles, place_handwriting_lines, save_board_png
 
 
 TESTING_DIR = Path(__file__).resolve().parent
@@ -24,10 +24,15 @@ class MathProblem:
     name: str
     family: str
     lines: Sequence[str]
+    problem_latex: Optional[str] = None
     max_line_width: int = 1120
     max_line_height: int = 96
     board_width: int = 1400
     margin_x: int = 118
+
+    @property
+    def context_latex(self) -> str:
+        return self.problem_latex or (self.lines[0] if self.lines else "")
 
 
 PROBLEMS: Sequence[MathProblem] = [
@@ -53,6 +58,91 @@ PROBLEMS: Sequence[MathProblem] = [
             r"2 x = 8",
             r"/ 2      / 2",
             r"x = 4",
+        ],
+        max_line_width=850,
+        max_line_height=104,
+        board_width=1200,
+        margin_x=126,
+    ),
+    MathProblem(
+        name="algebra_prompt_context",
+        family="algebra",
+        problem_latex=r"2 x + 3 = 11",
+        lines=[
+            r"2 x = 8",
+            r"/ 2      / 2",
+            r"x = 4",
+        ],
+        max_line_width=850,
+        max_line_height=104,
+        board_width=1200,
+        margin_x=126,
+    ),
+    MathProblem(
+        name="linear_system_elimination",
+        family="algebra",
+        problem_latex=r"x + y = 7, x - y = 1",
+        lines=[
+            r"x + y = 7",
+            r"x - y = 1",
+            r"2 x = 8",
+            r"x = 4",
+            r"4 + y = 7",
+            r"y = 3",
+        ],
+        max_line_width=980,
+        max_line_height=100,
+        board_width=1280,
+        margin_x=126,
+    ),
+    MathProblem(
+        name="quadratic_factor_solve",
+        family="quadratic",
+        lines=[
+            r"x ^ { 2 } - 5 x + 6 = 0",
+            r"( x - 2 ) ( x - 3 ) = 0",
+            r"x = 2",
+            r"x = 3",
+        ],
+        max_line_width=1100,
+        max_line_height=100,
+        board_width=1320,
+        margin_x=126,
+    ),
+    MathProblem(
+        name="quadratic_formula_positive_root",
+        family="quadratic",
+        problem_latex=r"x ^ { 2 } + 4 x - 5 = 0",
+        lines=[
+            r"x = \frac { - 4 + \sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }",
+            r"x = \frac { - 4 + 6 } { 2 }",
+            r"x = 1",
+        ],
+        max_line_width=1320,
+        max_line_height=136,
+        board_width=1480,
+        margin_x=126,
+    ),
+    MathProblem(
+        name="square_root_solve",
+        family="radical",
+        lines=[
+            r"\sqrt { x + 5 } = 4",
+            r"x + 5 = 16",
+            r"x = 11",
+        ],
+        max_line_width=980,
+        max_line_height=110,
+        board_width=1240,
+        margin_x=126,
+    ),
+    MathProblem(
+        name="symbol_context_eta",
+        family="symbol-context",
+        problem_latex=r"\eta + 1 = 6",
+        lines=[
+            r"\eta + 1 = 6",
+            r"\eta = 5",
         ],
         max_line_width=850,
         max_line_height=104,
@@ -102,6 +192,40 @@ PROBLEMS: Sequence[MathProblem] = [
         ],
         max_line_width=1240,
         max_line_height=104,
+    ),
+    MathProblem(
+        name="rational_two_sided_fraction_solve",
+        family="rational",
+        lines=[
+            r"\frac { x + 1 } { 2 } = \frac { 5 } { 3 }",
+            r"\times 6       \times 6",
+            r"3 ( x + 1 ) = 10",
+            r"3 x + 3 = 10",
+            r"- 3       - 3",
+            r"3 x = 7",
+            r"/ 3       / 3",
+            r"x = \frac { 7 } { 3 }",
+        ],
+        max_line_width=1240,
+        max_line_height=112,
+    ),
+    MathProblem(
+        name="rational_mixed_fraction_operations",
+        family="rational",
+        lines=[
+            r"\frac { 2 x + 1 } { 3 } - \frac { x - 2 } { 4 } = 5",
+            r"\times 12       \times 12",
+            r"4 ( 2 x + 1 ) - 3 ( x - 2 ) = 60",
+            r"8 x + 4 - 3 x + 6 = 60",
+            r"5 x + 10 = 60",
+            r"- 10       - 10",
+            r"5 x = 50",
+            r"/ 5       / 5",
+            r"x = 10",
+        ],
+        max_line_width=1320,
+        max_line_height=112,
+        board_width=1480,
     ),
     MathProblem(
         name="logarithmic_solve",
@@ -225,6 +349,9 @@ SPACING_VARIANTS: Dict[str, Dict[str, object]] = {
 }
 
 
+GAP_PATTERNS = ("accordion", "pinched-middle", "stair-step")
+
+
 def slug(*parts: str) -> str:
     return "_".join(re.sub(r"[^a-zA-Z0-9]+", "-", part).strip("-").lower() for part in parts)
 
@@ -235,6 +362,10 @@ def problem_by_name() -> Dict[str, MathProblem]:
 
 def family_names() -> List[str]:
     return sorted({problem.family for problem in PROBLEMS})
+
+
+def gap_pattern_names() -> List[str]:
+    return list(GAP_PATTERNS)
 
 
 def get_problem(problem_name: str) -> MathProblem:
@@ -276,6 +407,33 @@ def validate_line_gaps(line_count: int, line_gaps: Optional[Sequence[float]]) ->
     if any(gap < 0 for gap in gaps):
         raise ValueError("line_gaps values must be non-negative")
     return gaps
+
+
+def parse_line_gaps(value: str) -> List[float]:
+    try:
+        gaps = [float(chunk.strip()) for chunk in str(value).split(",") if chunk.strip()]
+    except ValueError as exc:
+        raise ValueError("line gaps must be a comma-separated list of numbers") from exc
+    if not gaps:
+        raise ValueError("line gaps must contain at least one value")
+    if any(gap < 0 for gap in gaps):
+        raise ValueError("line gaps must be non-negative")
+    return gaps
+
+
+def line_gaps_for_pattern(line_count: int, pattern: str) -> List[float]:
+    gap_count = max(0, line_count - 1)
+    if pattern == "accordion":
+        values = [0, 72, 6, 54, 2, 64]
+    elif pattern == "pinched-middle":
+        midpoint = max(0, gap_count // 2)
+        return [2.0 if abs(index - midpoint) <= 1 else 58.0 for index in range(gap_count)]
+    elif pattern == "stair-step":
+        values = [72, 42, 18, 6, 0]
+    else:
+        known = ", ".join(gap_pattern_names())
+        raise KeyError(f"Unknown gap pattern {pattern!r}. Known gap patterns: {known}")
+    return [float(values[index % len(values)]) for index in range(gap_count)]
 
 
 def gaps_for_spacing(
@@ -328,6 +486,7 @@ def build_board(
     spacing: str = "standard",
     line_gaps: Optional[Sequence[float]] = None,
     seed: int = 0,
+    ink_style: str = "normal",
 ) -> BoardFixture:
     problem = get_problem(problem_name)
     placements, board_width, board_height, _ = placements_for(problem, spacing, line_gaps)
@@ -339,6 +498,7 @@ def build_board(
         seed=seed,
         max_line_width=problem.max_line_width,
         max_line_height=problem.max_line_height,
+        ink_style=ink_style,
     )
 
 
@@ -347,13 +507,16 @@ def fixture_payload(
     spacing: str,
     line_gaps: Sequence[float],
     board: BoardFixture,
+    ink_style: str = "normal",
 ) -> Dict[str, object]:
     payload = board.to_json()
     payload["fixture"] = {
         "problem": problem.name,
         "family": problem.family,
         "spacing": spacing,
+        "inkStyle": ink_style,
         "lineGaps": list(line_gaps),
+        "problemLatex": problem.context_latex,
         "expectedLatexLines": list(problem.lines),
     }
     return payload
