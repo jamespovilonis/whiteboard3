@@ -349,7 +349,7 @@ def normalize_latex(latex: str) -> str:
         raise ParseFailure("empty candidate")
     text = latex.strip()
     text = re.sub(r"([A-Za-z])\s*(?:'\s*|\^\s*\{\s*\\prime\s*\})", r"\1prime", text)
-    for token in (r"\left", r"\right", r"\!", r"\,", r"\;", r"\:"):
+    for token in (r"\left", r"\right", r"\limits", r"\!", r"\,", r"\;", r"\:"):
         text = text.replace(token, "")
     replacements = {
         r"\cdot": "*",
@@ -499,8 +499,11 @@ def _equivalent_equations(reference_residual: sympy.Expr, candidate_residual: sy
     try:
         if expressions_exceed_budget(reference_residual, candidate_residual):
             return EquivalenceResult(None, "constant_residual_factor_budget")
+        ratio_expr = reference_residual / candidate_residual
+        if expression_exceeds_budget(ratio_expr):
+            return EquivalenceResult(None, "constant_residual_factor_budget")
         with sympy_budget(SYMPY_TIMEOUT_SECONDS):
-            ratio = sympy.simplify(reference_residual / candidate_residual)
+            ratio = sympy.simplify(ratio_expr)
         if ratio != 0 and not ratio.free_symbols and ratio.is_finite is not False:
             return EquivalenceResult(True, "constant_residual_factor")
     except (Exception, SympyBudgetExceeded):
@@ -641,6 +644,7 @@ def score_latex_candidate(
         score += max(-20.0, min(2.0, float(model_score))) * 0.35
         detail["modelScore"] = model_score
 
+    parsed: Optional[MathParse] = None
     try:
         parsed = parse_math(latex)
         sound = True
@@ -662,11 +666,19 @@ def score_latex_candidate(
     elif problem_result.equivalent is None:
         score -= 0.25
     detail["problemEquivalence"] = problem_result.method
+    if sound and not equivalent_to_problem and candidate_solution_is_supported_by_problem(problem_latex, latex):
+        score += 0.65
+        detail["solutionSupportedByProblem"] = True
 
     equivalent_to_previous = False
     previous_equivalence_method = None
     for previous in previous_latex:
         previous_result = check_equivalence(previous, latex)
+        if (
+            compact_latex_text(previous) == compact_latex_text(problem_latex)
+            and previous_result.method == "expression_difference"
+        ):
+            continue
         if previous_result.equivalent is True:
             equivalent_to_previous = True
             previous_equivalence_method = previous_result.method
@@ -686,6 +698,17 @@ def score_latex_candidate(
     score += overlap * 0.9
     detail["characterOverlap"] = round(overlap, 3)
 
+    if low_overlap_complex_row_collapses_to_problem_value(
+        latex,
+        parsed,
+        problem_result,
+        equivalent_to_problem=equivalent_to_problem,
+        equivalent_to_previous=equivalent_to_previous,
+        overlap=overlap,
+    ):
+        score -= 5.75
+        detail["lowVisualSupportForProblemValue"] = True
+
     if re.search(r"\\frac\s*\{\s*[0-9+\-*/\s]+[+\-*/][0-9+\-*/\s]*\s*\}", latex):
         score -= 0.35
         detail["unreducedNumericFractionArithmetic"] = True
@@ -704,6 +727,44 @@ def score_latex_candidate(
         equivalent_to_previous=equivalent_to_previous,
         detail=detail,
     )
+
+
+def low_overlap_complex_row_collapses_to_problem_value(
+    latex: str,
+    parsed: Optional[MathParse],
+    problem_result: EquivalenceResult,
+    *,
+    equivalent_to_problem: bool,
+    equivalent_to_previous: bool,
+    overlap: float,
+) -> bool:
+    if not equivalent_to_problem or equivalent_to_previous:
+        return False
+    if problem_result.method != "expression_difference":
+        return False
+    if parsed is None or parsed.kind != "expression":
+        return False
+    if parsed.left.free_symbols:
+        return False
+
+    text = re.sub(r"\s+", " ", str(latex or "")).strip()
+    if not text.startswith("="):
+        return False
+    if overlap >= 0.45:
+        return False
+    try:
+        normalized = normalize_latex(text)
+    except ParseFailure:
+        normalized = ""
+    if "evalat(" in normalized:
+        return False
+
+    structural_tokens = sum(
+        1
+        for pattern in (r"\\frac\b", r"\^", r"_", r"\[", r"\]", r"\\sqrt\b", r"\\log\b")
+        if re.search(pattern, text)
+    )
+    return structural_tokens >= 2
 
 
 def exact_previous_latex_match(latex: str, previous_latex: Sequence[str]) -> bool:
@@ -750,7 +811,34 @@ def score_ocr_predictions(
             elapsed_seconds=variant.get("elapsedSeconds"),
         )
         if variant.get("repairedFrom"):
-            repair_adjustment = 0.0 if variant.get("repair") == "parenthesized_unit_product" else -0.15
+            repair_adjustment = (
+                0.0
+                if variant.get("repair") in {
+                    "parenthesized_unit_product",
+                    "contextual_quadratic_formula_coefficient",
+                }
+                else -0.15
+            )
+            if variant.get("repair") == "contextual_linear_simplification" and repair_over_simplifies_visible_row(
+                str(variant.get("repairedFrom") or ""),
+                candidate_score.latex,
+            ):
+                repair_adjustment -= 0.75
+            if variant.get("repair") == "numeric_fraction_arithmetic" and repair_over_simplifies_visible_row(
+                str(variant.get("repairedFrom") or ""),
+                candidate_score.latex,
+            ):
+                repair_adjustment -= 0.75
+            if variant.get("repair") == "contextual_latex_numeric_equivalence" and numeric_repair_changes_derivative_substitution(
+                str(variant.get("repairedFrom") or ""),
+                candidate_score.latex,
+                previous_latex,
+            ):
+                repair_adjustment -= 2.5
+            if repair_source_looks_like_malformed_bound_evaluation(
+                str(variant.get("repairedFrom") or "")
+            ):
+                repair_adjustment -= 3.5
             candidate_score = CandidateScore(
                 latex=candidate_score.latex,
                 score=round(candidate_score.score + repair_adjustment, 4),
@@ -765,6 +853,49 @@ def score_ocr_predictions(
             )
         scored.append(candidate_score)
     return sorted(scored, key=lambda item: item.score, reverse=True)
+
+
+def repair_source_looks_like_malformed_bound_evaluation(repaired_from: str) -> bool:
+    text = re.sub(r"\s+", " ", str(repaired_from or "")).strip()
+    if not text.startswith("="):
+        return False
+    if r"\frac" not in text or not re.search(r"_\s*\{?\s*0", text):
+        return False
+    try:
+        normalized = normalize_latex(text)
+    except ParseFailure:
+        normalized = ""
+    return "evalat(" not in normalized
+
+
+def numeric_repair_changes_derivative_substitution(
+    repaired_from: str,
+    repaired_latex: str,
+    previous_latex: Sequence[str],
+) -> bool:
+    if not any(re.search(r"\^\s*\{\s*\\prime\s*\}", str(previous or "")) for previous in previous_latex or []):
+        return False
+    source = re.sub(r"\s+", " ", str(repaired_from or "")).strip()
+    repaired = re.sub(r"\s+", " ", str(repaired_latex or "")).strip()
+    if not re.match(r"^[A-Za-z]\s*\(\s*-?\d+\s*\)\s*=", source):
+        return False
+    if not re.match(r"^[A-Za-z]\s*\(\s*-?\d+\s*\)\s*=", repaired):
+        return False
+    if latex_token_overlap(source, repaired) < 0.7:
+        return False
+    return re.findall(r"\d+", source) != re.findall(r"\d+", repaired)
+
+
+def repair_over_simplifies_visible_row(repaired_from: str, repaired_latex: str) -> bool:
+    source_tokens = latex_tokens(repaired_from)
+    repaired_tokens = latex_tokens(repaired_latex)
+    if len(source_tokens) < len(repaired_tokens) + 3:
+        return False
+    if latex_token_overlap(repaired_from, repaired_latex) < 0.45:
+        return False
+    source_operator_count = sum(1 for token in source_tokens if token in {"+", "-", "*", "/", "(", ")"})
+    repaired_operator_count = sum(1 for token in repaired_tokens if token in {"+", "-", "*", "/", "(", ")"})
+    return source_operator_count > repaired_operator_count
 
 
 def variant_latex(variant: dict[str, Any] | str) -> str:
@@ -810,6 +941,7 @@ def prediction_variants(
         (repair_trailing_one_as_parenthesis(latex), "trailing_one_to_parenthesis", 0.6),
         (repair_malformed_arithmetic_continuation(latex), "malformed_arithmetic_continuation", 0.8),
         (repair_symbolic_numeric_continuation(latex, previous_latex), "symbolic_numeric_continuation", 0.95),
+        (repair_stray_variable_numeric_continuation(latex, problem_latex, previous_latex), "stray_variable_numeric_continuation", 0.35),
     ]
     for repaired in repair_numeric_fraction_arithmetic(latex, problem_latex, previous_latex):
         repairs.append((repaired, "numeric_fraction_arithmetic", 0.05))
@@ -819,10 +951,24 @@ def prediction_variants(
         repairs.append((repaired, "contextual_numeric_lookalike", 0.85))
     for repaired in repair_contextual_latex_numeric_equivalence(latex, problem_latex, previous_latex):
         repairs.append((repaired, "contextual_latex_numeric_equivalence", 0.55))
+    for repaired in repair_contextual_bound_evaluation_bracket(latex, problem_latex, previous_latex):
+        repairs.append((repaired, "contextual_bound_evaluation_bracket", 0.05))
     for repaired in repair_contextual_malformed_log_bases(latex, problem_latex, previous_latex):
         repairs.append((repaired, "contextual_malformed_log_base", 0.35))
+    for repaired in repair_contextual_copied_problem_equation(latex, problem_latex, previous_latex):
+        repairs.append((repaired, "contextual_copied_problem_equation", 0.05))
+    if not previous_latex:
+        for repaired in repair_contextual_malformed_log_equation_from_problem(latex, problem_latex):
+            repairs.append((repaired, "contextual_malformed_log_equation", 0.05))
     for repaired in repair_contextual_log_numeric_arguments(latex, problem_latex, previous_latex):
         repairs.append((repaired, "contextual_log_numeric_argument", 0.45))
+    quadratic_repair_sources = [latex]
+    normalized_unit_products = repair_parenthesized_unit_products(latex)
+    if normalized_unit_products and normalized_unit_products != latex:
+        quadratic_repair_sources.append(normalized_unit_products)
+    for repair_source in quadratic_repair_sources:
+        for repaired in repair_contextual_quadratic_formula_coefficient(repair_source, problem_latex, previous_latex):
+            repairs.append((repaired, "contextual_quadratic_formula_coefficient", 0.05))
     for repaired in repair_contextual_exponent_equals_confusion(
         re.sub(r"\s+", " ", str(latex or "")).strip(),
         contextual_variable_names([problem_latex, *(previous_latex or [])]),
@@ -834,6 +980,8 @@ def prediction_variants(
         normalized_repaired = repair_parenthesized_unit_products(repaired)
         if normalized_repaired:
             repairs.append((normalized_repaired, "contextual_denominator_clear", 0.05))
+    for repaired in repair_from_previous_subtraction_step(latex, problem_latex, previous_latex):
+        repairs.append((repaired, "contextual_subtraction_step", -0.55))
     for repaired in repair_from_previous_linear_simplification(latex, problem_latex, previous_latex):
         repairs.append((repaired, "contextual_linear_simplification", 0.2))
     for repaired in repair_contextual_symbol_confusions(latex, problem_latex, previous_latex):
@@ -869,6 +1017,53 @@ def repair_symbolic_numeric_continuation(latex: str, previous_latex: Sequence[st
     if value is None:
         return None
     repaired = f"= {sympy_value_to_latex(value)}"
+    if check_equivalence(previous_latex[-1], repaired).equivalent is not True:
+        return None
+    return repaired
+
+
+def repair_stray_variable_numeric_continuation(
+    latex: str,
+    problem_latex: str,
+    previous_latex: Sequence[str],
+) -> Optional[str]:
+    text = re.sub(r"\s+", " ", str(latex or "")).strip()
+    if not text or len(text) > 32 or text.count("=") != 1:
+        return None
+    if not previous_latex:
+        return None
+
+    match = re.fullmatch(r"([A-Za-z])\s*=\s*(.+)", text)
+    if not match:
+        return None
+    variable, rhs_text = match.groups()
+    if variable in set(contextual_variable_names([problem_latex, *(previous_latex or [])])):
+        return None
+    rhs_without_commands = re.sub(r"\\[A-Za-z]+", "", rhs_text)
+    if re.search(r"[A-Za-z]", rhs_without_commands):
+        return None
+
+    try:
+        parsed = parse_math(text)
+    except ParseFailure:
+        return None
+    if parsed.kind != "equation" or parsed.right is None:
+        return None
+    try:
+        with sympy_budget(SYMPY_TIMEOUT_SECONDS):
+            rhs_value = sympy.simplify(parsed.right.doit())
+    except (Exception, SympyBudgetExceeded):
+        return None
+    if rhs_value.free_symbols or rhs_value.is_number is not True:
+        return None
+
+    previous_value = previous_numeric_value(previous_latex)
+    if previous_value is None:
+        return None
+    if sympy.simplify(rhs_value - previous_value) == 0:
+        return None
+
+    repaired = f"= {sympy_value_to_latex(previous_value)}"
     if check_equivalence(previous_latex[-1], repaired).equivalent is not True:
         return None
     return repaired
@@ -1029,10 +1224,12 @@ def contextual_numeric_replacement_options(
         for number in numbers:
             if re.fullmatch(r"1{2,}", number):
                 options.append((re.compile(r"(?<!\\)\bn\b"), number))
-    if re.search(r"(?<!\\)\b[oOsS]\b", latex):
+    if re.search(r"(?<!\\)\b[oOsSnN]\b", latex):
         for number in numbers:
             if number == "0":
                 options.append((re.compile(r"(?<!\\)\b[oOsS]\b"), number))
+                if "n" not in variables:
+                    options.append((re.compile(r"(?<!\\)\b[nN]\b"), number))
     if re.search(r"(?<!\\)\bi\d+\b", latex) and "i" not in variables:
         for number in numbers:
             options.append((re.compile(rf"(?<!\\)\bi(?={re.escape(number)}\b)"), ""))
@@ -1073,7 +1270,41 @@ def numeric_repair_has_semantic_support(
             continue
         if check_equivalence(reference, candidate).equivalent is True:
             return True
+        if candidate_solution_is_supported_by_problem(reference, candidate):
+            return True
     return False
+
+
+def candidate_solution_is_supported_by_problem(reference_latex: str, candidate_latex: str) -> bool:
+    try:
+        reference = parse_math(reference_latex)
+        candidate = parse_math(candidate_latex)
+    except ParseFailure:
+        return False
+    if reference.kind != "equation" or candidate.kind != "equation":
+        return False
+    if reference.right is None or candidate.right is None:
+        return False
+    symbols = sorted(
+        (reference.left - reference.right).free_symbols | (candidate.left - candidate.right).free_symbols,
+        key=lambda item: item.name,
+    )
+    if len(symbols) != 1:
+        return False
+    variable = symbols[0]
+    try:
+        if expressions_exceed_budget(reference.left - reference.right, candidate.left - candidate.right):
+            return False
+        with sympy_budget(SYMPY_TIMEOUT_SECONDS):
+            reference_set = sympy.solveset(reference.left - reference.right, variable, domain=sympy.S.Reals)
+            candidate_set = sympy.solveset(candidate.left - candidate.right, variable, domain=sympy.S.Reals)
+    except (Exception, SympyBudgetExceeded):
+        return False
+    if not isinstance(reference_set, sympy.FiniteSet) or not isinstance(candidate_set, sympy.FiniteSet):
+        return False
+    if not candidate_set:
+        return False
+    return all(value in reference_set for value in candidate_set)
 
 
 def repair_contextual_numeric_equivalence(
@@ -1170,6 +1401,59 @@ def repair_contextual_latex_numeric_equivalence(
     return variants
 
 
+def repair_contextual_bound_evaluation_bracket(
+    latex: str,
+    problem_latex: str,
+    previous_latex: Sequence[str],
+) -> list[str]:
+    text = re.sub(r"\s+", " ", str(latex or "")).strip()
+    if not text or not text.startswith("=") or "[" in text or "]" not in text:
+        return []
+    if not context_suggests_bound_evaluation(problem_latex, previous_latex):
+        return []
+    if len(text) > 160:
+        return []
+
+    variants: list[str] = []
+    for match in re.finditer(r"^=\s*(?:1|l|I)\s+", text):
+        candidate = f"{text[:match.start()]}= [ {text[match.end():]}"
+        if not repaired_bound_evaluation_is_supported(candidate, problem_latex, previous_latex):
+            continue
+        if latex_token_overlap(text, candidate) < 0.72:
+            continue
+        variants.append(candidate)
+    return unique_preserving_order(variants)
+
+
+def context_suggests_bound_evaluation(problem_latex: str, previous_latex: Sequence[str]) -> bool:
+    context = [problem_latex, *(previous_latex or [])]
+    for latex in context:
+        text = str(latex or "")
+        if r"\int" in text:
+            return True
+        try:
+            if "evalat(" in normalize_latex(text):
+                return True
+        except ParseFailure:
+            continue
+    return False
+
+
+def repaired_bound_evaluation_is_supported(
+    candidate: str,
+    problem_latex: str,
+    previous_latex: Sequence[str],
+) -> bool:
+    try:
+        normalized = normalize_latex(candidate)
+        parse_math(candidate)
+    except ParseFailure:
+        return False
+    if "evalat(" not in normalized:
+        return False
+    return numeric_repair_has_semantic_support(candidate, problem_latex, previous_latex)
+
+
 def repair_contextual_malformed_log_bases(
     latex: str,
     problem_latex: str,
@@ -1198,6 +1482,255 @@ def repair_contextual_malformed_log_bases(
                 variants.append(candidate)
                 break
     return variants
+
+
+def repair_contextual_copied_problem_equation(
+    latex: str,
+    problem_latex: str,
+    previous_latex: Sequence[str],
+) -> list[str]:
+    if previous_latex:
+        return []
+    problem_text = re.sub(r"\s+", " ", str(problem_latex or "")).strip()
+    text = re.sub(r"\s+", " ", str(latex or "")).strip()
+    if not problem_text or not text or "=" not in text or "=" not in problem_text:
+        return []
+    if compact_latex_text(text) == compact_latex_text(problem_text):
+        return []
+    if len(text) > len(problem_text) * 1.45 + 12:
+        return []
+
+    overlap = latex_token_overlap(text, problem_text)
+    if overlap < 0.62:
+        return []
+    problem_tokens = latex_tokens(problem_text)
+    text_tokens = latex_tokens(text)
+    if len(problem_tokens) < 6 or len(text_tokens) < 5:
+        return []
+
+    try:
+        parse_math(problem_text)
+    except ParseFailure:
+        return []
+
+    candidate_is_supported = False
+    try:
+        candidate_is_supported = check_equivalence(problem_text, text).equivalent is True
+    except Exception:
+        candidate_is_supported = False
+    if candidate_is_supported:
+        return []
+
+    problem_commands = set(re.findall(r"\\[A-Za-z]+", problem_text))
+    text_commands = set(re.findall(r"\\[A-Za-z]+", text))
+    if problem_commands and not (problem_commands & text_commands):
+        return []
+
+    problem_numbers = contextual_number_tokens([problem_text])
+    text_numbers = contextual_number_tokens([text])
+    number_mismatch = bool(set(problem_numbers) - set(text_numbers))
+    has_malformed_operator = r"\frac" in problem_text and bool(re.search(r"\\infty\b", text))
+    context_variables = set(contextual_variable_names([problem_text]))
+    candidate_letters = set(re.findall(r"(?<!\\)\b[A-Za-z]\b", text))
+    has_noncontext_letter = bool(candidate_letters - context_variables)
+    has_greek_lookalike = bool(re.search(r"\\(?:alpha|pi|eta|theta)\b", text))
+    is_fraction_number_mismatch = (
+        r"\frac" in problem_text and
+        number_mismatch and
+        not has_noncontext_letter and
+        not has_greek_lookalike
+    )
+    missing_problem_operator = any(
+        token in problem_tokens and token not in text_tokens
+        for token in {"+", "-", "*", "/"}
+    )
+    copied_equation_symbol_or_number_mismatch = (
+        overlap >= 0.74 and
+        not problem_commands and
+        not text_commands and
+        not has_greek_lookalike and
+        (number_mismatch or missing_problem_operator) and
+        (
+            has_noncontext_letter or
+            len(text_tokens) + 1 < len(problem_tokens)
+        )
+    )
+    if not (
+        has_malformed_operator or
+        is_fraction_number_mismatch or
+        copied_equation_symbol_or_number_mismatch
+    ):
+        return []
+    return [problem_text]
+
+
+def repair_contextual_malformed_log_equation_from_problem(latex: str, problem_latex: str) -> list[str]:
+    problem_text = re.sub(r"\s+", " ", str(problem_latex or "")).strip()
+    text = re.sub(r"\s+", " ", str(latex or "")).strip()
+    if not problem_text or not text or "=" not in text:
+        return []
+    problem_match = re.search(
+        r"\\log\s*_\s*\{\s*([^{}]+?)\s*\}\s*\(\s*(.+?)\s*\)",
+        problem_text,
+    )
+    if not problem_match:
+        return []
+    if not re.search(r"\\log|\\tan|(?:^|\s)[A-Za-z]\s*_", text):
+        return []
+    if text.count(r"\log") > 1 or re.search(r"=\s*$", text):
+        return []
+    try:
+        parsed_text = parse_math(text)
+    except ParseFailure:
+        parsed_text = None
+    argument = compact_latex_text(problem_match.group(2))
+    if not argument:
+        return []
+    candidate_compact = compact_latex_text(text)
+    if argument not in candidate_compact:
+        return []
+    if parsed_text is not None:
+        problem_overlap = latex_token_overlap(text, problem_text)
+        if problem_overlap < 0.5:
+            return []
+        context_variables = set(contextual_variable_names([problem_text]))
+        candidate_letters = set(re.findall(r"(?<!\\)\b[A-Za-z]\b", text))
+        problem_numbers = set(contextual_number_tokens([problem_text]))
+        text_numbers = set(contextual_number_tokens([text]))
+        has_missing_problem_number = bool(problem_numbers - text_numbers)
+        if not (candidate_letters - context_variables) and not has_missing_problem_number:
+            return []
+        equivalence = check_equivalence(problem_text, text)
+        if equivalence.equivalent is not False:
+            return []
+    try:
+        parse_math(problem_text)
+    except ParseFailure:
+        return []
+    return [problem_text]
+
+
+def repair_contextual_quadratic_formula_coefficient(
+    latex: str,
+    problem_latex: str,
+    previous_latex: Sequence[str],
+) -> list[str]:
+    coefficient = positive_integer_quadratic_linear_coefficient(problem_latex)
+    if coefficient is None:
+        return []
+    text = re.sub(r"\s+", " ", str(latex or "")).strip()
+    if not text or r"\frac" not in text:
+        return []
+    coefficient_text = str(coefficient)
+    variants: list[str] = []
+    formula_template = contextual_quadratic_formula_template(text, problem_latex)
+    if formula_template and compact_latex_text(formula_template) != compact_latex_text(text):
+        variants.append(formula_template)
+
+    formula_pattern = re.compile(
+        r"(\\frac\s*\{\s*-\s*)(\d+)(\s*\+\s*\\sqrt\s*\{\s*)(\d+)(\s*\^\s*\{\s*2\s*\}\s*-\s*4\b)"
+    )
+    match = formula_pattern.search(text)
+    if match and (match.group(2) != coefficient_text or match.group(4) != coefficient_text):
+        variants.append(
+            text[:match.start()] +
+            match.group(1) + coefficient_text + match.group(3) + coefficient_text + match.group(5) +
+            text[match.end():]
+        )
+
+    malformed_formula_pattern = re.compile(
+        r"(\\frac\s*\{\s*-\s*)(\d+|[A-Za-z])(\s*\+\s*\\sqrt\s*\{\s*)(\d+|[A-Za-z])"
+        r"(\s*\^\s*\{\s*2\s*\}\s*-\s*)(?:\d+\s*)?(\(\s*1\s*\)\s*\(\s*-\s*\d+\s*\)\s*\}\s*)"
+        r"(\{\s*2\b)"
+    )
+    match = malformed_formula_pattern.search(text)
+    if match and (match.group(2) != coefficient_text or match.group(4) != coefficient_text):
+        variants.append(
+            text[:match.start()] +
+            match.group(1) + coefficient_text +
+            match.group(3) + coefficient_text +
+            match.group(5) + "4 " + match.group(6) + "} " + match.group(7) +
+            text[match.end():]
+        )
+
+    simplified_pattern = re.compile(r"(\\frac\s*\{\s*-\s*)(\d+)(\s*\+\s*(?:\d+|[A-Za-z])\s*\}\s*\{\s*2\s*\})")
+    match = simplified_pattern.search(text)
+    if match and match.group(2) != coefficient_text:
+        candidate = text[:match.start()] + match.group(1) + coefficient_text + match.group(3) + text[match.end():]
+        if numeric_repair_has_semantic_support(candidate, problem_latex, previous_latex):
+            variants.append(candidate)
+
+    return unique_preserving_order(variants)
+
+
+def contextual_quadratic_formula_template(latex: str, problem_latex: str) -> Optional[str]:
+    text = re.sub(r"\s+", " ", str(latex or "")).strip()
+    if r"\frac" not in text or r"\sqrt" not in text or "=" not in text:
+        return None
+    if not re.search(r"\+\s*\\sqrt", text):
+        return None
+    coefficients = quadratic_integer_coefficients(problem_latex)
+    if coefficients is None:
+        return None
+    variable, leading, linear, constant = coefficients
+    if leading == 0:
+        return None
+    return (
+        rf"{variable} = \frac {{ - {sympy_value_to_latex(linear)} + "
+        rf"\sqrt {{ {sympy_value_to_latex(linear)} ^ {{ 2 }} - 4 ( {sympy_value_to_latex(leading)} ) "
+        rf"( {spaced_signed_latex(constant)} ) }} }} {{ 2 ( {sympy_value_to_latex(leading)} ) }}"
+    )
+
+
+def quadratic_integer_coefficients(problem_latex: str) -> Optional[tuple[str, sympy.Integer, sympy.Integer, sympy.Integer]]:
+    try:
+        parsed = parse_math(problem_latex)
+    except ParseFailure:
+        return None
+    if parsed.kind != "equation" or parsed.right is None:
+        return None
+    residual = sympy.expand(parsed.left - parsed.right)
+    symbols = sorted(residual.free_symbols, key=lambda item: item.name)
+    if len(symbols) != 1:
+        return None
+    variable = symbols[0]
+    try:
+        poly = sympy.Poly(residual, variable)
+    except Exception:
+        return None
+    if poly.degree() != 2:
+        return None
+    leading = sympy.simplify(poly.coeff_monomial(variable ** 2))
+    linear = sympy.simplify(poly.coeff_monomial(variable))
+    constant = sympy.simplify(poly.coeff_monomial(1))
+    values = (leading, linear, constant)
+    if any(value.is_integer is not True for value in values):
+        return None
+    return (variable.name, *(sympy.Integer(value) for value in values))
+
+
+def positive_integer_quadratic_linear_coefficient(problem_latex: str) -> Optional[int]:
+    try:
+        parsed = parse_math(problem_latex)
+    except ParseFailure:
+        return None
+    if parsed.kind != "equation" or parsed.right is None:
+        return None
+    residual = sympy.expand(parsed.left - parsed.right)
+    symbols = sorted(residual.free_symbols, key=lambda item: item.name)
+    if len(symbols) != 1:
+        return None
+    variable = symbols[0]
+    try:
+        poly = sympy.Poly(residual, variable)
+    except Exception:
+        return None
+    if poly.degree() != 2:
+        return None
+    linear = sympy.simplify(poly.coeff_monomial(variable))
+    if linear.is_integer is not True or linear <= 0:
+        return None
+    return int(linear)
 
 
 def repair_unmatched_parenthesis_letter(latex: str, variables: Sequence[str]) -> Optional[str]:
@@ -1372,6 +1905,12 @@ def contextual_equal_operation_multiplier(previous_latex: Sequence[str]) -> Opti
             text,
         )
         if not match:
+            try:
+                parsed = parse_math(text)
+            except ParseFailure:
+                parsed = None
+            if parsed is not None and parsed.kind == "operation":
+                return None
             continue
         left = "".join(re.findall(r"\d", match.group(1)))
         right = "".join(re.findall(r"\d", match.group(2)))
@@ -1519,6 +2058,91 @@ def repair_from_previous_linear_simplification(
     return variants
 
 
+def repair_from_previous_subtraction_step(
+    latex: str,
+    problem_latex: str,
+    previous_latex: Sequence[str],
+) -> list[str]:
+    text = re.sub(r"\s+", " ", str(latex or "")).strip()
+    if not text or text.count("=") != 1:
+        return []
+    operation_index, operand = latest_subtraction_operation(previous_latex)
+    if operation_index is None or operand is None:
+        return []
+    for previous in reversed((previous_latex or [])[:operation_index]):
+        candidate = subtract_operand_from_linear_equation(previous, operand)
+        if not candidate:
+            continue
+        if compact_latex(candidate) == compact_latex(previous):
+            continue
+        if latex_token_overlap(text, candidate) < 0.38:
+            continue
+        if numeric_repair_has_semantic_support(candidate, problem_latex, previous_latex):
+            return [candidate]
+    return []
+
+
+def latest_subtraction_operation(previous_latex: Sequence[str]) -> tuple[Optional[int], Optional[sympy.Expr]]:
+    for index in range(len(previous_latex or []) - 1, -1, -1):
+        text = re.sub(r"\s+", " ", str(previous_latex[index] or "")).strip()
+        if not text:
+            continue
+        match = re.fullmatch(r"-\s+((?:\d\s*){1,5})\s+-\s+((?:\d\s*){1,5})", text)
+        if not match:
+            try:
+                parsed = parse_math(text)
+            except ParseFailure:
+                parsed = None
+            if parsed is not None and parsed.kind == "operation":
+                return None, None
+            continue
+        left = sympy.Integer("".join(re.findall(r"\d", match.group(1))))
+        right = sympy.Integer("".join(re.findall(r"\d", match.group(2))))
+        if left == right and left > 0:
+            return index, left
+    return None, None
+
+
+def subtract_operand_from_linear_equation(latex: str, operand: sympy.Expr) -> Optional[str]:
+    text = re.sub(r"\s+", " ", str(latex or "")).strip()
+    if text.count("=") != 1:
+        return None
+    try:
+        parsed = parse_math(text)
+    except ParseFailure:
+        return None
+    if parsed.kind != "equation" or parsed.right is None:
+        return None
+    symbols = sorted(parsed.left.free_symbols | parsed.right.free_symbols, key=lambda item: item.name)
+    if len(symbols) != 1:
+        return None
+    variable = symbols[0]
+    try:
+        with sympy_budget(SYMPY_TIMEOUT_SECONDS):
+            left = sympy.expand(parsed.left - operand)
+            right = sympy.expand(parsed.right - operand)
+    except (Exception, SympyBudgetExceeded):
+        return None
+    left_latex = format_linear_side_latex(left, variable)
+    right_latex = format_linear_side_latex(right, variable)
+    if not left_latex or not right_latex:
+        return None
+    return f"{left_latex} = {right_latex}"
+
+
+def format_linear_side_latex(expression: sympy.Expr, variable: sympy.Symbol) -> str:
+    expression = sympy.expand(expression)
+    if expression == 0 or expression.is_zero is True:
+        return "0"
+    coefficient = sympy.simplify(expression.coeff(variable))
+    constant = sympy.simplify(expression.subs(variable, 0))
+    if any(value.free_symbols for value in (coefficient, constant)):
+        return ""
+    if any(not is_finite_real_number(value) for value in (coefficient, constant)):
+        return ""
+    return format_linear_expression_latex(coefficient, variable.name, constant)
+
+
 def looks_like_final_variable_assignment(latex: str) -> bool:
     text = re.sub(r"\s+", " ", str(latex or "")).strip()
     if text.count("=") != 1:
@@ -1553,11 +2177,7 @@ def simplify_linear_equation_latex(latex: str) -> Optional[str]:
         return None
     if any(value.free_symbols for value in (coefficient, constant, right)):
         return None
-    if any(value.is_number is not True for value in (coefficient, constant, right)):
-        return None
-    if any(value.is_finite is False for value in (coefficient, constant, right)):
-        return None
-    if any(value.is_real is False for value in (coefficient, constant, right)):
+    if any(not is_finite_real_number(value) for value in (coefficient, constant, right)):
         return None
     left_latex = format_linear_expression_latex(coefficient, variable.name, constant)
     if not left_latex:
@@ -1569,6 +2189,8 @@ def format_linear_expression_latex(coefficient: sympy.Expr, variable: str, const
     parts: list[str] = []
     coefficient = sympy.simplify(coefficient)
     constant = sympy.simplify(constant)
+    if not is_finite_real_number(coefficient) or not is_finite_real_number(constant):
+        return ""
     if coefficient != 0:
         if coefficient < 0:
             parts.append("-")
@@ -1583,6 +2205,17 @@ def format_linear_expression_latex(coefficient: sympy.Expr, variable: str, const
             parts.append(sign)
             parts.append(sympy_value_to_latex(abs(constant)))
     return " ".join(parts)
+
+
+def is_finite_real_number(value: sympy.Expr) -> bool:
+    value = sympy.simplify(value)
+    if value.is_number is not True:
+        return False
+    if value.has(sympy.zoo, sympy.oo, -sympy.oo, sympy.nan):
+        return False
+    if value.is_finite is False or value.is_real is False:
+        return False
+    return True
 
 
 def distribute_linear_parentheses_latex(latex: str) -> Optional[str]:
@@ -1664,10 +2297,8 @@ def normalize_spaced_number_latex(latex: str) -> str:
 
 
 def latex_token_overlap(a: str, b: str) -> float:
-    left = re.findall(r"\\[A-Za-z]+|[A-Za-z]+|\d+|[+\-*/=()]", str(a or ""))
-    right = re.findall(r"\\[A-Za-z]+|[A-Za-z]+|\d+|[+\-*/=()]", str(b or ""))
-    left = [token.lower() for token in left if token not in {r"\cdots", r"\ldots"}]
-    right = [token.lower() for token in right if token not in {r"\cdots", r"\ldots"}]
+    left = latex_tokens(a)
+    right = latex_tokens(b)
     if not left or not right:
         return 0.0
     remaining = list(right)
@@ -1677,6 +2308,11 @@ def latex_token_overlap(a: str, b: str) -> float:
             remaining.remove(token)
             matched += 1
     return matched / max(1, min(len(left), len(right)))
+
+
+def latex_tokens(latex: str) -> list[str]:
+    tokens = re.findall(r"\\[A-Za-z]+|[A-Za-z]+|\d+|[+\-*/=()]", str(latex or ""))
+    return [token.lower() for token in tokens if token not in {r"\cdots", r"\ldots"}]
 
 
 def compact_latex(latex: str) -> str:
@@ -1727,6 +2363,8 @@ def repair_contextual_symbol_confusions(
         append_variant(repaired_equation)
     for repaired_noise in repair_stray_letter_before_fraction(text, variables):
         append_variant(repaired_noise)
+    for repaired_noise in repair_stray_letter_before_numeric_coefficient(text, variables):
+        append_variant(repaired_noise, require_support=True)
     if "=" not in text:
         return unique_preserving_order(variants)
     for repaired_variable in repair_contextual_noncontext_variables(text, functions, variables):
@@ -1903,6 +2541,11 @@ def derivative_rhs_context_variants(rhs_latex: str, variable_name: str, function
         if token in {variable_name, function_name}:
             continue
         variants.append(re.sub(rf"(?<!\\)\b{re.escape(token)}\b", variable_name, text))
+    variants.append(re.sub(
+        r"(\{\s*)\d+(\s*\^\s*\{\s*2\s*\}\s*\})",
+        rf"\1{variable_name}\2",
+        text,
+    ))
     return unique_preserving_order(variants)
 
 
@@ -1963,6 +2606,21 @@ def repair_stray_letter_before_fraction(latex: str, variables: Sequence[str]) ->
         if candidate != latex:
             variants.append(candidate)
     return variants
+
+
+def repair_stray_letter_before_numeric_coefficient(latex: str, variables: Sequence[str]) -> list[str]:
+    if not variables:
+        return []
+    variable_set = set(variables)
+    variants: list[str] = []
+    for match in re.finditer(r"(?<!\\)\b([A-Za-z])\s+(?=\d+\s+[A-Za-z]\b)", latex):
+        if match.group(1) in variable_set:
+            continue
+        candidate = (latex[:match.start()] + latex[match.end():]).strip()
+        candidate = re.sub(r"\s+", " ", candidate)
+        if candidate != latex:
+            variants.append(candidate)
+    return unique_preserving_order(variants)
 
 
 def repair_contextual_adjacent_fraction_sum(
@@ -2179,6 +2837,13 @@ def previous_numeric_value(previous_latex: Sequence[str]) -> Optional[sympy.Expr
     return None
 
 
+def spaced_signed_latex(value: sympy.Expr) -> str:
+    latex = sympy_value_to_latex(value)
+    if latex.startswith("-") and len(latex) > 1 and latex[1] != " ":
+        return f"- {latex[1:]}"
+    return latex
+
+
 def sympy_value_to_latex(value: sympy.Expr) -> str:
     value = sympy.simplify(value)
     if value.is_Integer:
@@ -2285,6 +2950,16 @@ def repair_malformed_arithmetic_continuation(latex: str) -> Optional[str]:
         candidate = "=" + arithmetic[1:]
     elif arithmetic.startswith("-") and arithmetic.count(")") > arithmetic.count("("):
         candidate = "=(" + arithmetic[1:]
+    elif arithmetic.startswith("=") and arithmetic.count("=") == 2:
+        left, right = arithmetic[1:].split("=", 1)
+        if left and right and re.search(r"[()+\-*/]", left) and re.search(r"[()+\-*/]", right):
+            candidate = f"={left}-{right}"
+    elif arithmetic.startswith("=") and arithmetic.count("=") == 1:
+        match = re.fullmatch(r"=(\([^()]+\))(\([^()]+\))", arithmetic)
+        if match:
+            left, right = match.groups()
+            if re.search(r"[+\-*/]", left) and re.search(r"[+\-*/]", right):
+                candidate = f"={left}-{right}"
 
     if candidate is None:
         return None

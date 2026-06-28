@@ -1,6 +1,11 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getRecognitionApiUrl } from '../recognition/config.js';
 import { recognizeStudentWriting } from '../recognition/studentWritingPipeline.js';
+import {
+  E2E_PROBLEM_SOURCE_ENABLED,
+  TEST_PROBLEM_SOURCE_ENABLED,
+  loadE2EEquationSolvingProblems
+} from '../state/equationProblemSource.js';
 import {
   applyProblemRecognitionError,
   applyProblemRecognitionResult,
@@ -12,10 +17,28 @@ import {
   submitActiveProblem
 } from '../state/problemFlow.js';
 
-export function useProblemFlowController({ moveHomeViewport, engineRef }) {
+export function useProblemFlowController({ moveHomeViewport, engineRef, onRecognitionEvent }) {
   const [problemFlow, setProblemFlow] = useState(() => (
     createInitialProblemFlow(getViewportWidth())
   ));
+
+  useEffect(() => {
+    if (!E2E_PROBLEM_SOURCE_ENABLED && !TEST_PROBLEM_SOURCE_ENABLED) return undefined;
+
+    let didCancel = false;
+    loadE2EEquationSolvingProblems().then((problemDefinitions) => {
+      if (didCancel) return;
+      setProblemFlow(createInitialProblemFlow(getViewportWidth(), problemDefinitions));
+      onRecognitionEvent?.('problem-source-loaded', {
+        problemCount: problemDefinitions.length,
+        firstProblemLatex: problemDefinitions[0]?.latex || null
+      });
+    });
+
+    return () => {
+      didCancel = true;
+    };
+  }, [onRecognitionEvent]);
 
   const modelResponse = useMemo(() => (
     getActiveModelResponse(problemFlow)
@@ -33,32 +56,61 @@ export function useProblemFlowController({ moveHomeViewport, engineRef }) {
     const activeProblem = getActiveProblem(problemFlow);
     const strokes = engineRef?.current?.getStrokes?.() || [];
     const result = submitActiveProblem(problemFlow, getViewportWidth());
+    onRecognitionEvent?.('submit-active-problem', {
+      problemId: activeProblem?.id || null,
+      strokeCount: strokes.length,
+      answerStrokeCount: activeProblem?.answerStrokeIds?.length || 0
+    });
     setProblemFlow(result.flow);
 
     if (result.targetViewport) {
       moveHomeViewport(result.targetViewport, 420);
     }
 
-    if (!activeProblem || activeProblem.answerStrokeIds.length === 0) return;
+    if (!activeProblem || activeProblem.answerStrokeIds.length === 0) {
+      onRecognitionEvent?.('recognition-skipped', {
+        problemId: activeProblem?.id || null,
+        reason: activeProblem ? 'empty-answer' : 'no-active-problem'
+      });
+      return;
+    }
 
+    onRecognitionEvent?.('recognition-start', {
+      problemId: activeProblem.id,
+      strokeCount: strokes.length,
+      answerStrokeCount: activeProblem.answerStrokeIds.length,
+      answerBox: activeProblem.answerBox
+    });
     recognizeStudentWriting({
       strokes,
       answerBox: activeProblem.answerBox,
       problemLatex: activeProblem.latex,
+      problemMetadata: activeProblem.metadata || {},
       previousLatex: previousLatexForSubmission(problemFlow, activeProblem.id),
       apiUrl: getRecognitionApiUrl(),
       detectLineBands: true,
       semanticScoring: true
     }).then((recognitionResult) => {
+      const summary = summarizeRecognitionResult(recognitionResult);
       setProblemFlow((currentFlow) => (
-        applyProblemRecognitionResult(currentFlow, activeProblem.id, summarizeRecognitionResult(recognitionResult))
+        applyProblemRecognitionResult(currentFlow, activeProblem.id, summary)
       ));
+      onRecognitionEvent?.('recognition-complete', {
+        problemId: activeProblem.id,
+        lineCount: summary.lines.length,
+        candidateCount: summary.candidatePredictions.length,
+        latex: summary.latex
+      });
     }).catch((error) => {
       setProblemFlow((currentFlow) => (
         applyProblemRecognitionError(currentFlow, activeProblem.id, error)
       ));
+      onRecognitionEvent?.('recognition-error', {
+        problemId: activeProblem.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
     });
-  }, [engineRef, moveHomeViewport, problemFlow]);
+  }, [engineRef, moveHomeViewport, onRecognitionEvent, problemFlow]);
 
   return {
     problemFlow,

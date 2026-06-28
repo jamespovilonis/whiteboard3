@@ -6,11 +6,20 @@ import {
 } from '../whiteboard/constants.js';
 import { bboxOverlap, padBbox, unionBbox } from '../whiteboard/geometry.js';
 import { getInitialProblemPosition } from '../whiteboard/viewport.js';
-import { TEST_PROBLEMS } from './problemFixtures.js';
 
-export function createInitialProblemFlow(viewportWidth) {
+export function createInitialProblemFlow(viewportWidth, problemDefinitions = []) {
+  const definitions = normalizeProblemDefinitions(problemDefinitions);
+  if (!definitions.length) {
+    return {
+      activeProblemId: null,
+      problemDefinitions: [],
+      problems: [],
+      completedCount: 0
+    };
+  }
+
   const firstProblem = createProblemSession({
-    definition: TEST_PROBLEMS[0],
+    definition: definitions[0],
     index: 0,
     boardPosition: getInitialProblemPosition(INITIAL_VIEWPORT, viewportWidth),
     viewportWidth,
@@ -19,6 +28,7 @@ export function createInitialProblemFlow(viewportWidth) {
 
   return {
     activeProblemId: firstProblem.id,
+    problemDefinitions: definitions,
     problems: [firstProblem],
     completedCount: 0
   };
@@ -30,9 +40,9 @@ export function getActiveProblem(flow) {
 
 export function getActiveModelResponse(flow) {
   return getActiveProblem(flow)?.modelResponse || {
-    before: 'All test problems have been submitted.',
+    before: 'No equation problems are loaded.',
     latex: '\\checkmark',
-    after: 'The next step will be to connect this shell to the response API.'
+    after: 'Start the temporary testing problem source to render catalog problems.'
   };
 }
 
@@ -42,6 +52,7 @@ export function getCompletedRecognitionResults(flow) {
     .map((problem) => ({
       problemId: problem.id,
       problemLatex: problem.latex,
+      problemMetadata: problem.metadata || {},
       recognition: problem.recognition
     }));
 }
@@ -77,6 +88,7 @@ export function submitActiveProblem(flow, viewportWidth) {
   const activeProblem = getActiveProblem(flow);
   if (!activeProblem) return { flow, targetViewport: null };
 
+  const definitions = normalizeProblemDefinitions(flow.problemDefinitions);
   const frozenBottom = getFrozenBottom(activeProblem);
   const completedFlow = updateProblem(flow, activeProblem.id, (problem) => ({
     ...problem,
@@ -90,18 +102,19 @@ export function submitActiveProblem(flow, viewportWidth) {
   }));
 
   const nextIndex = activeProblem.index + 1;
-  if (nextIndex >= TEST_PROBLEMS.length) {
+  if (nextIndex >= definitions.length) {
     return {
       flow: {
         ...completedFlow,
+        problemDefinitions: definitions,
         activeProblemId: null,
-        completedCount: TEST_PROBLEMS.length
+        completedCount: definitions.length
       },
       targetViewport: null
     };
   }
 
-  const nextDefinition = TEST_PROBLEMS[nextIndex];
+  const nextDefinition = definitions[nextIndex];
   const nextPosition = {
     x: activeProblem.boardPosition.x,
     y: frozenBottom + NEXT_PROBLEM_GAP
@@ -118,12 +131,34 @@ export function submitActiveProblem(flow, viewportWidth) {
   return {
     flow: {
       ...completedFlow,
+      problemDefinitions: definitions,
       activeProblemId: nextProblem.id,
       completedCount: nextIndex,
       problems: [...completedFlow.problems, nextProblem]
     },
     targetViewport
   };
+}
+
+export function normalizeProblemDefinitions(problemDefinitions = []) {
+  const validDefinitions = (Array.isArray(problemDefinitions) ? problemDefinitions : [])
+    .filter((definition) => (
+      definition &&
+      (!definition.kind || definition.kind === 'equation-solving') &&
+      typeof definition.id === 'string' &&
+      definition.id.trim() &&
+      typeof definition.latex === 'string' &&
+      definition.latex.trim()
+    ))
+    .map((definition, index) => ({
+      id: definition.id,
+      kind: 'equation-solving',
+      latex: definition.latex,
+      modelResponse: normalizeModelResponse(definition.modelResponse, definition.latex, index),
+      metadata: normalizeProblemMetadata(definition)
+    }));
+
+  return validDefinitions;
 }
 
 export function applyProblemRecognitionResult(flow, problemId, result) {
@@ -165,6 +200,7 @@ function createProblemSession({ definition, index, boardPosition, viewportWidth,
     index,
     status: 'solving',
     latex: definition.latex,
+    metadata: definition.metadata || {},
     modelResponse: definition.modelResponse,
     boardPosition,
     problemBox: createProblemBox(boardPosition, viewportWidth, viewport),
@@ -177,6 +213,39 @@ function createProblemSession({ definition, index, boardPosition, viewportWidth,
       error: null,
       result: null
     }
+  };
+}
+
+function normalizeProblemMetadata(definition) {
+  const {
+    id,
+    kind,
+    latex,
+    modelResponse,
+    metadata,
+    ...rest
+  } = definition;
+
+  return {
+    ...(metadata && typeof metadata === 'object' ? metadata : {}),
+    ...rest
+  };
+}
+
+function normalizeModelResponse(modelResponse, latex, index) {
+  if (
+    modelResponse &&
+    typeof modelResponse.before === 'string' &&
+    typeof modelResponse.latex === 'string' &&
+    typeof modelResponse.after === 'string'
+  ) {
+    return modelResponse;
+  }
+
+  return {
+    before: index === 0 ? 'Solve the equation.' : 'Continue solving the next equation.',
+    latex,
+    after: 'Submit your work when you are ready.'
   };
 }
 

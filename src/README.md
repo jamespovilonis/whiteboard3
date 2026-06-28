@@ -20,7 +20,7 @@ The frontend separates React-owned UI state from plain JavaScript whiteboard mec
 
 ## Problem Flow
 
-Problem state lives in `state/problemFlow.js`; placeholder problem data lives in `state/problemFixtures.js`.
+Problem state lives in `state/problemFlow.js`. Temporary rendered problems are loaded from the testing catalog source when the dev/test problem-source flag is enabled.
 
 The active problem has an invisible catchment box. Whenever the stroke store changes, the active answer box is recomputed from the current strokes. Submitted answer boxes are frozen so advancing to the next problem does not rewrite previous layout decisions.
 

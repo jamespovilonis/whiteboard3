@@ -54,7 +54,7 @@
 
 .problem-print .katex {
   color: #3c3c42;
-  font-size: clamp(28px, 3.2vw, 44px);
+  font-size: clamp(64px, 6.4vw, 92px);
 }
 
 .debug-board-box {

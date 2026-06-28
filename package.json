@@ -7,6 +7,8 @@
     "dev": "vite --host 0.0.0.0 --port 5500",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0 --port 5500",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
     "test:segmentation": "python3 -m unittest testing.test_line_segmentation_pipeline testing.test_latex_semantics && node --test testing/test_recognition_pipeline.mjs",
     "test:segmentation:matrix": "python3 testing/run_segmentation_matrix.py"
   },
@@ -16,5 +18,8 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "vite": "^6.0.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
   }
 }

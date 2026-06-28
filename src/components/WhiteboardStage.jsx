@@ -95,7 +95,12 @@ export default function WhiteboardStage({
   return (
     <div className={`whiteboard-stage tool-${activeTool} ${isPanning ? 'is-panning' : ''}`}>
       <canvas ref={bgCanvasRef} className="whiteboard-canvas whiteboard-bg" aria-hidden="true" />
-      <canvas ref={fgCanvasRef} className="whiteboard-canvas whiteboard-fg" aria-label="Whiteboard drawing surface" />
+      <canvas
+        ref={fgCanvasRef}
+        className="whiteboard-canvas whiteboard-fg"
+        aria-label="Whiteboard drawing surface"
+        data-testid="whiteboard-canvas"
+      />
       <ProblemLayer
         problems={problems}
         viewport={viewport}

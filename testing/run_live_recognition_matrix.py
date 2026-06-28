@@ -10,13 +10,16 @@ only to report whether segmentation and OCR landed on the intended line.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import math
 import re
+import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import urllib.error
@@ -45,6 +48,7 @@ try:
     from .latex_semantics import (
         ParseFailure,
         contextual_variable_names,
+        latex_token_overlap,
         parse_math,
         score_candidate_group,
         sympy_value_to_latex,
@@ -66,7 +70,7 @@ except ImportError:
         parse_line_gaps,
         slug,
     )
-    from latex_semantics import ParseFailure, contextual_variable_names, parse_math, score_candidate_group, sympy_value_to_latex
+    from latex_semantics import ParseFailure, contextual_variable_names, latex_token_overlap, parse_math, score_candidate_group, sympy_value_to_latex
     from synthetic_handwriting import save_board_png
     from synthetic_handwriting import available_ink_styles
 
@@ -86,7 +90,11 @@ DEFAULT_INITIAL_RASTER_HEIGHT = 104
 DEFAULT_INITIAL_RASTER_MIN_HEIGHT = 1
 RETRY_RASTER_HEIGHTS = (88, 104, 72)
 SEMANTIC_RETRY_RASTER_HEIGHTS = (48, 64, 72, 88, 104)
+FRACTION_CHUNK_RASTER_HEIGHTS = (72, 88, 104)
 MAX_COMER_TIMEOUT_SECONDS = 20.0
+MAX_SEMANTIC_RETRY_ATTEMPTS = 2
+MAX_SEMANTIC_RETRY_TIMEOUT_SECONDS = 8.0
+CLIENT_TIMEOUT_GRACE_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -100,6 +108,37 @@ class RenderedFixture:
     json_path: Path
     gap_pattern: str = ""
     line_gaps: Sequence[float] = ()
+
+
+class ClientRequestTimeout(TimeoutError):
+    """Raised when the client-side hard deadline interrupts an HTTP request."""
+
+
+@contextlib.contextmanager
+def client_request_deadline(seconds: float):
+    if (
+        threading.current_thread() is not threading.main_thread()
+        or not hasattr(signal, "setitimer")
+        or seconds <= 0
+    ):
+        yield
+        return
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+
+    def raise_timeout(_signum, _frame):
+        raise ClientRequestTimeout("client-side hard request timeout")
+
+    signal.signal(signal.SIGALRM, raise_timeout)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
 
 
 def post_image(url: str, image_path: Path, timeout_seconds: float) -> dict[str, Any]:
@@ -122,11 +161,14 @@ def post_image(url: str, image_path: Path, timeout_seconds: float) -> dict[str, 
         method="POST",
     )
     started = time.monotonic()
+    request_timeout = max(0.1, float(timeout_seconds))
+    hard_deadline = request_timeout + CLIENT_TIMEOUT_GRACE_SECONDS
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds + 5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            payload["_httpStatus"] = response.status
-            return payload
+        with client_request_deadline(hard_deadline):
+            with urllib.request.urlopen(request, timeout=hard_deadline) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                payload["_httpStatus"] = response.status
+                return payload
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         try:
@@ -135,7 +177,7 @@ def post_image(url: str, image_path: Path, timeout_seconds: float) -> dict[str, 
             payload = {"detail": body}
         payload["_httpStatus"] = exc.code
         return payload
-    except (TimeoutError, socket.timeout) as exc:
+    except (ClientRequestTimeout, TimeoutError, socket.timeout) as exc:
         return {
             "_httpStatus": 408,
             "timedOut": True,
@@ -184,7 +226,8 @@ def recognize_crop_with_retries(
         return initial
 
     stroke_chunk_fallback_attempted = False
-    early_stroke_chunked = recognize_stroke_chunked_candidate(
+    failed_stroke_chunked: Optional[dict[str, Any]] = None
+    early_stroke_chunked = recognize_stroke_chunked_candidate_with_height_retries(
         recognize_url,
         fixture,
         candidate,
@@ -193,6 +236,8 @@ def recognize_crop_with_retries(
     )
     if early_stroke_chunked is not None:
         stroke_chunk_fallback_attempted = True
+        if payload_needs_retry(early_stroke_chunked):
+            failed_stroke_chunked = early_stroke_chunked
     if early_stroke_chunked and not payload_needs_retry(early_stroke_chunked):
         early_stroke_chunked["chunkFallbackBeforeHeightRetries"] = True
         return early_stroke_chunked
@@ -237,7 +282,7 @@ def recognize_crop_with_retries(
     if payload_needs_retry(merged):
         stroke_chunked = None
         if not stroke_chunk_fallback_attempted:
-            stroke_chunked = recognize_stroke_chunked_candidate(
+            stroke_chunked = recognize_stroke_chunked_candidate_with_height_retries(
                 recognize_url,
                 fixture,
                 candidate,
@@ -246,6 +291,8 @@ def recognize_crop_with_retries(
             )
         if stroke_chunked and not payload_needs_retry(stroke_chunked):
             return stroke_chunked
+        if stroke_chunked:
+            failed_stroke_chunked = stroke_chunked
         chunked = recognize_chunked_crop(
             recognize_url,
             crop_path,
@@ -254,6 +301,14 @@ def recognize_crop_with_retries(
         )
         if chunked and not payload_needs_retry(chunked):
             return chunked
+    if failed_stroke_chunked and payload_needs_retry(merged):
+        merged = {
+            **merged,
+            "chunkFallback": True,
+            "chunkFallbackSource": failed_stroke_chunked.get("chunkFallbackSource", "stroke"),
+            "chunkAttempts": failed_stroke_chunked.get("chunkAttempts") or [],
+            "failedChunkFallback": True,
+        }
     return merged
 
 
@@ -282,21 +337,36 @@ def recognize_crop_with_semantic_retries(
             skip_heights.add(int(height))
 
     attempts = [initial_payload]
+    retry_timeout = semantic_retry_timeout_seconds(timeout_seconds)
+    retry_url = url_with_timeout(recognize_url, retry_timeout)
+    timeout_attempts = 0
+    retry_count = 0
     for height in retry_heights:
         if int(height) in skip_heights:
             continue
+        if retry_count >= MAX_SEMANTIC_RETRY_ATTEMPTS:
+            break
         variant_path = normalized_crop_variant(crop_path, int(height))
-        payload = post_image(recognize_url, variant_path, timeout_seconds)
+        payload = post_image(retry_url, variant_path, retry_timeout)
         payload["_retryTargetPixelHeight"] = int(height)
         payload["_retryCrop"] = str(variant_path)
+        payload["_semanticRetryTimeoutSeconds"] = retry_timeout
         attempts.append(payload)
+        retry_count += 1
+        if payload.get("timedOut"):
+            timeout_attempts += 1
+        else:
+            timeout_attempts = 0
+        if timeout_attempts >= 1:
+            break
 
     if len(attempts) == 1:
         return initial_payload
     merged = merge_recognition_attempts(attempts)
     merged["semanticRetryUsed"] = True
-    if payload_needs_retry(merged):
-        stroke_chunked = recognize_stroke_chunked_candidate(
+    timeout_only_semantic_retries = all(bool(attempt.get("timedOut")) for attempt in attempts[1:])
+    if payload_needs_retry(merged) and not timeout_only_semantic_retries:
+        stroke_chunked = recognize_stroke_chunked_candidate_with_height_retries(
             recognize_url,
             fixture,
             candidate,
@@ -318,6 +388,10 @@ def recognize_crop_with_semantic_retries(
             chunked["chunkFallbackAfterSemanticRetries"] = True
             return chunked
     return merged
+
+
+def semantic_retry_timeout_seconds(timeout_seconds: float) -> float:
+    return max(0.1, min(float(timeout_seconds), MAX_SEMANTIC_RETRY_TIMEOUT_SECONDS))
 
 
 def recognize_with_extended_timeout(
@@ -487,6 +561,19 @@ def recognize_stroke_chunked_candidate(
             })
             continue
 
+        if bbox_width(chunk.get("bbox") or {}) > 220 and split_fraction_stroke_chunk(chunk):
+            fraction_latex, fraction_attempt = recognize_fraction_stroke_chunk(
+                recognize_url,
+                chunk,
+                timeout_seconds,
+                target_height=target_height,
+            )
+            if fraction_attempt:
+                attempts.append(fraction_attempt)
+            if fraction_latex:
+                parts.append(fraction_latex)
+                continue
+
         chunk_path = LIVE_RESULTS / "stroke_chunks" / (
             f"{safe_filename_slug(str(candidate.get('candidateId') or 'candidate'))}_chunk_{index + 1}.png"
         )
@@ -541,6 +628,43 @@ def recognize_stroke_chunked_candidate(
         "top": {"latex": latex, "score": 0, "source": "stroke-chunk-fallback"},
         "elapsedSeconds": round(sum(float(item.get("elapsedSeconds") or 0) for item in attempts), 3),
     }
+
+
+def recognize_stroke_chunked_candidate_with_height_retries(
+    recognize_url: str,
+    fixture: Optional[RenderedFixture],
+    candidate: Optional[dict[str, Any]],
+    timeout_seconds: float,
+    *,
+    target_height: int,
+    min_width: float = 460,
+) -> Optional[dict[str, Any]]:
+    fallback_attempt: Optional[dict[str, Any]] = None
+    all_attempts: list[dict[str, Any]] = []
+    for height in chunk_raster_heights(target_height):
+        payload = recognize_stroke_chunked_candidate(
+            recognize_url,
+            fixture,
+            candidate,
+            timeout_seconds,
+            target_height=height,
+            min_width=min_width,
+        )
+        if payload is None:
+            return None
+        for attempt in payload.get("chunkAttempts") or []:
+            if attempt.get("targetPixelHeight") is None and not attempt.get("literalLatex"):
+                attempt = {**attempt, "targetPixelHeight": height}
+            all_attempts.append(attempt)
+        if not payload_needs_retry(payload):
+            if all_attempts:
+                payload = {**payload, "chunkAttempts": all_attempts}
+            return payload
+        fallback_attempt = payload
+
+    if fallback_attempt and all_attempts:
+        fallback_attempt = {**fallback_attempt, "chunkAttempts": all_attempts}
+    return fallback_attempt
 
 
 def split_candidate_into_stroke_chunks(
@@ -783,23 +907,16 @@ def recognize_fraction_stroke_chunk(
     latex_parts: dict[str, str] = {}
     for role in ("numerator", "denominator"):
         part = split[role]
-        part_path = LIVE_RESULTS / "stroke_chunks" / (
-            f"{safe_filename_slug(str(chunk.get('strokeIds') or ['fraction']))}_{role}.png"
+        latex, part_attempts = recognize_fraction_part_chunk(
+            recognize_url,
+            chunk,
+            part,
+            role,
+            timeout_seconds,
+            target_height=target_height,
         )
-        crop_stroke_chunk(part, part_path)
-        variant_path = normalized_crop_variant(part_path, target_height)
-        payload = post_image(recognize_url, variant_path, timeout_seconds)
-        latex = choose_chunk_latex(payload)
-        attempt["parts"].append({
-            "role": role,
-            "strokeIds": part.get("strokeIds") or [],
-            "crop": str(variant_path),
-            "httpStatus": payload.get("_httpStatus", 200),
-            "timedOut": bool(payload.get("timedOut")),
-            "elapsedSeconds": payload.get("elapsedSeconds"),
-            "topLatex": latex,
-        })
-        if not latex or payload.get("timedOut") or payload.get("_httpStatus", 200) >= 400:
+        attempt["parts"].extend(part_attempts)
+        if not latex:
             return "", attempt
         latex_parts[role] = latex
 
@@ -808,18 +925,73 @@ def recognize_fraction_stroke_chunk(
     return latex, attempt
 
 
+def recognize_fraction_part_chunk(
+    recognize_url: str,
+    parent_chunk: dict[str, Any],
+    part: dict[str, Any],
+    role: str,
+    timeout_seconds: float,
+    *,
+    target_height: int,
+) -> tuple[str, list[dict[str, Any]]]:
+    part_path = LIVE_RESULTS / "stroke_chunks" / (
+        f"{safe_filename_slug(str(parent_chunk.get('strokeIds') or ['fraction']))}_{role}.png"
+    )
+    crop_stroke_chunk(part, part_path)
+    attempts: list[dict[str, Any]] = []
+    for height in chunk_raster_heights(target_height):
+        variant_path = normalized_crop_variant(part_path, height)
+        payload = post_image(recognize_url, variant_path, timeout_seconds)
+        latex = choose_chunk_latex(payload)
+        attempts.append({
+            "role": role,
+            "strokeIds": part.get("strokeIds") or [],
+            "crop": str(variant_path),
+            "targetPixelHeight": height,
+            "httpStatus": payload.get("_httpStatus", 200),
+            "timedOut": bool(payload.get("timedOut")),
+            "elapsedSeconds": payload.get("elapsedSeconds"),
+            "topLatex": latex,
+        })
+        if latex and not payload.get("timedOut") and payload.get("_httpStatus", 200) < 400:
+            return latex, attempts
+    return "", attempts
+
+
+def chunk_raster_heights(target_height: int) -> list[int]:
+    heights: list[int] = []
+    for height in (*FRACTION_CHUNK_RASTER_HEIGHTS, target_height):
+        try:
+            value = int(height)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in heights:
+            heights.append(value)
+    return heights
+
+
 def split_fraction_stroke_chunk(chunk: dict[str, Any]) -> Optional[dict[str, Any]]:
     strokes = [stroke for stroke in chunk.get("strokes") or [] if stroke.get("canvasBbox")]
     if len(strokes) < 3:
         return None
     bbox = chunk.get("bbox") or bbox_for_strokes(strokes)
-    bars = [
-        stroke for stroke in strokes
+    bar_splits = [
+        split for stroke in strokes
         if stroke_looks_like_fraction_bar(stroke.get("canvasBbox") or {}, bbox)
+        for split in [fraction_bar_split(stroke, strokes)]
+        if split is not None and split["score"] >= 0.16
     ]
-    if not bars:
+    if not bar_splits:
         return None
-    bar = max(bars, key=lambda stroke: bbox_width(stroke.get("canvasBbox") or {}))
+    best = max(bar_splits, key=lambda split: split["score"])
+    return {
+        "bar": best["bar"],
+        "numerator": make_stroke_chunk(best["numerator"]),
+        "denominator": make_stroke_chunk(best["denominator"]),
+    }
+
+
+def fraction_bar_split(bar: dict[str, Any], strokes: Sequence[dict[str, Any]]) -> Optional[dict[str, Any]]:
     bar_box = bar.get("canvasBbox") or {}
     bar_mid = (float(bar_box.get("yMin", 0)) + float(bar_box.get("yMax", 0))) / 2
     numerator = [
@@ -832,10 +1004,17 @@ def split_fraction_stroke_chunk(chunk: dict[str, Any]) -> Optional[dict[str, Any
     ]
     if not numerator or not denominator:
         return None
+    bar_width = max(1.0, bbox_width(bar_box))
+    numerator_width = bbox_width(bbox_for_strokes(numerator))
+    denominator_width = bbox_width(bbox_for_strokes(denominator))
+    width_balance = min(numerator_width, denominator_width) / bar_width
+    count_balance = min(len(numerator), len(denominator)) / max(len(numerator), len(denominator))
+    score = width_balance + 0.55 * count_balance
     return {
         "bar": bar,
-        "numerator": make_stroke_chunk(numerator),
-        "denominator": make_stroke_chunk(denominator),
+        "numerator": numerator,
+        "denominator": denominator,
+        "score": score,
     }
 
 
@@ -843,11 +1022,16 @@ def stroke_looks_like_fraction_bar(box: dict[str, Any], parent_box: dict[str, An
     width = bbox_width(box)
     height = bbox_height(box)
     parent_width = max(1.0, bbox_width(parent_box))
+    parent_height = max(1.0, bbox_height(parent_box))
     if width < max(18.0, parent_width * 0.45):
         return False
-    if height > 18 or width < height * 3.5:
-        return False
-    return True
+    if height <= 18 and width >= height * 3.5:
+        return True
+    if width >= parent_width * 0.65 and height <= parent_height * 0.4 and width >= height * 5:
+        return True
+    if width >= parent_width * 0.7 and height <= parent_height * 0.65 and width >= height * 4.5:
+        return True
+    return False
 
 
 def stroke_is_horizontal_bar_like(box: dict[str, Any]) -> bool:
@@ -1258,6 +1442,7 @@ def merge_recognition_attempts(attempts: Sequence[dict[str, Any]]) -> dict[str, 
                 "targetPixelHeight": attempt.get("_retryTargetPixelHeight"),
                 "crop": attempt.get("_retryCrop"),
                 "extendedTimeoutSeconds": attempt.get("_extendedTimeoutSeconds"),
+                "semanticRetryTimeoutSeconds": attempt.get("_semanticRetryTimeoutSeconds"),
                 "httpStatus": attempt.get("_httpStatus", 200),
                 "timedOut": bool(attempt.get("timedOut")),
                 "elapsedSeconds": attempt.get("elapsedSeconds"),
@@ -1553,7 +1738,12 @@ def recognize_selected_lines(
             semantic_retry_used = True
         semantic_latex = str(semantic.get("bestLatex") or "")
         trusted_latex = trusted_semantic_latex(top_latex, semantic)
-        operation_repair = repair_standalone_operation_latex(trusted_latex, semantic)
+        operation_repair = repair_standalone_operation_latex(
+            trusted_latex,
+            semantic,
+            fallback_latex=top_latex,
+            problem_latex=problem_latex,
+        )
         contextual_operation_repair = ""
         operation_inference = ""
         if operation_repair:
@@ -1965,7 +2155,12 @@ def refine_selected_alternative_record(
 
     semantic_latex = str(semantic.get("bestLatex") or "")
     trusted_latex = trusted_semantic_latex(top_latex, semantic)
-    operation_repair = repair_standalone_operation_latex(trusted_latex, semantic)
+    operation_repair = repair_standalone_operation_latex(
+        trusted_latex,
+        semantic,
+        fallback_latex=top_latex,
+        problem_latex=problem_latex,
+    )
     contextual_operation_repair = ""
     if operation_repair:
         semantic_latex = operation_repair
@@ -2020,6 +2215,8 @@ def trusted_semantic_latex(current_latex: str, semantic: dict[str, Any]) -> str:
         return best_latex
     if latex_kind(current) == "operation" and latex_kind(best_latex) != "operation":
         return current
+    if latex_kind(best_latex) == "operation" and latex_kind(current) != "operation" and semantic.get("sound") is True:
+        return best_latex
     current_score = semantic_score_for_latex(semantic, current)
     if (
         current_score and
@@ -2027,7 +2224,14 @@ def trusted_semantic_latex(current_latex: str, semantic: dict[str, Any]) -> str:
         (current_score.get("equivalentToProblem") or current_score.get("equivalentToPrevious"))
     ):
         return current
+    best_score = semantic_score_for_latex(semantic, best_latex)
+    if semantic_best_is_problem_supported_numeric_repair(best_score):
+        return best_latex
+    if semantic_previous_best_fights_stronger_visual_current(current, best_latex, semantic, current_score):
+        return current
     if semantic.get("equivalentToProblem") or semantic.get("equivalentToPrevious"):
+        return best_latex
+    if best_score and best_score.get("detail", {}).get("solutionSupportedByProblem"):
         return best_latex
     try:
         if float(semantic.get("semanticScore", -1000)) >= 3:
@@ -2041,6 +2245,57 @@ def trusted_semantic_latex(current_latex: str, semantic: dict[str, Any]) -> str:
     if should_trust_contextual_semantic_best(current, best_latex, semantic, current_score):
         return best_latex
     return current
+
+
+def semantic_best_is_problem_supported_numeric_repair(best_score: Optional[dict[str, Any]]) -> bool:
+    repair = (best_score or {}).get("detail", {}).get("repair")
+    return (
+        bool(best_score)
+        and best_score.get("sound") is True
+        and best_score.get("detail", {}).get("solutionSupportedByProblem") is True
+        and repair in {
+            "contextual_latex_numeric_equivalence",
+            "contextual_quadratic_formula_coefficient",
+        }
+    )
+
+
+def semantic_previous_best_fights_stronger_visual_current(
+    current_latex: str,
+    best_latex: str,
+    semantic: dict[str, Any],
+    current_score: Optional[dict[str, Any]],
+) -> bool:
+    if semantic.get("equivalentToProblem") or not semantic.get("equivalentToPrevious"):
+        return False
+    if not current_score or current_score.get("sound") is not True:
+        return False
+    best_score = semantic_score_for_latex(semantic, best_latex)
+    if not best_score or best_score.get("sound") is not True:
+        return False
+    if not best_score.get("equivalentToPrevious") or best_score.get("equivalentToProblem"):
+        return False
+    if current_score.get("equivalentToProblem") or current_score.get("equivalentToPrevious"):
+        return False
+    current_model = safe_float(current_score.get("detail", {}).get("modelScore"), None)
+    best_model = safe_float(best_score.get("detail", {}).get("modelScore"), None)
+    if current_model is None or best_model is None or current_model < best_model + 0.5:
+        return False
+    if latex_kind(current_latex) != latex_kind(best_latex):
+        return False
+    if current_has_derivative_prime(best_latex=current_latex, best_latex_without_prime=best_latex):
+        return True
+    return latex_token_overlap(current_latex, best_latex) < 0.8
+
+
+def current_has_derivative_prime(best_latex: str, best_latex_without_prime: str) -> bool:
+    current = str(best_latex or "")
+    candidate = str(best_latex_without_prime or "")
+    return (
+        r"\prime" in current and
+        r"\prime" not in candidate and
+        re.search(r"\^\s*\{\s*\\prime\s*\}", current) is not None
+    )
 
 
 def should_trust_contextual_semantic_best(
@@ -2085,7 +2340,13 @@ def latex_kind(latex: str) -> str:
         return ""
 
 
-def repair_standalone_operation_latex(latex: str, semantic: dict[str, Any]) -> str:
+def repair_standalone_operation_latex(
+    latex: str,
+    semantic: dict[str, Any],
+    *,
+    fallback_latex: str = "",
+    problem_latex: str = "",
+) -> str:
     if semantic.get("equivalentToProblem") or semantic.get("equivalentToPrevious"):
         return ""
     try:
@@ -2094,6 +2355,24 @@ def repair_standalone_operation_latex(latex: str, semantic: dict[str, Any]) -> s
     except (TypeError, ValueError):
         pass
 
+    latex_values = unique_strings([fallback_latex, latex])
+    for candidate_latex in latex_values:
+        repaired = repair_standalone_operation_latex_value(candidate_latex)
+        if repaired and not re.fullmatch(r"\\times\s+0\s+\\times\s+0", repaired):
+            return repaired
+    multiplier = contextual_problem_denominator_multiplier(problem_latex)
+    if multiplier:
+        for candidate_latex in latex_values:
+            if looks_like_malformed_equal_multiplier_operation(candidate_latex):
+                return rf"\times {multiplier} \times {multiplier}"
+    for candidate_latex in latex_values:
+        repaired = repair_standalone_operation_latex_value(candidate_latex)
+        if repaired:
+            return repaired
+    return ""
+
+
+def repair_standalone_operation_latex_value(latex: str) -> str:
     normalized = re.sub(r"\s+", " ", str(latex or "")).strip()
     if not normalized or re.search(r"[=<>]", normalized):
         return ""
@@ -2170,16 +2449,68 @@ def repair_operation_annotation_from_previous(latex: str, previous_latex: Sequen
         return ""
 
     normalized = re.sub(r"\s+", " ", str(latex or "")).strip()
-    if not normalized or re.search(r"[=<>]", normalized):
+    if not normalized or re.search(r"[<>]", normalized):
         return ""
-    match = re.fullmatch(r"-\s+((?:\d\s*){1,5})\s+-\s+((?:\d\s*){1,5})", normalized)
+    match = re.fullmatch(r"-\s+([A-Za-z0-9\s]{1,12})\s*(?:-|=)\s*([A-Za-z0-9\s]{1,12})", normalized)
     if not match:
         return ""
-    left = "".join(re.findall(r"\d", match.group(1)))
-    right = "".join(re.findall(r"\d", match.group(2)))
-    if not left or left != right or left == operand:
+    left = operation_operand_digits(match.group(1), operand)
+    right = operation_operand_digits(match.group(2), operand)
+    if not left or not right:
+        return ""
+    left_raw = "".join(re.findall(r"\d", match.group(1)))
+    right_raw = "".join(re.findall(r"\d", match.group(2)))
+    if left_raw == operand and right_raw == operand and "-" in normalized:
+        return ""
+    if left != right and right != operand:
         return ""
     return f"- {operand} - {operand}"
+
+
+def operation_operand_digits(text: str, contextual_operand: str = "") -> str:
+    raw_digits = "".join(re.findall(r"\d", text))
+    if raw_digits == contextual_operand:
+        return raw_digits
+    repaired = re.sub(r"[xXlI]", "1", str(text or ""))
+    repaired = re.sub(r"[oO]", "0", repaired)
+    repaired_digits = "".join(re.findall(r"\d", repaired))
+    if contextual_operand and repaired_digits == contextual_operand:
+        return repaired_digits
+    return raw_digits
+
+
+def contextual_problem_denominator_multiplier(problem_latex: str) -> int:
+    denominators = [
+        int("".join(re.findall(r"\d", denominator)))
+        for denominator in re.findall(
+            r"\\frac\s*\{\s*[^{}]+\s*\}\s*\{\s*((?:\d\s*){1,5})\s*\}",
+            str(problem_latex or ""),
+        )
+        if "".join(re.findall(r"\d", denominator))
+    ]
+    if len(denominators) < 2:
+        return 0
+    multiplier = 1
+    for denominator in denominators:
+        if denominator <= 0:
+            return 0
+        multiplier = math.lcm(multiplier, denominator)
+    return multiplier if multiplier > 1 else 0
+
+
+def looks_like_malformed_equal_multiplier_operation(latex: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(latex or "")).strip()
+    if not normalized or re.search(r"[=<>]", normalized):
+        return False
+    if re.match(r"^[+\-/]", normalized):
+        return False
+    if not re.search(r"\\(?:times|cdot|div)\b|(?:^|\s)[xX](?:\s|_|$)", normalized):
+        return False
+    if re.search(r"\\(?:frac|sqrt|log|ln|int|sum|prod)\b", normalized):
+        return False
+    without_commands = re.sub(r"\\(?:times|cdot|div|pm)\b", "", normalized)
+    letters = re.findall(r"[A-Za-z]", without_commands)
+    return bool(letters) and all(letter.lower() in {"x", "n", "o", "l"} for letter in letters)
 
 
 def candidate_looks_like_subtraction_annotation(candidate: dict[str, Any]) -> bool:
@@ -2225,12 +2556,13 @@ def additive_constant_to_remove(previous_latex: Sequence[str]) -> str:
         if len(symbols) != 1:
             continue
         variable = symbols[0]
-        if parsed.right.free_symbols:
-            continue
-        constant = parsed.left.subs(variable, 0)
-        if constant == 0 or constant.is_number is not True or constant.is_positive is not True:
-            continue
-        return sympy_value_to_latex(constant)
+        for side in (parsed.left, parsed.right):
+            if variable not in side.free_symbols:
+                continue
+            constant = side.subs(variable, 0)
+            if constant == 0 or constant.is_number is not True or constant.is_positive is not True:
+                continue
+            return sympy_value_to_latex(constant)
     return ""
 
 
@@ -2459,7 +2791,33 @@ def record_latex_for_context(record: dict[str, Any]) -> str:
 def should_replace_with_contextual_latex(record: dict[str, Any], contextual: dict[str, Any]) -> bool:
     current = str(record.get("acceptedLatex") or record.get("semanticBestLatex") or record.get("topLatex") or "")
     replacement = trusted_semantic_latex(current, contextual)
-    return bool(replacement and replacement != current)
+    if not replacement or replacement == current:
+        return False
+    if contextual_replacement_fights_visible_row(record, replacement, contextual):
+        return False
+    return True
+
+
+def contextual_replacement_fights_visible_row(
+    record: dict[str, Any],
+    replacement: str,
+    contextual: dict[str, Any],
+) -> bool:
+    best_score = semantic_score_for_latex(contextual, replacement)
+    repair = (best_score or {}).get("detail", {}).get("repair")
+    if repair not in {"contextual_linear_simplification", "contextual_subtraction_step"}:
+        return False
+    visible = str(record.get("topLatex") or record.get("acceptedLatex") or "").strip()
+    if not visible:
+        return False
+    current = str(record.get("acceptedLatex") or record.get("semanticBestLatex") or visible).strip()
+    current_overlap = latex_token_overlap(visible, current)
+    replacement_overlap = latex_token_overlap(visible, replacement)
+    if current_overlap >= replacement_overlap + 0.18:
+        return True
+    visible_tokens = len(re.findall(r"\\[A-Za-z]+|[A-Za-z]+|\d+|[+\-*/=()]", visible))
+    replacement_tokens = len(re.findall(r"\\[A-Za-z]+|[A-Za-z]+|\d+|[+\-*/=()]", replacement))
+    return visible_tokens >= replacement_tokens + 3 and current_overlap >= replacement_overlap
 
 
 def record_box(record: dict[str, Any]) -> dict[str, float]:

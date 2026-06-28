@@ -82,6 +82,8 @@ class LatexSemanticsTests(unittest.TestCase):
     def test_parses_integral_and_leading_equals_continuation_rows(self):
         integral = parse_math(r"\int _ { 0 } ^ { 2 } ( 3 x ^ { 2 } + 1 ) d x")
         self.assertEqual(integral.kind, "expression")
+        integral_with_limits = parse_math(r"\int \limits _ { 1 } ^ { 3 } 2 x d x")
+        self.assertEqual(integral_with_limits.kind, "expression")
         continuation = parse_math(r"= ( 8 + 2 ) - ( 0 + 0 )")
         self.assertEqual(continuation.kind, "expression")
 
@@ -140,6 +142,141 @@ class LatexSemanticsTests(unittest.TestCase):
         self.assertTrue(scored[0].sound)
         unsound = next(item for item in scored if item.latex == r"x = \frac { - x + x } { 0 }")
         self.assertFalse(unsound.sound)
+
+    def test_repairs_quadratic_formula_coefficient_from_problem_context(self):
+        scored = score_ocr_predictions(
+            [
+                {
+                    "latex": r"x = \frac { - 1 + \sqrt { 1 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }",
+                    "score": -0.5,
+                },
+            ],
+            problem_latex=r"x ^ { 2 } + 4 x - 5 = 0",
+            previous_latex=[],
+        )
+
+        self.assertEqual(
+            scored[0].latex,
+            r"x = \frac { - 4 + \sqrt { 4 ^ { 2 } - 4 ( - 5 ) } } { 2 }",
+        )
+        self.assertEqual(scored[0].detail["repair"], "contextual_quadratic_formula_coefficient")
+
+    def test_repairs_simplified_quadratic_formula_numerator_from_context(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"x = \frac { - 1 + 6 } { 2 }", "score": -0.5},
+            ],
+            problem_latex=r"x ^ { 2 } + 4 x - 5 = 0",
+            previous_latex=[
+                r"x = \frac { - 4 + \sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }",
+            ],
+        )
+
+        self.assertEqual(scored[0].latex, r"x = \frac { - 4 + 6 } { 2 }")
+        self.assertEqual(scored[0].detail["repair"], "contextual_quadratic_formula_coefficient")
+
+    def test_quadratic_formula_numerator_repair_preserves_visible_arithmetic(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"x = \frac { - 1 + 6 } { 2 }", "score": -0.0255},
+                {"latex": r"x = \frac { - a + 6 } { 2 }", "score": -0.6164},
+            ],
+            problem_latex=r"x ^ { 2 } + 4 x - 5 = 0",
+            previous_latex=[
+                r"x = \frac { - 4 + \sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }",
+            ],
+        )
+
+        self.assertEqual(scored[0].latex, r"x = \frac { - 4 + 6 } { 2 }")
+        self.assertEqual(scored[0].detail["repair"], "contextual_quadratic_formula_coefficient")
+        self.assertNotEqual(scored[0].latex, r"x = \frac { 2 } { 2 }")
+
+    def test_repairs_simplified_quadratic_formula_numerator_without_previous_formula(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"x = \frac { - 1 + 6 } { 2 }", "score": -0.5},
+            ],
+            problem_latex=r"x ^ { 2 } + 4 x - 5 = 0",
+            previous_latex=[],
+        )
+
+        self.assertEqual(scored[0].latex, r"x = \frac { - 4 + 6 } { 2 }")
+        self.assertEqual(scored[0].detail["repair"], "contextual_quadratic_formula_coefficient")
+
+    def test_recent_subtraction_annotation_blocks_stale_denominator_clear_repair(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"3 x = 2 0", "score": -0.06},
+                {"latex": r"3 x = 1 0", "score": -1.21},
+            ],
+            problem_latex=r"\frac { x } { 2 } + \frac { 1 } { 3 } = 2",
+            previous_latex=[
+                r"\times 6 \times 6",
+                r"3 x + 2 = 1 2",
+                r"- 2 - 2",
+            ],
+        )
+
+        self.assertEqual(scored[0].latex, r"3 x = 10")
+        self.assertNotEqual(scored[0].detail.get("repair"), "contextual_denominator_clear")
+
+    def test_repairs_malformed_quadratic_formula_sqrt_fraction_boundary(self):
+        scored = score_ocr_predictions(
+            [
+                {
+                    "latex": r"x = \frac { - 1 + \sqrt { 4 ^ { 2 } - ( 1 ) ( - 5 ) } { 2 ( 1 ) }",
+                    "score": -0.5,
+                },
+            ],
+            problem_latex=r"x ^ { 2 } + 4 x - 5 = 0",
+            previous_latex=[],
+        )
+
+        self.assertEqual(
+            scored[0].latex,
+            r"x = \frac { - 4 + \sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }",
+        )
+        self.assertTrue(scored[0].sound)
+        self.assertEqual(scored[0].detail["repair"], "contextual_quadratic_formula_coefficient")
+
+    def test_repairs_malformed_quadratic_formula_letter_and_multiplier_confusions(self):
+        scored = score_ocr_predictions(
+            [
+                {
+                    "latex": r"x = \frac { - a + \sqrt { 4 ^ { 2 } - 1 ( 1 ) ( - 5 ) } { 2 ( 1 ) }",
+                    "score": -0.5,
+                },
+            ],
+            problem_latex=r"x ^ { 2 } + 4 x - 5 = 0",
+            previous_latex=[],
+        )
+
+        self.assertEqual(
+            scored[0].latex,
+            r"x = \frac { - 4 + \sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }",
+        )
+        self.assertTrue(scored[0].sound)
+        self.assertEqual(scored[0].detail["repair"], "contextual_quadratic_formula_coefficient")
+
+    def test_repairs_badly_malformed_quadratic_formula_from_problem_coefficients(self):
+        scored = score_ocr_predictions(
+            [
+                {
+                    "latex": r"x = \frac { 1 + \sqrt { 4 ^ { 2 } - 1 ( 1 ) ( - 5 } } { 2 ( 1 ) } - 1",
+                    "score": 0,
+                },
+            ],
+            problem_latex=r"x ^ { 2 } + 4 x - 5 = 0",
+            previous_latex=[],
+        )
+
+        self.assertEqual(
+            "".join(scored[0].latex.split()),
+            "".join(r"x = \frac { - 4 + \sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }".split()),
+        )
+        self.assertTrue(scored[0].sound)
+        self.assertTrue(scored[0].detail["solutionSupportedByProblem"])
+        self.assertEqual(scored[0].detail["repair"], "contextual_quadratic_formula_coefficient")
 
     def test_scores_logarithmic_top_five_against_previous_line(self):
         predictions = [
@@ -272,6 +409,36 @@ class LatexSemanticsTests(unittest.TestCase):
         self.assertEqual(scored[0].detail["repair"], "malformed_arithmetic_continuation")
         self.assertNotIn(r"0 + 01", [item.latex for item in scored])
 
+    def test_repairs_second_equals_as_minus_in_arithmetic_continuation(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"= ( 2 + 2 ) = ( o + o )", "score": 0},
+            ],
+            problem_latex=r"\int _ { 0 } ^ { 2 } ( x + 1 ) d x",
+            previous_latex=[
+                r"= [ \frac { x ^ { 2 } } { 2 } + x ] _ { 0 } ^ { 2 }",
+            ],
+        )
+
+        self.assertEqual(scored[0].latex, r"= ( 2 + 2 ) - ( 0 + 0 )")
+        self.assertTrue(scored[0].equivalent_to_previous)
+        self.assertEqual(scored[0].detail["repair"], "malformed_arithmetic_continuation")
+
+    def test_repairs_adjacent_parenthesized_arithmetic_as_subtraction_continuation(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"= ( 8 + 2 ) ( o + o )", "score": 0},
+            ],
+            problem_latex=r"\int _ { 0 } ^ { 2 } ( 3 x ^ { 2 } + 1 ) d x",
+            previous_latex=[
+                r"= [ x ^ { 3 } + x ] _ { 0 } ^ { 2 }",
+            ],
+        )
+
+        self.assertEqual(scored[0].latex, r"= ( 8 + 2 ) - ( 0 + 0 )")
+        self.assertTrue(scored[0].equivalent_to_previous)
+        self.assertEqual(scored[0].detail["repair"], "malformed_arithmetic_continuation")
+
     def test_malformed_arithmetic_repair_does_not_rewrite_variable_algebra(self):
         scored = score_ocr_predictions(
             [
@@ -297,6 +464,32 @@ class LatexSemanticsTests(unittest.TestCase):
         self.assertEqual(scored[0].latex, r"= 4")
         self.assertTrue(scored[0].equivalent_to_previous)
         self.assertEqual(scored[0].detail["repair"], "symbolic_numeric_continuation")
+
+    def test_repairs_stray_variable_numeric_continuation_from_previous_value(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"m = 2 \cdot 0", "score": -1.78},
+                {"latex": r"= 2 . 0 0", "score": -2.22},
+            ],
+            problem_latex=r"\int _ { 0 } ^ { 2 } ( 3 x ^ { 2 } + 1 ) d x",
+            previous_latex=[r"= ( 8 + 2 ) - ( 0 + 0 )"],
+        )
+
+        self.assertEqual(scored[0].latex, r"= 10")
+        self.assertTrue(scored[0].equivalent_to_previous)
+        self.assertEqual(scored[0].detail["repair"], "stray_variable_numeric_continuation")
+
+    def test_stray_variable_numeric_repair_preserves_context_variables(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"x = 0", "score": -0.1},
+            ],
+            problem_latex=r"x + 1 = 1",
+            previous_latex=[r"= 10"],
+        )
+
+        self.assertEqual(scored[0].latex, r"x = 0")
+        self.assertNotEqual(scored[0].detail.get("repair"), "stray_variable_numeric_continuation")
 
     def test_symbolic_final_value_repair_requires_numeric_previous_context(self):
         scored = score_ocr_predictions(
@@ -362,6 +555,19 @@ class LatexSemanticsTests(unittest.TestCase):
         )
 
         self.assertEqual(scored[0].latex, r"f ^ { \prime } ( x ) = 2 x ( x + 3 ) + x ^ { 2 }")
+        self.assertTrue(scored[0].equivalent_to_problem)
+        self.assertEqual(scored[0].detail["repair"], "contextual_symbol_confusion")
+
+    def test_repairs_stray_noncontext_letter_before_numeric_coefficient(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"f ( x ) = x ^ { 3 } + t 2 x ^ { 2 }", "score": 0},
+            ],
+            problem_latex=r"f ( x ) = x ^ { 3 } + 2 x ^ { 2 }",
+            previous_latex=[],
+        )
+
+        self.assertEqual(scored[0].latex, r"f ( x ) = x ^ { 3 } + 2 x ^ { 2 }")
         self.assertTrue(scored[0].equivalent_to_problem)
         self.assertEqual(scored[0].detail["repair"], "contextual_symbol_confusion")
 
@@ -685,12 +891,104 @@ class LatexSemanticsTests(unittest.TestCase):
         self.assertTrue(scored[0].equivalent_to_previous)
         self.assertEqual(scored[0].detail["repair"], "contextual_symbol_confusion")
 
+    def test_derivative_substitution_prime_repair_beats_numeric_rewrite(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"f ( 2 ) = 3 ( 2 ) ^ { 2 } + 4 ( 2 )", "score": 0},
+            ],
+            problem_latex=r"f ( x ) = x ^ { 3 } + 2 x ^ { 2 }",
+            previous_latex=[r"f ^ { \prime } ( x ) = 3 x ^ { 2 } + 4 x"],
+        )
+
+        self.assertEqual(scored[0].latex, r"f ^ { \prime } ( 2 ) = 3 ( 2 ) ^ { 2 } + 4 ( 2 )")
+        self.assertEqual(scored[0].detail["repair"], "contextual_symbol_confusion")
+        self.assertNotEqual(scored[0].latex, r"f ( 2 ) = 2 ( 2 ) ^ { 2 } + 4 ( 2 )")
+
+    def test_low_overlap_complex_continuation_does_not_win_by_collapsing_to_problem_value(self):
+        scored = score_ocr_predictions(
+            [
+                {
+                    "latex": r"= ( \frac { 2 } { \frac { 2 } { 2 } } + v _ { 0 } ^ { 2 } } ^ { 2 }",
+                    "score": -1.4,
+                    "elapsedSeconds": 26.2,
+                },
+                {
+                    "latex": r"= 1 \frac { x ^ { 2 } } { 2 } + x ] _ { 0 } ^ { 2 }",
+                    "score": 0,
+                    "elapsedSeconds": 26.2,
+                },
+            ],
+            problem_latex=r"\int _ { 0 } ^ { 2 } ( x + 1 ) d x",
+            previous_latex=[
+                r"\int _ { 0 } ^ { 2 } ( x + 1 ) d x",
+            ],
+        )
+
+        self.assertEqual(scored[0].latex, r"= [ \frac { x ^ { 2 } } { 2 } + x ] _ { 0 } ^ { 2 }")
+        self.assertEqual(scored[0].detail["repair"], "contextual_bound_evaluation_bracket")
+        malformed = r"= ( \frac { 2 } { \frac { 2 } { 2 } } + v _ { 0 } ^ { 2 } } ^ { 2 }"
+        demoted = next(
+            item
+            for item in scored
+            if item.latex == malformed
+        )
+        self.assertTrue(demoted.detail["lowVisualSupportForProblemValue"])
+
+    def test_low_overlap_final_value_keeps_previous_equivalence_credit(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"= 4", "score": -1.4, "elapsedSeconds": 3.3},
+                {
+                    "latex": r"= ( \frac { 2 } { \frac { 2 } { 2 } } + v _ { 0 } ^ { 2 } } ^ { 2 }",
+                    "score": -1.4,
+                    "elapsedSeconds": 26.2,
+                },
+            ],
+            problem_latex=r"\int _ { 0 } ^ { 2 } ( x + 1 ) d x",
+            previous_latex=[
+                r"\int _ { 0 } ^ { 2 } ( x + 1 ) d x",
+                r"= ( 2 + 2 ) - ( 0 + 0 )",
+            ],
+        )
+
+        self.assertEqual(scored[0].latex, r"= 4")
+        self.assertTrue(scored[0].equivalent_to_previous)
+        self.assertNotIn("lowVisualSupportForProblemValue", scored[0].detail)
+
+    def test_bound_evaluation_bracket_repair_requires_integral_context(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"= 1 x + 1 ] _ { 0 } ^ { 2 }", "score": 0},
+            ],
+            problem_latex=r"x + 1 = 3",
+            previous_latex=[],
+        )
+
+        self.assertEqual(scored[0].latex, r"= 1 x + 1 ] _ { 0 } ^ { 2 }")
+        self.assertNotEqual(scored[0].detail.get("repair"), "contextual_bound_evaluation_bracket")
+
     def test_repairs_malformed_quotient_derivative_equation_from_problem(self):
         scored = score_ocr_predictions(
             [
                 {
                     "latex": r"f ^ { \prime } ( x ) \frac { - x ^ { 2 } - 1 } { - x ^ { 2 } }",
                     "score": -0.2,
+                },
+            ],
+            problem_latex=r"f ( x ) = \frac { x ^ { 2 } + 1 } { x }",
+            previous_latex=[],
+        )
+
+        self.assertEqual(scored[0].latex, r"f ^ { \prime } ( x ) = \frac { x ^ { 2 } - 1 } { x ^ { 2 } }")
+        self.assertTrue(scored[0].equivalent_to_problem)
+        self.assertEqual(scored[0].detail["repair"], "contextual_symbol_confusion")
+
+    def test_repairs_quotient_derivative_prime_and_numeric_denominator_base(self):
+        scored = score_ocr_predictions(
+            [
+                {
+                    "latex": r"f ( x ) = \frac { x ^ { 2 } - 1 } { 2 ^ { 2 } }",
+                    "score": 0,
                 },
             ],
             problem_latex=r"f ( x ) = \frac { x ^ { 2 } + 1 } { x }",
@@ -778,6 +1076,84 @@ class LatexSemanticsTests(unittest.TestCase):
         self.assertEqual(scored[0].latex, r"\log _ { 2 } ( x ) + \log _ { 2 } ( 4 ) = 5")
         self.assertTrue(scored[0].equivalent_to_problem)
         self.assertEqual(scored[0].detail["repair"], "contextual_malformed_log_base")
+
+    def test_repairs_malformed_copied_log_equation_from_problem_context(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"\tan v _ { 0 } 3 ( x + x = n", "score": 0},
+                {"latex": r"v _ { 5 } ( x + 1 ) = 1", "score": -0.4},
+            ],
+            problem_latex=r"\log _ { 3 } ( x + 1 ) = 2",
+            previous_latex=[],
+        )
+
+        self.assertEqual(scored[0].latex, r"\log _ { 3 } ( x + 1 ) = 2")
+        self.assertTrue(scored[0].equivalent_to_problem)
+        self.assertEqual(scored[0].detail["repair"], "contextual_malformed_log_equation")
+
+    def test_repairs_parseable_copied_log_equation_symbol_confusions(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"\log _ { 2 } ( x ) + x = q", "score": 0},
+            ],
+            problem_latex=r"\log _ { 2 } ( x ) + 3 = 7",
+            previous_latex=[],
+        )
+
+        self.assertEqual(scored[0].latex, r"\log _ { 2 } ( x ) + 3 = 7")
+        self.assertTrue(scored[0].equivalent_to_problem)
+        self.assertEqual(scored[0].detail["repair"], "contextual_malformed_log_equation")
+
+    def test_repairs_copied_problem_log_numeric_term_confusion(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"\log _ { 2 } ( x ) + x = 7", "score": 0},
+            ],
+            problem_latex=r"\log _ { 2 } ( x ) + 3 = 7",
+            previous_latex=[],
+        )
+
+        self.assertEqual(scored[0].latex, r"\log _ { 2 } ( x ) + 3 = 7")
+        self.assertTrue(scored[0].equivalent_to_problem)
+        self.assertEqual(scored[0].detail["repair"], "contextual_malformed_log_equation")
+
+    def test_repairs_copied_problem_fraction_operator_and_denominator_confusions(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"\frac { 2 x + 1 } { 3 } \infty \frac { x - 2 } { 1 } = 5", "score": 0},
+            ],
+            problem_latex=r"\frac { 2 x + 1 } { 3 } - \frac { x - 2 } { 4 } = 5",
+            previous_latex=[],
+        )
+
+        self.assertEqual(scored[0].latex, r"\frac { 2 x + 1 } { 3 } - \frac { x - 2 } { 4 } = 5")
+        self.assertTrue(scored[0].equivalent_to_problem)
+        self.assertEqual(scored[0].detail["repair"], "contextual_copied_problem_equation")
+
+    def test_repairs_copied_problem_quadratic_symbol_and_operator_confusions(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"x ^ { 2 } - 5 x x = o", "score": 0},
+            ],
+            problem_latex=r"x ^ { 2 } - 5 x + 6 = 0",
+            previous_latex=[],
+        )
+
+        self.assertEqual(scored[0].latex, r"x ^ { 2 } - 5 x + 6 = 0")
+        self.assertTrue(scored[0].equivalent_to_problem)
+        self.assertEqual(scored[0].detail["repair"], "contextual_copied_problem_equation")
+
+    def test_copied_problem_repair_does_not_override_later_work(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"\log _ { 2 } ( x ) + x = 7", "score": 0},
+            ],
+            problem_latex=r"\log _ { 2 } ( x ) + 3 = 7",
+            previous_latex=[r"- 3 - 3"],
+        )
+
+        self.assertNotEqual(scored[0].latex, r"\log _ { 2 } ( x ) + 3 = 7")
+        self.assertNotEqual(scored[0].detail.get("repair"), "contextual_copied_problem_equation")
 
     def test_stray_fraction_letter_repair_preserves_context_variable(self):
         scored = score_ocr_predictions(
@@ -910,6 +1286,22 @@ class LatexSemanticsTests(unittest.TestCase):
         self.assertEqual(scored[0].latex, r"n + 1 = 12")
         self.assertNotIn("repair", scored[0].detail)
 
+    def test_repairs_n_as_zero_only_with_semantic_support(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"( X - 2 ) ( x - 3 ) = n", "score": 0},
+            ],
+            problem_latex=r"x ^ { 2 } - 5 x + 6 = 0",
+            previous_latex=[r"x ^ { 2 } - 5 x + 6 = 0"],
+        )
+
+        self.assertEqual(scored[0].latex, r"( x - 2 ) ( x - 3 ) = 0")
+        self.assertTrue(scored[0].equivalent_to_problem)
+        self.assertIn(scored[0].detail["repair"], {
+            "contextual_numeric_lookalike",
+            "contextual_symbol_confusion",
+        })
+
     def test_repairs_alpha_as_contextual_two_only_without_alpha_context(self):
         scored = score_ocr_predictions(
             [
@@ -991,6 +1383,41 @@ class LatexSemanticsTests(unittest.TestCase):
         )
         self.assertTrue(scored[0].equivalent_to_problem)
         self.assertEqual(scored[0].detail["repair"], "contextual_symbol_confusion")
+
+    def test_subtraction_repair_skips_non_finite_previous_equations(self):
+        scored = score_ocr_predictions(
+            [
+                {"latex": r"x = 2", "score": 0.2},
+            ],
+            problem_latex=r"x = 2",
+            previous_latex=[
+                r"x + \frac { 1 } { x - x } = 3",
+                r"- 1 - 1",
+            ],
+        )
+
+        self.assertEqual(scored[0].latex, r"x = 2")
+        self.assertNotEqual(scored[0].detail.get("repair"), "contextual_subtraction_step")
+
+    def test_visible_expanded_row_beats_contextual_linear_simplification(self):
+        scored = score_ocr_predictions(
+            [
+                {
+                    "latex": r"8 x + 4 3 x + 6 = 6 0",
+                    "score": 0,
+                    "elapsedSeconds": 8.2,
+                },
+            ],
+            problem_latex=r"\frac { 2 x + 1 } { 3 } - \frac { x - 2 } { 4 } = 5",
+            previous_latex=[
+                r"\frac { 2 x + 1 } { 3 } - \frac { x - 2 } { 4 } = 5",
+                r"\times 12 \times 12",
+                r"4 ( 2 x + 1 ) - 3 ( x - 2 ) = 60",
+            ],
+        )
+
+        self.assertEqual(scored[0].latex, r"8 x + 4 - 3 x + 6 = 60")
+        self.assertEqual(scored[0].detail.get("repair"), "contextual_symbol_confusion")
 
     def test_split_c_alpha_repair_preserves_real_c_context(self):
         scored = score_ocr_predictions(

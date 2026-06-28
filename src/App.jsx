@@ -2,6 +2,11 @@ import { useCallback, useRef, useState } from 'react';
 import ModelShell from './components/ModelShell.jsx';
 import Toolbar from './components/Toolbar.jsx';
 import WhiteboardStage from './components/WhiteboardStage.jsx';
+import {
+  E2E_TEST_ENABLED,
+  recordE2EEvent,
+  useE2ETestBridge
+} from './hooks/useE2ETestBridge.js';
 import { useProblemFlowController } from './hooks/useProblemFlowController.js';
 import { useToolbarCollapse } from './hooks/useToolbarCollapse.js';
 import { useViewportController } from './hooks/useViewportController.js';
@@ -18,6 +23,7 @@ export default function App() {
   const [isPanning, setIsPanning] = useState(false);
   const [debugBoxesEnabled, setDebugBoxesEnabled] = useState(false);
   const engineRef = useRef(null);
+  const e2eEventsRef = useRef([]);
 
   const {
     activeTool,
@@ -35,13 +41,21 @@ export default function App() {
     moveHomeViewport
   } = useViewportController();
 
+  const handleRecognitionEvent = useCallback((type, detail) => {
+    recordE2EEvent(e2eEventsRef, type, detail);
+  }, []);
+
   const {
     problemFlow,
     modelResponse,
     recognitionResults,
     reconcileStrokes,
     submitAnswer
-  } = useProblemFlowController({ moveHomeViewport, engineRef });
+  } = useProblemFlowController({
+    moveHomeViewport,
+    engineRef,
+    onRecognitionEvent: handleRecognitionEvent
+  });
 
   const penWidth = sliderToWidth(sliderValue);
 
@@ -57,10 +71,45 @@ export default function App() {
     setDebugBoxesEnabled((isEnabled) => !isEnabled);
   }, []);
 
+  const handlePenStrokeStart = useCallback(() => {
+    recordE2EEvent(e2eEventsRef, 'pen-stroke-start');
+    collapseToolbarForDrawing();
+  }, [collapseToolbarForDrawing]);
+
+  const handleStrokeFinalized = useCallback((stroke) => {
+    recordE2EEvent(e2eEventsRef, 'stroke-finalized', {
+      strokeId: stroke?.id,
+      canvasBbox: stroke?.canvasBbox || null,
+      startTime: stroke?.startTime,
+      endTime: stroke?.endTime
+    });
+  }, []);
+
+  const handleStrokesChanged = useCallback((strokes, reason) => {
+    recordE2EEvent(e2eEventsRef, 'strokes-changed', {
+      reason,
+      strokeCount: strokes?.length || 0
+    });
+    reconcileStrokes(strokes);
+  }, [reconcileStrokes]);
+
+  const handleSubmitAnswer = useCallback(() => {
+    recordE2EEvent(e2eEventsRef, 'submit-answer');
+    submitAnswer();
+  }, [submitAnswer]);
+
   useWhiteboardShortcuts({
     engineRef,
     onSelectTool: selectTool,
     onToggleDebugBoxes: toggleDebugBoxes
+  });
+
+  useE2ETestBridge({
+    engineRef,
+    viewport,
+    problemFlow,
+    recognitionResults,
+    eventsRef: e2eEventsRef
   });
 
   return (
@@ -77,8 +126,9 @@ export default function App() {
         onEngineReady={handleEngineReady}
         onViewportChange={setViewport}
         onPanStateChange={setIsPanning}
-        onStrokesChanged={reconcileStrokes}
-        onPenStrokeStart={collapseToolbarForDrawing}
+        onStrokeFinalized={handleStrokeFinalized}
+        onStrokesChanged={handleStrokesChanged}
+        onPenStrokeStart={handlePenStrokeStart}
       />
 
       <Toolbar
@@ -98,8 +148,8 @@ export default function App() {
       <ModelShell
         response={modelResponse}
         recognitionResults={recognitionResults}
-        debugMode={debugBoxesEnabled}
-        onSubmitAnswer={submitAnswer}
+        debugMode={debugBoxesEnabled || E2E_TEST_ENABLED}
+        onSubmitAnswer={handleSubmitAnswer}
       />
 
       <button

@@ -26,6 +26,7 @@ from testing.run_live_recognition_matrix import (
     repair_operation_annotation_from_previous,
     repair_standalone_operation_latex,
     recognize_crop_with_retries,
+    recognize_stroke_chunked_candidate_with_height_retries,
     recognize_selected_lines,
     selected_records_from_alternatives,
     selected_problems,
@@ -427,6 +428,55 @@ class LiveRecognitionMatrixSummaryTests(unittest.TestCase):
             repair_standalone_operation_latex("x 6 \\times 7", semantic),
             "",
         )
+        self.assertEqual(
+            repair_standalone_operation_latex(
+                r"x _ { G \times n }",
+                semantic,
+                fallback_latex=r"X _ { 6 } \times _ { n }",
+            ),
+            r"\times 6 \times 6",
+        )
+        self.assertEqual(
+            repair_standalone_operation_latex(
+                r"x _ { 0 } \times n",
+                semantic,
+                problem_latex=r"\frac { x + 1 } { 2 } = \frac { 5 } { 3 }",
+            ),
+            r"\times 6 \times 6",
+        )
+
+    def test_contextual_rescore_preserves_visible_expanded_row_over_simplification(self):
+        records = [
+            {
+                "candidateId": "previous",
+                "acceptedLatex": "4 ( 2 x + 1 ) - 3 ( x - 2 ) = 60",
+                "semanticScore": 3.0,
+                "profiles": ["row-line"],
+                "bbox": {"xMin": 0, "xMax": 500, "yMin": 0, "yMax": 40},
+            },
+            {
+                "candidateId": "expanded",
+                "topLatex": "8 X + 4 3 x + 6 = 6 0",
+                "acceptedLatex": "8 x + 4 - 3 x + 6 = 60",
+                "semanticBestLatex": "8 x + 4 - 3 x + 6 = 60",
+                "semanticScore": 2.2,
+                "profiles": ["row-line", "dbnet-line"],
+                "bbox": {"xMin": 0, "xMax": 500, "yMin": 50, "yMax": 90},
+                "topCandidates": [
+                    {"latex": "8 X + 4 3 x + 6 = 6 0", "score": 0.1},
+                ],
+            },
+        ]
+
+        rescored = apply_contextual_semantic_scores(
+            records,
+            problem_latex=r"\frac { 2 x + 1 } { 3 } - \frac { x - 2 } { 4 } = 5",
+        )
+
+        self.assertEqual(
+            rescored[1]["acceptedLatex"],
+            "8 x + 4 - 3 x + 6 = 60",
+        )
 
     def test_infers_empty_subtraction_annotation_from_previous_equation_geometry(self):
         candidate = {
@@ -465,6 +515,22 @@ class LiveRecognitionMatrixSummaryTests(unittest.TestCase):
             "- 10 - 10",
         )
         self.assertEqual(
+            repair_operation_annotation_from_previous("- 2 - 2", ["9 = x + 1"]),
+            "- 1 - 1",
+        )
+        self.assertEqual(
+            repair_operation_annotation_from_previous("- 2 = 1", ["9 = x + 1"]),
+            "- 1 - 1",
+        )
+        self.assertEqual(
+            repair_operation_annotation_from_previous("- 1 - x", ["x + 1 = 4"]),
+            "- 1 - 1",
+        )
+        self.assertEqual(
+            repair_operation_annotation_from_previous("- 2 0 - x 0", ["5 x + 10 = 60"]),
+            "- 10 - 10",
+        )
+        self.assertEqual(
             repair_operation_annotation_from_previous("- 1 0 - 1 0", ["5 x + 10 = 60"]),
             "",
         )
@@ -483,6 +549,33 @@ class LiveRecognitionMatrixSummaryTests(unittest.TestCase):
         }
 
         self.assertEqual(trusted_semantic_latex("- 3 - 3", semantic), "- 3 - 3")
+
+    def test_trusted_semantic_latex_accepts_sound_operation_over_non_operation(self):
+        semantic = {
+            "bestLatex": r"\times 1 2 \times 1 2",
+            "semanticScore": 0.37,
+            "equivalentToProblem": False,
+            "equivalentToPrevious": False,
+            "sound": True,
+            "candidateScores": [
+                {
+                    "latex": r"\times 1 2 \times 1 2",
+                    "score": 0.37,
+                    "sound": True,
+                    "equivalentToProblem": False,
+                    "equivalentToPrevious": False,
+                },
+                {
+                    "latex": r"X 1 2 \times 1 0",
+                    "score": 0.2,
+                    "sound": True,
+                    "equivalentToProblem": False,
+                    "equivalentToPrevious": False,
+                },
+            ],
+        }
+
+        self.assertEqual(trusted_semantic_latex(r"X 1 2 \times 1 0", semantic), r"\times 1 2 \times 1 2")
 
     def test_trusted_semantic_latex_preserves_sound_equivalent_current_row(self):
         semantic = {
@@ -561,6 +654,124 @@ class LiveRecognitionMatrixSummaryTests(unittest.TestCase):
 
         self.assertEqual(trusted_semantic_latex("x = 3", semantic), "x = 3")
 
+    def test_trusted_semantic_latex_preserves_stronger_visual_current_over_previous_equivalent(self):
+        semantic = {
+            "bestLatex": "1 + y = x",
+            "semanticScore": 2.2167,
+            "equivalentToProblem": False,
+            "equivalentToPrevious": True,
+            "sound": True,
+            "candidateScores": [
+                {
+                    "latex": "1 + y = x",
+                    "score": 2.2167,
+                    "sound": True,
+                    "equivalentToProblem": False,
+                    "equivalentToPrevious": True,
+                    "detail": {"modelScore": -1.2862, "characterOverlap": 0.685},
+                },
+                {
+                    "latex": "4 + y = 7",
+                    "score": 1.2299,
+                    "sound": True,
+                    "equivalentToProblem": False,
+                    "equivalentToPrevious": False,
+                    "detail": {"modelScore": -0.3848, "characterOverlap": 0.461},
+                },
+            ],
+        }
+
+        self.assertEqual(trusted_semantic_latex("4 + y = 7", semantic), "4 + y = 7")
+
+    def test_trusted_semantic_latex_preserves_derivative_prime_over_previous_equivalent(self):
+        semantic = {
+            "bestLatex": r"f ( 2 ) = \frac { 3 } { 4 }",
+            "semanticScore": 3.248,
+            "equivalentToProblem": False,
+            "equivalentToPrevious": True,
+            "sound": True,
+            "candidateScores": [
+                {
+                    "latex": r"f ( 2 ) = \frac { 3 } { 4 }",
+                    "score": 3.248,
+                    "sound": True,
+                    "equivalentToProblem": False,
+                    "equivalentToPrevious": True,
+                    "detail": {"modelScore": -1.2757, "characterOverlap": 0.415},
+                },
+                {
+                    "latex": r"f ^ { \prime } ( 2 ) = \frac { 3 } { 4 }",
+                    "score": 1.2607,
+                    "sound": True,
+                    "equivalentToProblem": False,
+                    "equivalentToPrevious": False,
+                    "detail": {"modelScore": -0.2257, "characterOverlap": 0.298},
+                },
+            ],
+        }
+
+        self.assertEqual(
+            trusted_semantic_latex(r"f ^ { \prime } ( 2 ) = \frac { 3 } { 4 }", semantic),
+            r"f ^ { \prime } ( 2 ) = \frac { 3 } { 4 }",
+        )
+
+    def test_trusted_semantic_latex_accepts_problem_supported_repair(self):
+        semantic = {
+            "bestLatex": r"x = \frac { - 4 + \sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }",
+            "semanticScore": 2.3018,
+            "equivalentToProblem": False,
+            "equivalentToPrevious": False,
+            "sound": True,
+            "candidateScores": [
+                {
+                    "latex": r"x = \frac { - 4 + \sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }",
+                    "score": 2.3018,
+                    "sound": True,
+                    "equivalentToProblem": False,
+                    "equivalentToPrevious": False,
+                    "detail": {"solutionSupportedByProblem": True, "repair": "contextual_quadratic_formula_coefficient"},
+                },
+            ],
+        }
+
+        self.assertEqual(
+            trusted_semantic_latex(r"x = \frac { 1 + \sqrt { 4 ^ { 2 } - 1 1 ) ( - 5 } } { 2 ( 1 ) } - 1", semantic),
+            r"x = \frac { - 4 + \sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }",
+        )
+
+    def test_trusted_semantic_latex_accepts_problem_supported_numeric_repair(self):
+        semantic = {
+            "bestLatex": "x = 1",
+            "semanticScore": 3.0232,
+            "equivalentToProblem": False,
+            "equivalentToPrevious": True,
+            "sound": True,
+            "candidateScores": [
+                {
+                    "latex": "x = 1",
+                    "score": 3.0232,
+                    "sound": True,
+                    "equivalentToProblem": False,
+                    "equivalentToPrevious": True,
+                    "detail": {
+                        "modelScore": -0.6294,
+                        "solutionSupportedByProblem": True,
+                        "repair": "contextual_latex_numeric_equivalence",
+                    },
+                },
+                {
+                    "latex": "x = 2",
+                    "score": 1.6157,
+                    "sound": True,
+                    "equivalentToProblem": False,
+                    "equivalentToPrevious": False,
+                    "detail": {"modelScore": -0.0794, "characterOverlap": 0.493},
+                },
+            ],
+        }
+
+        self.assertEqual(trusted_semantic_latex("x = 2", semantic), "x = 1")
+
     def test_prepare_initial_recognition_crop_normalizes_tall_images(self):
         with TemporaryDirectory() as directory:
             crop_path = Path(directory) / "line.png"
@@ -629,6 +840,81 @@ class LiveRecognitionMatrixSummaryTests(unittest.TestCase):
         self.assertEqual(calls[1][0], "chunk")
         self.assertEqual(len(calls), 2)
 
+    def test_post_image_reports_client_hard_timeout(self):
+        with TemporaryDirectory() as directory:
+            crop_path = Path(directory) / "line.png"
+            Image.new("RGB", (120, 60), "white").save(crop_path)
+            original_urlopen = matrix.urllib.request.urlopen
+
+            def fake_urlopen(_request, timeout):
+                raise matrix.ClientRequestTimeout(f"deadline {timeout:g}")
+
+            try:
+                matrix.urllib.request.urlopen = fake_urlopen
+                payload = matrix.post_image("http://127.0.0.1:8010/recognize", crop_path, 0.5)
+            finally:
+                matrix.urllib.request.urlopen = original_urlopen
+
+        self.assertEqual(payload["_httpStatus"], 408)
+        self.assertTrue(payload["timedOut"])
+        self.assertEqual(payload["selectionPenalty"], -1000)
+
+    def test_semantic_retries_stop_after_timeout_without_chunk_fallback(self):
+        with TemporaryDirectory() as directory:
+            crop_path = Path(directory) / "line.png"
+            Image.new("RGB", (220, 120), "white").save(crop_path)
+            calls = []
+            original_post = matrix.post_image
+            original_stroke_chunked = matrix.recognize_stroke_chunked_candidate_with_height_retries
+            original_chunked = matrix.recognize_chunked_crop
+
+            def fake_post(url, image_path, timeout_seconds):
+                calls.append(("post", url, Path(image_path).name, timeout_seconds))
+                return {
+                    "_httpStatus": 408,
+                    "timedOut": True,
+                    "top": None,
+                    "candidates": [],
+                }
+
+            def fake_stroke_chunked(*args, **kwargs):
+                calls.append(("stroke-chunk",))
+                return None
+
+            def fake_chunked(*args, **kwargs):
+                calls.append(("chunk",))
+                return None
+
+            try:
+                matrix.post_image = fake_post
+                matrix.recognize_stroke_chunked_candidate_with_height_retries = fake_stroke_chunked
+                matrix.recognize_chunked_crop = fake_chunked
+                payload = matrix.recognize_crop_with_semantic_retries(
+                    "http://127.0.0.1:8010/recognize?model=comer&timeout_seconds=20",
+                    crop_path,
+                    20,
+                    {
+                        "_httpStatus": 200,
+                        "top": {"latex": "x"},
+                        "candidates": [{"latex": "x"}],
+                        "_initialTargetPixelHeight": 104,
+                    },
+                    retry_heights=(48, 64, 72),
+                )
+            finally:
+                matrix.post_image = original_post
+                matrix.recognize_stroke_chunked_candidate_with_height_retries = original_stroke_chunked
+                matrix.recognize_chunked_crop = original_chunked
+
+        post_calls = [call for call in calls if call[0] == "post"]
+        self.assertEqual(len(post_calls), 1)
+        self.assertIn("timeout_seconds=8", post_calls[0][1])
+        self.assertEqual(post_calls[0][3], 8)
+        self.assertFalse(any(call[0] in {"stroke-chunk", "chunk"} for call in calls))
+        self.assertTrue(payload["semanticRetryUsed"])
+        self.assertTrue(payload["retryAttempts"][0]["timedOut"])
+        self.assertEqual(payload["retryAttempts"][0]["semanticRetryTimeoutSeconds"], 8)
+
     def test_structural_crop_gets_longer_timeout_after_short_retries_fail(self):
         with TemporaryDirectory() as directory:
             crop_path = Path(directory) / "fraction.png"
@@ -679,7 +965,7 @@ class LiveRecognitionMatrixSummaryTests(unittest.TestCase):
         self.assertTrue(any("timeout_seconds=12" in url for _name, _timeout, url in calls))
         self.assertEqual(payload["retryAttempts"][-1]["extendedTimeoutSeconds"], 12)
 
-    def test_failed_stroke_chunk_fallback_is_not_repeated_after_height_retries(self):
+    def test_failed_stroke_chunk_fallback_exhausts_height_retries_once(self):
         with TemporaryDirectory() as directory:
             crop_path = Path(directory) / "fraction.png"
             Image.new("RGB", (360, 140), "white").save(crop_path)
@@ -696,14 +982,15 @@ class LiveRecognitionMatrixSummaryTests(unittest.TestCase):
                     "candidates": [],
                 }
 
-            def fake_stroke_chunked(*_args, **_kwargs):
-                chunk_calls.append("stroke")
+            def fake_stroke_chunked(*_args, **kwargs):
+                chunk_calls.append(kwargs.get("target_height"))
                 return {
                     "_httpStatus": 408,
                     "timedOut": True,
                     "failed": True,
                     "chunkFallback": True,
                     "chunkFallbackSource": "stroke",
+                    "chunkAttempts": [{"targetPixelHeight": kwargs.get("target_height"), "timedOut": True}],
                     "candidates": [],
                     "top": None,
                 }
@@ -731,7 +1018,65 @@ class LiveRecognitionMatrixSummaryTests(unittest.TestCase):
                 matrix.recognize_chunked_crop = original_image_chunked
 
         self.assertTrue(payload["timedOut"])
-        self.assertEqual(chunk_calls, ["stroke"])
+        self.assertEqual(chunk_calls, [72, 88, 104])
+
+    def test_stroke_chunk_fallback_height_retries_stop_after_success(self):
+        candidate = {
+            "candidateId": "wide-fraction",
+            "profiles": ["row-line"],
+            "bbox": {"xMin": 0, "yMin": 0, "xMax": 520, "yMax": 120},
+            "strokes": [fake_stroke(f"s{i}", i * 34, 0, i * 34 + 18, 90) for i in range(8)],
+        }
+        fixture = RenderedFixture(
+            problem=get_problem("quadratic_formula_positive_root"),
+            spacing="dense",
+            ink_style="messy",
+            board=None,
+            payload={},
+            png_path=Path("fixture.png"),
+            json_path=Path("fixture.json"),
+        )
+        calls = []
+        original_single = matrix.recognize_stroke_chunked_candidate
+
+        def fake_single(*_args, **kwargs):
+            height = kwargs.get("target_height")
+            calls.append(height)
+            if height == 72:
+                return {
+                    "_httpStatus": 408,
+                    "timedOut": True,
+                    "failed": True,
+                    "chunkFallback": True,
+                    "chunkAttempts": [{"targetPixelHeight": height, "timedOut": True}],
+                    "candidates": [],
+                    "top": None,
+                }
+            return {
+                "_httpStatus": 200,
+                "timedOut": False,
+                "failed": False,
+                "chunkFallback": True,
+                "chunkAttempts": [{"targetPixelHeight": height, "topLatex": "x = 1"}],
+                "candidates": [{"latex": "x = 1"}],
+                "top": {"latex": "x = 1"},
+            }
+
+        try:
+            matrix.recognize_stroke_chunked_candidate = fake_single
+            payload = recognize_stroke_chunked_candidate_with_height_retries(
+                "http://127.0.0.1:8010/recognize",
+                fixture,
+                candidate,
+                20,
+                target_height=104,
+            )
+        finally:
+            matrix.recognize_stroke_chunked_candidate = original_single
+
+        self.assertEqual(calls, [72, 88])
+        self.assertEqual(payload["top"]["latex"], "x = 1")
+        self.assertEqual([attempt["targetPixelHeight"] for attempt in payload["chunkAttempts"]], [72, 88])
 
     def test_stroke_chunk_fallback_infers_context_variable_before_equals(self):
         candidate = {
@@ -781,6 +1126,89 @@ class LiveRecognitionMatrixSummaryTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertTrue(payload["chunkAttempts"][0]["inferredLiteral"])
         self.assertEqual(payload["chunkAttempts"][0]["literalLatex"], "x")
+
+    def test_fraction_subchunks_retry_lower_raster_heights(self):
+        chunk = {
+            "strokeIds": ["num", "bar", "den"],
+            "bbox": {"xMin": 0, "yMin": 0, "xMax": 180, "yMax": 100},
+            "strokes": [
+                fake_stroke("num", 10, 5, 60, 32),
+                fake_stroke("bar", 0, 45, 180, 51),
+                fake_stroke("den", 15, 65, 65, 95),
+            ],
+        }
+        calls = []
+        original_post = matrix.post_image
+
+        def fake_post(_url, image_path, _timeout_seconds):
+            calls.append(Path(image_path).name)
+            if "_h72" in Path(image_path).name:
+                return {
+                    "_httpStatus": 200,
+                    "top": {"latex": "x + 1"},
+                    "candidates": [{"latex": "x + 1"}],
+                }
+            return {
+                "_httpStatus": 408,
+                "timedOut": True,
+                "top": None,
+                "candidates": [],
+            }
+
+        try:
+            matrix.post_image = fake_post
+            latex, attempt = recognize_fraction_stroke_chunk(
+                "http://127.0.0.1:8010/recognize",
+                chunk,
+                20,
+                target_height=104,
+            )
+        finally:
+            matrix.post_image = original_post
+
+        self.assertEqual(latex, r"\frac { x + 1 } { x + 1 }")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all("_h72" in name for name in calls))
+        self.assertEqual([part["targetPixelHeight"] for part in attempt["parts"]], [72, 72])
+
+    def test_fraction_split_accepts_wide_thick_slanted_bar_bbox(self):
+        chunk = {
+            "strokeIds": ["num", "bar", "den"],
+            "bbox": {"xMin": 0, "yMin": 0, "xMax": 396, "yMax": 135},
+            "strokes": [
+                fake_stroke("num", 20, 10, 220, 90),
+                fake_stroke("bar", 0, 56, 396, 130),
+                fake_stroke("den", 140, 98, 220, 135),
+            ],
+        }
+
+        split = split_fraction_stroke_chunk(chunk)
+
+        self.assertIsNotNone(split)
+        self.assertEqual(split["bar"]["id"], "bar")
+        self.assertEqual(split["numerator"]["strokeIds"], ["num"])
+        self.assertEqual(split["denominator"]["strokeIds"], ["den"])
+
+    def test_fraction_split_prefers_balanced_fraction_bar_over_sqrt_bar(self):
+        chunk = {
+            "strokeIds": ["xeq", "sqrt-bar", "radicand", "frac-bar", "den-a", "den-b"],
+            "bbox": {"xMin": 120, "yMin": 60, "xMax": 630, "yMax": 205},
+            "strokes": [
+                fake_stroke("xeq", 125, 105, 210, 140),
+                fake_stroke("sqrt-bar", 340, 65, 628, 127),
+                fake_stroke("radicand", 265, 88, 610, 130),
+                fake_stroke("frac-bar", 226, 115, 615, 198),
+                fake_stroke("den-a", 430, 178, 465, 205),
+                fake_stroke("den-b", 480, 176, 535, 204),
+            ],
+        }
+
+        split = split_fraction_stroke_chunk(chunk)
+
+        self.assertIsNotNone(split)
+        self.assertEqual(split["bar"]["id"], "frac-bar")
+        self.assertIn("radicand", split["numerator"]["strokeIds"])
+        self.assertEqual(split["denominator"]["strokeIds"], ["den-a", "den-b"])
 
     def test_stroke_chunker_splits_wide_candidate_and_preserves_equals(self):
         candidate = {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import { translateDetections } from '../src/recognition/segmentationClient.js';
 import { previousLatexForSubmission, summarizeRecognitionResult } from '../src/hooks/useProblemFlowController.js';
@@ -18,7 +19,29 @@ import {
   getActiveProblem,
   submitActiveProblem
 } from '../src/state/problemFlow.js';
-import { TEST_PROBLEMS } from '../src/state/problemFixtures.js';
+
+const FLOW_TEST_PROBLEMS = Object.freeze([
+  {
+    id: 'flow-context-eta',
+    kind: 'equation-solving',
+    latex: '\\eta + 1 = 6',
+    modelResponse: {
+      before: 'Solve the equation.',
+      latex: '\\eta = 5',
+      after: 'Submit your work when you are ready.'
+    }
+  },
+  {
+    id: 'flow-context-z',
+    kind: 'equation-solving',
+    latex: 'z + 1 = 6',
+    modelResponse: {
+      before: 'Solve the equation.',
+      latex: 'z = 5',
+      after: 'Submit your work when you are ready.'
+    }
+  }
+]);
 
 test('OCR evidence can promote a parent candidate over child rows', () => {
   const parent = candidate('parent_a|b', ['parent'], ['a', 'b'], 0, 0, 100, 100);
@@ -172,6 +195,101 @@ test('dbnet-only merged line yields to independent child rows', () => {
   const selected = selectCandidateCover([merged, upper, lower]);
 
   assert.deepEqual(selected.map((item) => item.candidateId), ['strict_upper', 'row_lower']);
+});
+
+test('clean dbnet row beats strict row with lower-edge intrusion', () => {
+  const main = [
+    stroke('a', 100, 0, 150, 60),
+    stroke('b', 170, 8, 220, 70),
+    stroke('c', 240, 14, 290, 72),
+  ];
+  const intruding = [
+    stroke('e1', 120, 76, 165, 86),
+    stroke('e2', 190, 78, 235, 88),
+  ];
+  const lowerRemainder = [
+    stroke('d1', 260, 96, 310, 140),
+    stroke('d2', 330, 100, 380, 145),
+    stroke('d3', 400, 104, 450, 148),
+  ];
+  const mixed = candidateFromStrokeList('mixed', ['strict', 'raw-row-line', 'row-line'], [
+    ...main,
+    ...intruding,
+  ]);
+  const clean = candidateFromStrokeList('clean', ['dbnet-line'], main);
+  const lower = candidateFromStrokeList('lower', ['raw-row-line', 'row-line', 'dbnet-line'], [
+    ...intruding,
+    ...lowerRemainder,
+  ]);
+  const lowerRest = candidateFromStrokeList('lower-rest', ['raw-row-line', 'row-line'], lowerRemainder);
+
+  const selected = selectCandidateCover([mixed, clean, lower, lowerRest]);
+
+  assert.deepEqual(selected.map((item) => item.candidateId), ['clean', 'lower']);
+});
+
+test('dbnet row with upper boundary intrusion yields to clean child row', () => {
+  const upperMain = [
+    stroke('u1', 118, 61, 145, 146),
+    stroke('u2', 159, 94, 199, 128),
+    stroke('u3', 220, 98, 304, 122),
+  ];
+  const upperBoundary = stroke('u-boundary', 128, 135, 138, 152);
+  const lowerMain = [
+    stroke('l1', 164, 163, 209, 219),
+    stroke('l2', 231, 171, 305, 247),
+    stroke('l3', 326, 183, 467, 248),
+  ];
+
+  const upperDbnet = candidateFromStrokeList('upper-dbnet', ['dbnet-line'], upperMain);
+  const upperStrict = candidateFromStrokeList('upper-strict', ['strict', 'row-line'], [
+    ...upperMain,
+    upperBoundary,
+  ]);
+  const lowerDbnetMixed = candidateFromStrokeList('lower-dbnet-mixed', ['dbnet-line'], [
+    upperBoundary,
+    ...lowerMain,
+  ]);
+  const lowerClean = candidateFromStrokeList('lower-clean', ['strict', 'raw-row-line', 'row-line'], lowerMain);
+
+  const selected = selectCandidateCover([upperDbnet, upperStrict, lowerDbnetMixed, lowerClean]);
+
+  assert.deepEqual(selected.map((item) => item.candidateId), ['upper-strict', 'lower-clean']);
+});
+
+test('messy quadratic formula fraction stays one line without swallowing later work', () => {
+  const boxes = [
+    ['q1', 0, 334, 63, 627, 128], ['q2', 1, 470, 198, 499, 242], ['q3', 2, 306, 349, 343, 392],
+    ['q4', 0, 393, 79, 407, 101], ['q5', 1, 489, 198, 498, 206], ['q6', 2, 156, 351, 198, 395],
+    ['q7', 0, 263, 84, 281, 115], ['q8', 1, 368, 200, 398, 249], ['q9', 2, 230, 353, 277, 361],
+    ['q10', 0, 370, 86, 388, 118], ['q11', 1, 413, 202, 456, 251], ['q12', 2, 229, 368, 276, 377],
+    ['q13', 0, 481, 86, 493, 129], ['q14', 1, 322, 229, 364, 237], ['q15', 0, 515, 87, 528, 132],
+    ['q16', 1, 168, 259, 215, 308], ['q17', 0, 535, 88, 546, 133], ['q18', 1, 237, 260, 298, 271],
+    ['q19', 0, 293, 89, 321, 119], ['q20', 1, 317, 261, 504, 284], ['q21', 0, 457, 89, 475, 120],
+    ['q22', 1, 236, 278, 298, 289], ['q23', 0, 496, 90, 509, 121], ['q24', 1, 395, 280, 423, 329],
+    ['q25', 0, 601, 90, 613, 135], ['q26', 0, 581, 93, 598, 124], ['q27', 0, 233, 100, 259, 103],
+    ['q28', 0, 420, 105, 445, 109], ['q29', 0, 552, 109, 576, 113], ['q30', 0, 126, 117, 158, 147],
+    ['q31', 0, 174, 123, 214, 128], ['q32', 0, 172, 136, 213, 140], ['q33', 0, 226, 137, 619, 153],
+    ['q34', 0, 407, 151, 420, 195], ['q35', 0, 441, 153, 454, 197], ['q36', 0, 384, 154, 403, 185],
+    ['q37', 0, 422, 155, 436, 187],
+  ];
+  const strokes = boxes.map(([id, lineIndex, xMin, yMin, xMax, yMax], index) => ({
+    ...stroke(id, xMin, yMin, xMax, yMax),
+    syntheticLineIndex: lineIndex,
+    startTime: index * 120,
+    endTime: index * 120 + 20
+  }));
+
+  const result = segmentMathLines(strokes, {
+    answerBox: { xMin: 100, yMin: 40, xMax: 650, yMax: 420 }
+  });
+  const lineSets = result.selected.map((candidate) => (
+    [...new Set(candidate.strokes.map((item) => item.syntheticLineIndex))].sort((a, b) => a - b)
+  ));
+
+  assert.deepEqual(lineSets, [[0], [1], [2]]);
+  assert.equal(result.selected[0].profiles.includes('fraction-stack-line'), true);
+  assert.equal(result.selected[1].profiles.includes('fraction-stack-line'), true);
 });
 
 test('slow OCR penalizes nonstructural multi-row parent evidence', () => {
@@ -437,6 +555,60 @@ test('semantic scoring can choose a better top-five latex candidate', async () =
   assert.equal(result.semantic.source, 'semantic-service');
   assert.equal(result.latex, '2 x = 8');
   assert.equal(result.lines[0].semantic.bestLatex, '2 x = 8');
+});
+
+test('recognition semantic scoring receives selected testing catalog problem context', async () => {
+  installFakeCanvas();
+  const catalogProblems = testingCatalogProblems([
+    'algebra_prompt_context',
+    'logarithmic_solve',
+    'rational_two_fraction_solve'
+  ]);
+
+  for (const problem of catalogProblems) {
+    const strokes = [stroke(`a-${problem.id}`, 0, 0, 80, 36)];
+    const semanticRequests = [];
+
+    const result = await recognizeStudentWriting({
+      strokes,
+      answerBox: { xMin: -5, yMin: -5, xMax: 90, yMax: 46 },
+      problemLatex: problem.latex,
+      problemMetadata: problem.metadata,
+      semanticScoring: true,
+      recognizeLine: async () => ({
+        latex: problem.expectedLatexLines[0],
+        top: { latex: problem.expectedLatexLines[0], score: 2 },
+        candidates: [{ latex: problem.expectedLatexLines[0], score: 2 }],
+        elapsedSeconds: 0.03
+      }),
+      scoreSemantics: async (request) => {
+        semanticRequests.push(request);
+        return {
+          candidateScores: (request.candidateGroups || []).map((group) => ({
+            candidateId: group.candidateId,
+            lineIndex: group.lineIndex ?? null,
+            semanticScore: 3,
+            bestLatex: group.latex,
+            sound: true,
+            equivalentToProblem: false,
+            equivalentToPrevious: false,
+            candidateScores: []
+          })),
+          elapsedSeconds: 0.01
+        };
+      }
+    });
+
+    assert.ok(semanticRequests.length >= 1);
+    assert.equal(result.latex, problem.expectedLatexLines[0]);
+    for (const request of semanticRequests) {
+      assert.equal(request.problemLatex, problem.latex);
+      assert.equal(request.problemMetadata.name, problem.id);
+      assert.equal(request.problemMetadata.family, problem.family);
+      assert.equal(request.problemMetadata.source, 'testing/fixture_catalog.py');
+      assert.deepEqual(request.problemMetadata.expectedLatexLines, problem.expectedLatexLines);
+    }
+  }
 });
 
 test('low-score semantic best does not overwrite a valid top OCR line', async () => {
@@ -970,6 +1142,48 @@ test('standalone operation repair handles subscripted CoMER times annotations', 
   assert.equal(result.latex, '\\times 6 \\times 6');
 });
 
+test('standalone operation repair uses fraction denominator context for malformed times annotations', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('a', 0, 0, 300, 70)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 320, yMax: 90 },
+    problemLatex: '\\frac { x + 1 } { 2 } = \\frac { 5 } { 3 }',
+    recognizeAlternatives: false,
+    semanticScoring: true,
+    initialRasterHeight: 104,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: 'x _ { 0 } \\times n',
+      top: { latex: 'x _ { 0 } \\times n', score: -1 },
+      candidates: [{ latex: 'x _ { 0 } \\times n', score: -1 }],
+      elapsedSeconds: 2
+    }),
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 0.4,
+        bestLatex: group.latex,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        candidateScores: [{
+          latex: group.latex,
+          sound: true,
+          score: 0.4
+        }]
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.equal(result.lines[0].ocrRepair.source, 'standalone-operation');
+  assert.equal(result.latex, '\\times 6 \\times 6');
+});
+
 test('standalone operation repair normalizes spaced uppercase times annotations', async () => {
   installFakeCanvas();
   const strokes = [stroke('a', 0, 0, 300, 70)];
@@ -1097,6 +1311,178 @@ test('contextual operation repair uses previous additive constant', async () => 
   assert.equal(result.latex, '- 10 - 10');
 });
 
+test('contextual operation repair treats x0 as previous additive constant', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('a', 0, 0, 300, 70)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 320, yMax: 90 },
+    problemLatex: '\\frac { 2 x + 1 } { 3 } - \\frac { x - 2 } { 4 } = 5',
+    previousLatex: ['5 x + 10 = 60'],
+    recognizeAlternatives: false,
+    semanticScoring: true,
+    initialRasterHeight: 104,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '- 2 0 - x 0',
+      top: { latex: '- 2 0 - x 0', score: -1 },
+      candidates: [{ latex: '- 2 0 - x 0', score: -1 }],
+      elapsedSeconds: 2
+    }),
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 0.4,
+        bestLatex: group.latex,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        candidateScores: [{
+          latex: group.latex,
+          sound: true,
+          score: 0.4
+        }]
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.equal(result.lines[0].ocrRepair.source, 'contextual-operation');
+  assert.equal(result.latex, '- 10 - 10');
+});
+
+test('contextual operation repair uses reversed previous additive constant', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('a', 0, 0, 220, 60)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 250, yMax: 80 },
+    problemLatex: '\\log _ { 3 } ( x + 1 ) = 2',
+    previousLatex: ['9 = x + 1'],
+    recognizeAlternatives: false,
+    semanticScoring: true,
+    initialRasterHeight: 104,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '- 2 - 2',
+      top: { latex: '- 2 - 2', score: -1 },
+      candidates: [{ latex: '- 2 - 2', score: -1 }],
+      elapsedSeconds: 2
+    }),
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 0.4,
+        bestLatex: group.latex,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        candidateScores: [{
+          latex: group.latex,
+          sound: true,
+          score: 0.4
+        }]
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.equal(result.lines[0].ocrRepair.source, 'contextual-operation');
+  assert.equal(result.latex, '- 1 - 1');
+});
+
+test('contextual operation repair handles equals hallucination between operands', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('a', 0, 0, 220, 60)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 250, yMax: 80 },
+    problemLatex: '\\log _ { 3 } ( x + 1 ) = 2',
+    previousLatex: ['9 = x + 1'],
+    recognizeAlternatives: false,
+    semanticScoring: true,
+    initialRasterHeight: 104,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '- 2 = 1',
+      top: { latex: '- 2 = 1', score: -1 },
+      candidates: [{ latex: '- 2 = 1', score: -1 }],
+      elapsedSeconds: 2
+    }),
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 0.4,
+        bestLatex: group.latex,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        candidateScores: [{
+          latex: group.latex,
+          sound: true,
+          score: 0.4
+        }]
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.equal(result.lines[0].ocrRepair.source, 'contextual-operation');
+  assert.equal(result.latex, '- 1 - 1');
+});
+
+test('contextual operation repair treats x as one for previous additive constant', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('a', 0, 0, 220, 60)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 250, yMax: 80 },
+    problemLatex: '\\frac { x ^ { 2 } - 1 } { x - 1 } = 4',
+    previousLatex: ['x + 1 = 4'],
+    recognizeAlternatives: false,
+    semanticScoring: true,
+    initialRasterHeight: 104,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '- 1 - x',
+      top: { latex: '- 1 - x', score: -1 },
+      candidates: [{ latex: '- 1 - x', score: -1 }],
+      elapsedSeconds: 2
+    }),
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 0.4,
+        bestLatex: group.latex,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        candidateScores: [{
+          latex: group.latex,
+          sound: true,
+          score: 0.4
+        }]
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.equal(result.lines[0].ocrRepair.source, 'contextual-operation');
+  assert.equal(result.latex, '- 1 - 1');
+});
+
 test('semantic replacement preserves operation annotation shape', async () => {
   installFakeCanvas();
   const strokes = [
@@ -1145,6 +1531,34 @@ test('semantic replacement preserves operation annotation shape', async () => {
   assert.equal(result.latexLines[1], '- 3 - 3');
 });
 
+test('semantic replacement accepts sound operation annotation over non-operation read', () => {
+  const semantic = {
+    bestLatex: '\\times 1 2 \\times 1 2',
+    semanticScore: 0.37,
+    equivalentToProblem: false,
+    equivalentToPrevious: false,
+    sound: true,
+    candidateScores: [
+      {
+        latex: '\\times 1 2 \\times 1 2',
+        score: 0.37,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false
+      },
+      {
+        latex: 'X 1 2 \\times 1 0',
+        score: 0.2,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false
+      }
+    ]
+  };
+
+  assert.equal(shouldUseSemanticLatex('X 1 2 \\times 1 0', semantic), true);
+});
+
 test('semantic replacement can trust a better same-kind contextual candidate', () => {
   const semantic = {
     bestLatex: '4 + y = 7',
@@ -1175,6 +1589,36 @@ test('semantic replacement can trust a better same-kind contextual candidate', (
   assert.equal(shouldUseSemanticLatex('q + y = 7', semantic), true);
 });
 
+test('semantic replacement preserves visible expanded row over contextual simplification', () => {
+  const semantic = {
+    bestLatex: '5 x + 10 = 60',
+    semanticScore: 3.8,
+    equivalentToProblem: true,
+    equivalentToPrevious: true,
+    sound: true,
+    candidateScores: [
+      {
+        latex: '5 x + 10 = 60',
+        score: 3.8,
+        sound: true,
+        equivalentToProblem: true,
+        equivalentToPrevious: true,
+        detail: { repair: 'contextual_linear_simplification', characterOverlap: 0.4 }
+      },
+      {
+        latex: '8 x + 4 - 3 x + 6 = 60',
+        score: 2.8,
+        sound: true,
+        equivalentToProblem: true,
+        equivalentToPrevious: true,
+        detail: { characterOverlap: 0.8 }
+      }
+    ]
+  };
+
+  assert.equal(shouldUseSemanticLatex('8 x + 4 - 3 x + 6 = 60', semantic), false);
+});
+
 test('semantic replacement rejects duplicate previous contextual best', () => {
   const semantic = {
     bestLatex: 'x = 2',
@@ -1203,6 +1647,122 @@ test('semantic replacement rejects duplicate previous contextual best', () => {
   };
 
   assert.equal(shouldUseSemanticLatex('x = 3', semantic), false);
+});
+
+test('semantic replacement preserves stronger visual current over previous-equivalent best', () => {
+  const semantic = {
+    bestLatex: '1 + y = x',
+    semanticScore: 2.2167,
+    equivalentToProblem: false,
+    equivalentToPrevious: true,
+    sound: true,
+    candidateScores: [
+      {
+        latex: '1 + y = x',
+        score: 2.2167,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: true,
+        detail: { modelScore: -1.2862, characterOverlap: 0.685 }
+      },
+      {
+        latex: '4 + y = 7',
+        score: 1.2299,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        detail: { modelScore: -0.3848, characterOverlap: 0.461 }
+      }
+    ]
+  };
+
+  assert.equal(shouldUseSemanticLatex('4 + y = 7', semantic), false);
+});
+
+test('semantic replacement preserves derivative prime over previous-equivalent best', () => {
+  const semantic = {
+    bestLatex: 'f ( 2 ) = \\frac { 3 } { 4 }',
+    semanticScore: 3.248,
+    equivalentToProblem: false,
+    equivalentToPrevious: true,
+    sound: true,
+    candidateScores: [
+      {
+        latex: 'f ( 2 ) = \\frac { 3 } { 4 }',
+        score: 3.248,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: true,
+        detail: { modelScore: -1.2757, characterOverlap: 0.415 }
+      },
+      {
+        latex: 'f ^ { \\prime } ( 2 ) = \\frac { 3 } { 4 }',
+        score: 1.2607,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        detail: { modelScore: -0.2257, characterOverlap: 0.298 }
+      }
+    ]
+  };
+
+  assert.equal(shouldUseSemanticLatex('f ^ { \\prime } ( 2 ) = \\frac { 3 } { 4 }', semantic), false);
+});
+
+test('semantic replacement accepts problem-supported repair', () => {
+  const semantic = {
+    bestLatex: 'x = \\frac { - 4 + \\sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }',
+    semanticScore: 2.3018,
+    equivalentToProblem: false,
+    equivalentToPrevious: false,
+    sound: true,
+    candidateScores: [
+      {
+        latex: 'x = \\frac { - 4 + \\sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }',
+        score: 2.3018,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        detail: { solutionSupportedByProblem: true, repair: 'contextual_quadratic_formula_coefficient' }
+      }
+    ]
+  };
+
+  assert.equal(shouldUseSemanticLatex('x = \\frac { 1 + \\sqrt { 4 ^ { 2 } - 1 1 ) ( - 5 } } { 2 ( 1 ) } - 1', semantic), true);
+});
+
+test('semantic replacement accepts problem-supported numeric repair over stronger visual top', () => {
+  const semantic = {
+    bestLatex: 'x = 1',
+    semanticScore: 3.0232,
+    equivalentToProblem: false,
+    equivalentToPrevious: true,
+    sound: true,
+    candidateScores: [
+      {
+        latex: 'x = 1',
+        score: 3.0232,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: true,
+        detail: {
+          modelScore: -0.6294,
+          solutionSupportedByProblem: true,
+          repair: 'contextual_latex_numeric_equivalence'
+        }
+      },
+      {
+        latex: 'x = 2',
+        score: 1.6157,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        detail: { modelScore: -0.0794, characterOverlap: 0.493 }
+      }
+    ]
+  };
+
+  assert.equal(shouldUseSemanticLatex('x = 2', semantic), true);
 });
 
 test('semantic replacement rejects unsound best candidate', () => {
@@ -1343,6 +1903,69 @@ test('chunk fallback infers isolated context variable before equals', async () =
 
   assert.deepEqual(chunkCalls, [['rhs']]);
   assert.equal(result.lines[0].prediction.chunkAttempts[0].inferredLiteral, true);
+  assert.equal(result.latex, 'x = \\frac { 1 } { 2 }');
+});
+
+test('chunk fallback retries chunk OCR at lower raster heights', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('x', 0, 20, 28, 58),
+    stroke('eq_top', 48, 28, 92, 34),
+    stroke('eq_bottom', 48, 50, 92, 56),
+    stroke('rhs', 125, 8, 520, 86),
+  ];
+  assignTimes(strokes);
+  const chunkHeights = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 545, yMax: 110 },
+    problemLatex: 'x ^ { 2 } + 4 x - 5 = 0',
+    recognizeAlternatives: false,
+    retryRasterHeights: [88],
+    initialRasterHeight: 104,
+    chunkFallbackMinCssWidth: 500,
+    chunkFallbackMaxCssWidth: 340,
+    recognizeLine: async (image) => {
+      if (!image.profiles.includes('chunk-fallback')) {
+        return {
+          latex: '',
+          top: null,
+          candidates: [],
+          timedOut: true,
+          elapsedSeconds: 20
+        };
+      }
+      if (image.strokeIds.includes('rhs')) {
+        chunkHeights.push(image.targetPixelHeight);
+        if (image.targetPixelHeight === 72) {
+          return {
+            latex: '',
+            top: null,
+            candidates: [],
+            timedOut: true,
+            elapsedSeconds: 20
+          };
+        }
+        return {
+          latex: '\\frac { 1 } { 2 }',
+          top: { latex: '\\frac { 1 } { 2 }', score: 1 },
+          candidates: [{ latex: '\\frac { 1 } { 2 }', score: 1 }],
+          elapsedSeconds: 1
+        };
+      }
+      return {
+        latex: '',
+        top: null,
+        candidates: [],
+        timedOut: true,
+        elapsedSeconds: 20
+      };
+    }
+  });
+
+  assert.deepEqual(chunkHeights, [72, 88]);
+  assert.equal(result.lines[0].prediction.chunkFallback, true);
   assert.equal(result.latex, 'x = \\frac { 1 } { 2 }');
 });
 
@@ -1619,7 +2242,11 @@ test('compact neighboring fractions are split into separate chunk OCR calls', as
   const chunkCalls = calls.filter((call) => call.profiles.includes('chunk-fallback'));
   assert.ok(chunkCalls.some((call) => call.strokeIds.includes('left_bar')));
   assert.ok(chunkCalls.some((call) => call.strokeIds.includes('right_bar')));
-  assert.ok(result.lines[0].prediction.chunkAttempts.filter((attempt) => attempt.fractionSubchunk).length >= 2);
+  const fractionAttempts = result.lines[0].prediction.chunkAttempts.filter((attempt) => attempt.fractionSubchunk);
+  assert.ok(fractionAttempts.length >= 2);
+  assert.ok(fractionAttempts.every((attempt) => (
+    attempt.parts.every((part) => part.targetPixelHeight === 72)
+  )));
   assert.equal(result.latex, '\\frac { x } { 2 } + \\frac { 1 } { 3 } = 2');
 });
 
@@ -2041,7 +2668,7 @@ test('operation underlines do not make an algebra stack look like one fraction',
 });
 
 test('submitted problem flow preserves recognition status and result', () => {
-  const initial = createInitialProblemFlow(1200);
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
   const active = getActiveProblem(initial);
   const withAnswer = {
     ...initial,
@@ -2201,17 +2828,8 @@ test('recognition summary preserves debug crop state and final line order', () =
   assert.equal(summary.segmentation.ocrSelectedCandidateIds.length, 2);
 });
 
-test('temporary problem fixtures cover linear rational and logarithmic equations', () => {
-  assert.equal(TEST_PROBLEMS.length, 3);
-  assert.deepEqual(TEST_PROBLEMS.map((problem) => problem.id), ['problem-1', 'problem-2', 'problem-3']);
-  assert.ok(TEST_PROBLEMS.every((problem) => problem.latex.includes('=')));
-  assert.equal(TEST_PROBLEMS.some((problem) => problem.latex === '2x + 3 = 11'), true);
-  assert.equal(TEST_PROBLEMS.some((problem) => problem.latex.includes('\\frac')), true);
-  assert.equal(TEST_PROBLEMS.some((problem) => problem.latex.includes('\\log')), true);
-});
-
 test('recognition context does not leak previous problem latex into new submissions', () => {
-  const initial = createInitialProblemFlow(1200);
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
   const firstProblem = getActiveProblem(initial);
   const withFirstAnswer = {
     ...initial,
@@ -2248,6 +2866,25 @@ function candidate(candidateId, profiles, strokeIds, xMin, yMin, xMax, yMax) {
     expandedBbox: { xMin, yMin, xMax, yMax },
     conflicts: []
   };
+}
+
+function testingCatalogProblems(names) {
+  const output = execFileSync('python3', ['testing/export_equation_problem_catalog.py', ...names], {
+    cwd: process.cwd(),
+    encoding: 'utf8'
+  });
+  return (JSON.parse(output).problems || []).map((problem) => ({
+    id: problem.id,
+    latex: problem.latex,
+    family: problem.family,
+    expectedLatexLines: problem.expectedLatexLines || [],
+    metadata: {
+      name: problem.name,
+      family: problem.family,
+      source: problem.source,
+      expectedLatexLines: problem.expectedLatexLines || []
+    }
+  }));
 }
 
 function candidateFromStrokeList(candidateId, profiles, strokes) {

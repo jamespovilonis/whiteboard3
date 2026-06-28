@@ -379,6 +379,8 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
   }
 
   score -= adjacentLineIntrusionPenalty(candidate, allCandidates, { medianHeight });
+  score -= dbnetLineBoundaryIntrusionPenalty(candidate, allCandidates);
+  score -= dbnetBoundaryStrokeIntrusionPenalty(candidate, allCandidates, { medianHeight });
 
   return score;
 }
@@ -692,6 +694,81 @@ function adjacentLineIntrusionPenalty(candidate, allCandidates, { medianHeight }
     penalty = Math.max(penalty, 3.5 + Math.min(6.0, (overlap - threshold) * 0.6));
   }
   return penalty;
+}
+
+function dbnetLineBoundaryIntrusionPenalty(candidate, allCandidates) {
+  const profiles = candidate?.profiles || [];
+  if (!candidate?.strokeIds?.length || !candidate.tightBbox) return 0;
+  if (profiles.includes('dbnet-line')) return 0;
+  if (!profiles.some((profile) => (
+    profile === 'strict' ||
+    profile === 'raw-row-line' ||
+    profile === 'row-line' ||
+    profile === 'loose'
+  ))) {
+    return 0;
+  }
+
+  const children = (allCandidates || []).filter((child) => (
+    child !== candidate &&
+    child?.profiles?.includes('dbnet-line') &&
+    child.tightBbox &&
+    strokeSetContains(candidate, child)
+  ));
+  for (const child of children) {
+    const childIds = new Set(child.strokeIds || []);
+    const extraStrokes = (candidate.strokes || []).filter((stroke) => !childIds.has(String(stroke.id)));
+    if (extraStrokes.length === 0 || extraStrokes.length > 3) continue;
+    if ((child.strokeIds || []).length < (candidate.strokeIds || []).length * 0.72) continue;
+    if (bboxWidth(child.tightBbox) < bboxWidth(candidate.tightBbox) * 0.72) continue;
+    if (candidate.tightBbox.yMax - child.tightBbox.yMax > 18) continue;
+
+    const lowerEdgeIntrusion = extraStrokes.every((stroke) => {
+      const box = stroke.canvasBbox;
+      if (!box) return false;
+      if (centerY(box) < child.tightBbox.yMax - 8) return false;
+      if (horizontalOverlapRatio(box, child.tightBbox) < 0.08 && horizontalGap(box, child.tightBbox) > 42) {
+        return false;
+      }
+      return bboxHeight(box) <= Math.max(42, bboxHeight(child.tightBbox) * 0.45);
+    });
+    if (lowerEdgeIntrusion) return 4.2;
+  }
+  return 0;
+}
+
+function dbnetBoundaryStrokeIntrusionPenalty(candidate, allCandidates, { medianHeight }) {
+  const profiles = candidate?.profiles || [];
+  if (!profiles.includes('dbnet-line') || !candidate?.strokeIds?.length || !candidate.tightBbox) {
+    return 0;
+  }
+
+  for (const child of allCandidates || []) {
+    if (child === candidate || !child?.tightBbox || !child?.strokeIds?.length) continue;
+    if (!isPreferredChildLineCandidate(child)) continue;
+    if (!strokeSetContains(candidate, child)) continue;
+    if ((child.strokeIds || []).length < (candidate.strokeIds || []).length - 3) continue;
+    if (bboxWidth(child.tightBbox) < bboxWidth(candidate.tightBbox) * 0.68) continue;
+
+    const childIds = new Set(child.strokeIds || []);
+    const extraStrokes = (candidate.strokes || []).filter((stroke) => !childIds.has(String(stroke.id)));
+    if (extraStrokes.length === 0 || extraStrokes.length > 3) continue;
+
+    const upperIntrusion = extraStrokes.every((stroke) => {
+      const box = stroke.canvasBbox;
+      if (!box) return false;
+      if (centerY(box) >= child.tightBbox.yMin) return false;
+      const gap = child.tightBbox.yMin - (box.yMax ?? child.tightBbox.yMin);
+      if (gap > Math.max(24, (medianHeight || 1) * 0.8)) return false;
+      if (bboxHeight(box) > Math.max(42, bboxHeight(child.tightBbox) * 0.45)) return false;
+      if (horizontalOverlapRatio(box, child.tightBbox) < 0.08 && horizontalGap(box, child.tightBbox) > 42) {
+        return false;
+      }
+      return true;
+    });
+    if (upperIntrusion) return 5.2;
+  }
+  return 0;
 }
 
 function isStructuralMathCandidate(candidate) {
@@ -1043,7 +1120,18 @@ function buildCompactFractionStackGroups(rows, config) {
         profile: 'fraction-stack-probe',
         config
       });
-      if (bboxHeight(candidate.tightBbox) > 130) continue;
+      if (
+        slice.length > 1 &&
+        bboxWidth(candidate.tightBbox) > 220 &&
+        (
+          rowLooksLikeEquationWithEquals(slice[slice.length - 1]) ||
+          rowLooksLikeOperationAnnotation(slice[slice.length - 1])
+        ) &&
+        !hasWideFractionBar(candidate)
+      ) {
+        continue;
+      }
+      if (bboxHeight(candidate.tightBbox) > 150) continue;
       if (rowsHaveIndependentLowerContinuation(slice, candidate, { broadContinuationMin: 0 })) continue;
       if (!hasNearbyCompactFractionBridge(candidate, clusterStrokeRows(candidate, config))) continue;
       groups.push({ strokes });
@@ -1655,6 +1743,63 @@ function rowHasLocalHorizontalBridge(row, child) {
     return horizontalOverlapRatio(box, childBox) >= 0.45 ||
       horizontalGap(box, childBox) <= Math.max(18, childWidth * 0.2);
   });
+}
+
+function rowLooksLikeEquationWithEquals(row) {
+  const horizontals = (row?.strokes || [])
+    .filter((stroke) => {
+      const box = stroke.canvasBbox;
+      if (!box || !isHorizontalStroke(stroke)) return false;
+      const width = bboxWidth(box);
+      const height = bboxHeight(box);
+      return width >= 18 && width <= 90 && height <= 14;
+    })
+    .sort((a, b) => centerY(a.canvasBbox) - centerY(b.canvasBbox));
+
+  for (let i = 0; i < horizontals.length; i += 1) {
+    for (let j = i + 1; j < horizontals.length; j += 1) {
+      const upper = horizontals[i].canvasBbox;
+      const lower = horizontals[j].canvasBbox;
+      const gap = verticalGap(upper, lower);
+      if (gap > 22) continue;
+      if (horizontalOverlapRatio(upper, lower) < 0.65) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasWideFractionBar(candidate) {
+  if (!candidate?.strokes?.length || !candidate.tightBbox) return false;
+  const candidateWidth = Math.max(1, bboxWidth(candidate.tightBbox));
+  return candidate.strokes.some((stroke) => {
+    const box = stroke.canvasBbox;
+    if (!box || !isHorizontalStroke(stroke)) return false;
+    return bboxWidth(box) >= Math.max(90, candidateWidth * 0.42);
+  });
+}
+
+function rowLooksLikeOperationAnnotation(row) {
+  const box = row?.bbox;
+  const strokes = row?.strokes || [];
+  if (!box || strokes.length < 3) return false;
+  const width = bboxWidth(box);
+  const height = bboxHeight(box);
+  if (width < 110 || height > 80) return false;
+
+  const horizontalMarks = strokes.filter((stroke) => {
+    const strokeBox = stroke.canvasBbox;
+    if (!strokeBox || !isHorizontalStroke(stroke)) return false;
+    const strokeWidthValue = bboxWidth(strokeBox);
+    const strokeHeightValue = bboxHeight(strokeBox);
+    return strokeWidthValue >= 16 &&
+      strokeWidthValue <= Math.max(90, width * 0.42) &&
+      strokeHeightValue <= 16;
+  });
+  if (horizontalMarks.length < 2) return false;
+
+  const centers = horizontalMarks.map((stroke) => centerX(stroke.canvasBbox));
+  return Math.max(...centers) - Math.min(...centers) >= Math.max(70, width * 0.35);
 }
 
 function hasNearbyCompactFractionBridge(candidate, rows) {

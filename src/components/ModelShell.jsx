@@ -93,7 +93,7 @@ export default function ModelShell({ response, recognitionResults = [], debugMod
 
           <div className={`model-shell-actions ${debugMode ? 'is-debug' : ''}`}>
             <button type="button">Ask for help</button>
-            <button type="button" onClick={onSubmitAnswer}>Submit</button>
+            <button type="button" data-testid="submit-answer" onClick={onSubmitAnswer}>Submit</button>
           </div>
         </aside>
       )}

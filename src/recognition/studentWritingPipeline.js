@@ -11,6 +11,8 @@ import { recognizeLineImage } from './ocrClient.js';
 import { requestLineDetections } from './segmentationClient.js';
 import { scoreLatexCandidates } from './semanticClient.js';
 
+const FRACTION_CHUNK_RASTER_HEIGHTS = [72, 88, 104];
+
 export async function recognizeStudentWriting(options = {}) {
   const pipelineStartedAt = performanceNow();
   const {
@@ -20,6 +22,7 @@ export async function recognizeStudentWriting(options = {}) {
     detectLineBands = false,
     detectLines = requestLineDetections,
     problemLatex = '',
+    problemMetadata = {},
     previousLatex = [],
     apiUrl = '',
     model = 'comer',
@@ -121,6 +124,7 @@ export async function recognizeStudentWriting(options = {}) {
   let semantic = await resolveSemanticScores({
     candidatePredictions,
     problemLatex,
+    problemMetadata,
     previousLatex,
     semanticScoring,
     scoreSemantics,
@@ -153,6 +157,7 @@ export async function recognizeStudentWriting(options = {}) {
   const contextualCandidateSemantic = await resolveContextualCandidateSemanticScores({
     candidatePredictions,
     problemLatex,
+    problemMetadata,
     previousLatex,
     semanticScoring: semanticScoring && !semantic.failed,
     scoreSemantics,
@@ -278,6 +283,7 @@ export async function recognizeStudentWriting(options = {}) {
   let selectedLineSemantic = await resolveSelectedLineSemanticScores({
     recognizedLines,
     problemLatex,
+    problemMetadata,
     previousLatex,
     semanticScoring: semanticScoring && !semantic.failed,
     scoreSemantics,
@@ -372,7 +378,7 @@ export async function recognizeStudentWriting(options = {}) {
       sequentialSemanticElapsedSeconds: finiteSeconds(selectedLineSemantic.elapsedSeconds),
       submitToFinalPredictionSeconds: secondsSince(pipelineStartedAt)
     };
-    const operationRepair = repairStandaloneOperationLatex(line.latex, lineSemantic);
+    const operationRepair = repairStandaloneOperationLatex(line.latex, lineSemantic, { problemLatex });
     if (operationRepair) {
       line.ocrRepair = {
         source: 'standalone-operation',
@@ -438,6 +444,7 @@ export async function recognizeStudentWriting(options = {}) {
 async function resolveContextualCandidateSemanticScores({
   candidatePredictions,
   problemLatex,
+  problemMetadata,
   previousLatex,
   semanticScoring,
   scoreSemantics,
@@ -462,6 +469,7 @@ async function resolveContextualCandidateSemanticScores({
 
       const payload = await scoreSemantics({
         problemLatex,
+        problemMetadata,
         previousLatex: [
           ...(previousLatex || []),
           ...sameAnswerContext
@@ -503,6 +511,7 @@ async function resolveContextualCandidateSemanticScores({
 async function resolveSelectedLineSemanticScores({
   recognizedLines,
   problemLatex,
+  problemMetadata,
   previousLatex,
   semanticScoring,
   scoreSemantics,
@@ -525,6 +534,7 @@ async function resolveSelectedLineSemanticScores({
     for (const line of recognizedLines) {
       const payload = await scoreSemantics({
         problemLatex,
+        problemMetadata,
         previousLatex: contextLatex.slice(),
         candidateGroups: [{
           candidateId: line.candidateId,
@@ -574,6 +584,7 @@ async function resolveSelectedLineSemanticScores({
 async function resolveSemanticScores({
   candidatePredictions,
   problemLatex,
+  problemMetadata,
   previousLatex,
   semanticScoring,
   scoreSemantics,
@@ -591,6 +602,7 @@ async function resolveSemanticScores({
   try {
     const payload = await scoreSemantics({
       problemLatex,
+      problemMetadata,
       previousLatex,
       candidateGroups: candidatePredictions.map((entry) => ({
         candidateId: entry.candidateId,
@@ -970,7 +982,7 @@ function looksLikeWeakVariableEquation(latex, semanticEntry = {}) {
   return !(semanticEntry.equivalentToProblem || semanticEntry.equivalentToPrevious);
 }
 
-function repairStandaloneOperationLatex(latex, semanticEntry = {}) {
+function repairStandaloneOperationLatex(latex, semanticEntry = {}, { problemLatex = '' } = {}) {
   const semanticScore = Number(semanticEntry.semanticScore);
   if (semanticEntry.equivalentToProblem || semanticEntry.equivalentToPrevious) return null;
   if (Number.isFinite(semanticScore) && semanticScore >= 2) return null;
@@ -1004,6 +1016,11 @@ function repairStandaloneOperationLatex(latex, semanticEntry = {}) {
     if (leftOperand && leftOperand === rightOperand) return `\\times ${leftOperand} \\times ${rightOperand}`;
   }
 
+  const multiplier = contextualProblemDenominatorMultiplier(problemLatex);
+  if (multiplier && looksLikeMalformedEqualMultiplierOperation(normalized)) {
+    return `\\times ${multiplier} \\times ${multiplier}`;
+  }
+
   const withoutCommands = normalized.replace(/\\(?:times|div|cdot|pm)\b/g, '');
   const letters = withoutCommands.match(/[a-zA-Z]/g) || [];
   if (!letters.length || !letters.every((letter) => letter.toLowerCase() === 'x')) return null;
@@ -1029,24 +1046,77 @@ function repairOperationAnnotationFromPrevious(latex, previousLatex = []) {
   if (!operand) return null;
 
   const normalized = String(latex || '').replace(/\s+/g, ' ').trim();
-  if (!normalized || /[=<>]/.test(normalized)) return null;
-  const match = normalized.match(/^-\s+((?:\d\s*){1,5})\s+-\s+((?:\d\s*){1,5})$/);
+  if (!normalized || /[<>]/.test(normalized)) return null;
+  const match = normalized.match(/^-\s+([a-zA-Z0-9\s]{1,12})\s*(?:-|=)\s*([a-zA-Z0-9\s]{1,12})$/);
   if (!match) return null;
-  const left = (match[1].match(/\d/g) || []).join('');
-  const right = (match[2].match(/\d/g) || []).join('');
-  if (!left || left !== right || left === operand) return null;
+  const left = operationOperandDigits(match[1], operand);
+  const right = operationOperandDigits(match[2], operand);
+  if (!left || !right) return null;
+  const leftRaw = (String(match[1] || '').match(/\d/g) || []).join('');
+  const rightRaw = (String(match[2] || '').match(/\d/g) || []).join('');
+  if (leftRaw === operand && rightRaw === operand && normalized.includes('-')) return null;
+  if (left !== right && right !== operand) return null;
   return `- ${operand} - ${operand}`;
+}
+
+function operationOperandDigits(text, contextualOperand = '') {
+  const rawDigits = (String(text || '').match(/\d/g) || []).join('');
+  if (rawDigits === contextualOperand) return rawDigits;
+  const repaired = String(text || '').replace(/[xXlI]/g, '1').replace(/[oO]/g, '0');
+  const repairedDigits = (repaired.match(/\d/g) || []).join('');
+  if (contextualOperand && repairedDigits === contextualOperand) return repairedDigits;
+  return rawDigits;
+}
+
+function contextualProblemDenominatorMultiplier(problemLatex = '') {
+  const denominators = [];
+  const pattern = /\\frac\s*\{\s*[^{}]+\s*\}\s*\{\s*((?:\d\s*){1,5})\s*\}/g;
+  for (const match of String(problemLatex || '').matchAll(pattern)) {
+    const value = Number((match[1].match(/\d/g) || []).join(''));
+    if (Number.isFinite(value) && value > 0) denominators.push(value);
+  }
+  if (denominators.length < 2) return 0;
+  return denominators.reduce((product, value) => lcm(product, value), 1);
+}
+
+function lcm(a, b) {
+  if (!a || !b) return 0;
+  return Math.abs(a * b) / gcd(a, b);
+}
+
+function gcd(a, b) {
+  let left = Math.abs(Number(a) || 0);
+  let right = Math.abs(Number(b) || 0);
+  while (right) {
+    const next = left % right;
+    left = right;
+    right = next;
+  }
+  return left;
+}
+
+function looksLikeMalformedEqualMultiplierOperation(latex) {
+  const normalized = String(latex || '').replace(/\s+/g, ' ').trim();
+  if (!normalized || /[=<>]/.test(normalized)) return false;
+  if (/^[+\-/]/.test(normalized)) return false;
+  if (!/\\(?:times|cdot|div)\b|(?:^|\s)[xX](?:\s|_|$)/.test(normalized)) return false;
+  if (/\\(?:frac|sqrt|log|ln|int|sum|prod)\b/.test(normalized)) return false;
+  const withoutCommands = normalized.replace(/\\(?:times|cdot|div|pm)\b/g, '');
+  const letters = withoutCommands.match(/[a-zA-Z]/g) || [];
+  return Boolean(letters.length) && letters.every((letter) => ['x', 'n', 'o', 'l'].includes(letter.toLowerCase()));
 }
 
 function additiveConstantToRemove(previousLatex = []) {
   for (let index = previousLatex.length - 1; index >= 0; index -= 1) {
     const latex = String(previousLatex[index] || '').replace(/\s+/g, ' ').trim();
     if (!latex || (latex.match(/=/g) || []).length !== 1) continue;
-    const [left] = latex.split('=');
-    const matches = [...left.matchAll(/(?:^|\s)\+\s*((?:\d\s*){1,5})(?=\s|$)/g)];
-    if (!matches.length) continue;
-    const operand = (matches[matches.length - 1][1].match(/\d/g) || []).join('');
-    if (operand && Number(operand) > 0) return operand;
+    for (const side of latex.split('=')) {
+      if (!/[A-Za-z\\]/.test(side)) continue;
+      const matches = [...side.matchAll(/(?:^|\s)\+\s*((?:\d\s*){1,5})(?=\s|$)/g)];
+      if (!matches.length) continue;
+      const operand = (matches[matches.length - 1][1].match(/\d/g) || []).join('');
+      if (operand && Number(operand) > 0) return operand;
+    }
   }
   return '';
 }
@@ -1156,24 +1226,34 @@ async function recognizeChunkedLine(candidate, {
       continue;
     }
 
-    const image = rasterizeLineCandidate(chunk, {
-      padding: rasterPadding,
-      targetPixelHeight: initialRasterHeight
-    });
-    const prediction = await Promise.resolve()
-      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs }))
-      .catch((error) => ({
+    if (bboxWidth(chunk.tightBbox || {}) > 220 && splitFractionChunk(chunk)) {
+      const fraction = await recognizeFractionChunk(chunk, {
+        apiUrl,
         model,
-        latex: '',
-        candidates: [],
-        confidence: 0,
-        failed: true,
-        error: error instanceof Error ? error.message : String(error),
-        elapsedSeconds: 0
-      }));
+        timeoutMs,
+        rasterPadding,
+        initialRasterHeight,
+        recognizeLine
+      });
+      if (fraction?.attempt) attempts.push(fraction.attempt);
+      if (fraction?.latex) {
+        parts.push(fraction.latex);
+        continue;
+      }
+    }
+
+    const { prediction, attempts: partAttempts } = await recognizeChunkPart(chunk, {
+      apiUrl,
+      model,
+      timeoutMs,
+      rasterPadding,
+      initialRasterHeight,
+      recognizeLine
+    });
     attempts.push({
       strokeIds: chunk.strokeIds,
-      prediction
+      prediction,
+      attempts: partAttempts
     });
 
     let latex = chooseChunkLatex(prediction);
@@ -1220,6 +1300,56 @@ async function recognizeChunkedLine(candidate, {
     timedOut: false,
     chunkFallback: true,
     chunkAttempts: attempts
+  };
+}
+
+async function recognizeChunkPart(chunk, {
+  apiUrl,
+  model,
+  timeoutMs,
+  rasterPadding,
+  initialRasterHeight,
+  recognizeLine
+}) {
+  const attempts = [];
+  let bestPrediction = null;
+  for (const targetPixelHeight of chunkRasterHeights(initialRasterHeight)) {
+    const image = rasterizeLineCandidate(chunk, {
+      padding: rasterPadding,
+      targetPixelHeight
+    });
+    const prediction = await Promise.resolve()
+      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs }))
+      .catch((error) => ({
+        model,
+        latex: '',
+        candidates: [],
+        confidence: 0,
+        failed: true,
+        error: error instanceof Error ? error.message : String(error),
+        elapsedSeconds: 0
+      }));
+    const attempt = {
+      targetPixelHeight,
+      prediction,
+      topLatex: chooseChunkLatex(prediction)
+    };
+    attempts.push(attempt);
+    bestPrediction = prediction;
+    if (attempt.topLatex && !predictionNeedsRetry(prediction)) {
+      return { prediction, attempts };
+    }
+  }
+  return {
+    prediction: bestPrediction || {
+      model,
+      latex: '',
+      candidates: [],
+      confidence: 0,
+      failed: true,
+      elapsedSeconds: 0
+    },
+    attempts
   };
 }
 
@@ -1280,9 +1410,40 @@ async function recognizeFractionChunk(chunk, {
   const latexByRole = {};
   for (const role of ['numerator', 'denominator']) {
     const part = split[role];
+    const { latex, attempts } = await recognizeFractionPartChunk(part, {
+      role,
+      apiUrl,
+      model,
+      timeoutMs,
+      rasterPadding,
+      initialRasterHeight,
+      recognizeLine
+    });
+    attempt.parts.push(...attempts);
+    if (!latex) return { latex: '', attempt };
+    latexByRole[role] = latex;
+  }
+
+  return {
+    latex: `\\frac { ${latexByRole.numerator} } { ${latexByRole.denominator} }`,
+    attempt
+  };
+}
+
+async function recognizeFractionPartChunk(part, {
+  role,
+  apiUrl,
+  model,
+  timeoutMs,
+  rasterPadding,
+  initialRasterHeight,
+  recognizeLine
+}) {
+  const attempts = [];
+  for (const targetPixelHeight of chunkRasterHeights(initialRasterHeight)) {
     const image = rasterizeLineCandidate(part, {
       padding: rasterPadding,
-      targetPixelHeight: initialRasterHeight
+      targetPixelHeight
     });
     const prediction = await Promise.resolve()
       .then(() => recognizeLine(image, { apiUrl, model, timeoutMs }))
@@ -1296,35 +1457,42 @@ async function recognizeFractionChunk(chunk, {
         elapsedSeconds: 0
       }));
     const latex = chooseChunkLatex(prediction);
-    attempt.parts.push({
+    attempts.push({
       role,
       strokeIds: part.strokeIds,
+      targetPixelHeight,
       prediction,
       topLatex: latex
     });
-    if (!latex) return { latex: '', attempt };
-    latexByRole[role] = latex;
+    if (latex && !predictionNeedsRetry(prediction)) {
+      return { latex, attempts };
+    }
   }
+  return { latex: '', attempts };
+}
 
-  return {
-    latex: `\\frac { ${latexByRole.numerator} } { ${latexByRole.denominator} }`,
-    attempt
-  };
+function chunkRasterHeights(targetHeight) {
+  const heights = [];
+  for (const height of [...FRACTION_CHUNK_RASTER_HEIGHTS, targetHeight]) {
+    const value = Number(height);
+    if (Number.isFinite(value) && value > 0 && !heights.includes(value)) {
+      heights.push(value);
+    }
+  }
+  return heights;
 }
 
 function splitFractionChunk(chunk) {
   const strokes = (chunk.strokes || []).filter((stroke) => stroke?.canvasBbox);
   if (strokes.length < 3) return null;
   const box = chunk.tightBbox || bboxForStrokes(strokes);
-  const bar = strokes
+  const splits = strokes
     .filter((stroke) => strokeLooksLikeFractionBar(stroke.canvasBbox, box))
-    .sort((a, b) => bboxWidth(b.canvasBbox) - bboxWidth(a.canvasBbox))[0];
-  if (!bar) return null;
-
-  const barMid = (bar.canvasBbox.yMin + bar.canvasBbox.yMax) / 2;
-  const numerator = strokes.filter((stroke) => stroke !== bar && stroke.canvasBbox.yMax <= barMid);
-  const denominator = strokes.filter((stroke) => stroke !== bar && stroke.canvasBbox.yMin >= barMid);
-  if (!numerator.length || !denominator.length) return null;
+    .map((stroke) => fractionBarSplit(stroke, strokes))
+    .filter((split) => split && split.score >= 0.16)
+    .sort((a, b) => b.score - a.score);
+  if (!splits.length) return null;
+  const { bar, numerator, denominator } = splits[0];
 
   return {
     bar,
@@ -1333,13 +1501,33 @@ function splitFractionChunk(chunk) {
   };
 }
 
+function fractionBarSplit(bar, strokes) {
+  const barMid = (bar.canvasBbox.yMin + bar.canvasBbox.yMax) / 2;
+  const numerator = strokes.filter((stroke) => stroke !== bar && stroke.canvasBbox.yMax <= barMid);
+  const denominator = strokes.filter((stroke) => stroke !== bar && stroke.canvasBbox.yMin >= barMid);
+  if (!numerator.length || !denominator.length) return null;
+  const barWidth = Math.max(1, bboxWidth(bar.canvasBbox));
+  const numeratorWidth = bboxWidth(bboxForStrokes(numerator));
+  const denominatorWidth = bboxWidth(bboxForStrokes(denominator));
+  const widthBalance = Math.min(numeratorWidth, denominatorWidth) / barWidth;
+  const countBalance = Math.min(numerator.length, denominator.length) / Math.max(numerator.length, denominator.length);
+  return {
+    bar,
+    numerator,
+    denominator,
+    score: widthBalance + 0.55 * countBalance
+  };
+}
+
 function strokeLooksLikeFractionBar(box, parentBox) {
   const width = bboxWidth(box);
   const height = bboxHeight(box);
   const parentWidth = Math.max(1, bboxWidth(parentBox));
+  const parentHeight = Math.max(1, bboxHeight(parentBox));
   if (width < Math.max(18, parentWidth * 0.45)) return false;
-  if (height > 18 || width < height * 3.5) return false;
-  return true;
+  if (height <= 18 && width >= height * 3.5) return true;
+  if (width >= parentWidth * 0.65 && height <= parentHeight * 0.4 && width >= height * 5) return true;
+  return width >= parentWidth * 0.7 && height <= parentHeight * 0.65 && width >= height * 4.5;
 }
 
 function candidateCanUseChunking(candidate, {
@@ -1632,6 +1820,8 @@ export function shouldUseSemanticLatex(currentLatex, semanticEntry = {}) {
   const current = String(currentLatex || '').trim();
   if (!current || current === bestLatex) return true;
   if (looksLikeOperationAnnotation(current) && !looksLikeOperationAnnotation(bestLatex)) return false;
+  if (looksLikeOperationAnnotation(bestLatex) && !looksLikeOperationAnnotation(current)) return true;
+  if (semanticReplacementFightsVisibleRow(current, bestLatex, semanticEntry)) return false;
   const currentScore = (semanticEntry.candidateScores || []).find((candidate) => (
     String(candidate.latex || '').trim() === current
   ));
@@ -1641,13 +1831,53 @@ export function shouldUseSemanticLatex(currentLatex, semanticEntry = {}) {
   ) {
     return false;
   }
+  const bestScore = semanticCandidateScore(semanticEntry, bestLatex);
+  if (semanticBestIsProblemSupportedNumericRepair(bestScore)) return true;
+  if (semanticPreviousBestFightsStrongerVisualCurrent(current, bestLatex, semanticEntry, currentScore)) return false;
   if (semanticEntry.equivalentToProblem || semanticEntry.equivalentToPrevious) return true;
+  if (bestScore?.detail?.solutionSupportedByProblem) return true;
 
   const semanticScore = Number(semanticEntry.semanticScore);
   if (Number.isFinite(semanticScore) && semanticScore >= 3) return true;
   if (shouldTrustContextualSemanticBest(current, bestLatex, semanticEntry, currentScore)) return true;
 
   return currentScore?.sound === false && semanticEntry.sound === true;
+}
+
+function semanticBestIsProblemSupportedNumericRepair(bestScore = null) {
+  const repair = bestScore?.detail?.repair;
+  return bestScore?.sound === true &&
+    bestScore?.detail?.solutionSupportedByProblem === true &&
+    (
+      repair === 'contextual_latex_numeric_equivalence' ||
+      repair === 'contextual_quadratic_formula_coefficient'
+    );
+}
+
+function semanticPreviousBestFightsStrongerVisualCurrent(currentLatex, bestLatex, semanticEntry = {}, currentScore = null) {
+  if (semanticEntry.equivalentToProblem || !semanticEntry.equivalentToPrevious) return false;
+  if (!currentScore || currentScore.sound !== true) return false;
+  const bestScore = semanticCandidateScore(semanticEntry, bestLatex);
+  if (!bestScore || bestScore.sound !== true) return false;
+  if (!bestScore.equivalentToPrevious || bestScore.equivalentToProblem) return false;
+  if (currentScore.equivalentToProblem || currentScore.equivalentToPrevious) return false;
+
+  const currentModel = Number(currentScore.detail?.modelScore);
+  const bestModel = Number(bestScore.detail?.modelScore);
+  if (!Number.isFinite(currentModel) || !Number.isFinite(bestModel) || currentModel < bestModel + 0.5) {
+    return false;
+  }
+  if (latexLineKind(currentLatex) !== latexLineKind(bestLatex)) return false;
+  if (currentHasDerivativePrime(currentLatex, bestLatex)) return true;
+  return latexTokenOverlap(currentLatex, bestLatex) < 0.8;
+}
+
+function currentHasDerivativePrime(currentLatex, bestLatex) {
+  const current = String(currentLatex || '');
+  const best = String(bestLatex || '');
+  return /\\prime/.test(current) &&
+    !/\\prime/.test(best) &&
+    /\^\s*\{\s*\\prime\s*\}/.test(current);
 }
 
 function shouldTrustContextualSemanticBest(currentLatex, bestLatex, semanticEntry = {}, currentScore = null) {
@@ -1673,6 +1903,38 @@ function semanticCandidateScore(semanticEntry = {}, latex = '') {
   return (semanticEntry.candidateScores || []).find((candidate) => (
     String(candidate.latex || '').trim() === target
   ));
+}
+
+function semanticReplacementFightsVisibleRow(currentLatex, bestLatex, semanticEntry = {}) {
+  const bestScore = semanticCandidateScore(semanticEntry, bestLatex);
+  const repair = bestScore?.detail?.repair;
+  if (repair !== 'contextual_linear_simplification' && repair !== 'contextual_subtraction_step') return false;
+
+  const bestOverlap = latexTokenOverlap(currentLatex, bestLatex);
+  const currentTokens = latexTokens(currentLatex).length;
+  const bestTokens = latexTokens(bestLatex).length;
+  return currentTokens >= bestTokens + 3 && bestOverlap >= 0.45;
+}
+
+function latexTokenOverlap(leftLatex, rightLatex) {
+  const left = latexTokens(leftLatex);
+  const right = latexTokens(rightLatex);
+  if (!left.length || !right.length) return 0;
+  const remaining = [...right];
+  let matched = 0;
+  for (const token of left) {
+    const index = remaining.indexOf(token);
+    if (index < 0) continue;
+    remaining.splice(index, 1);
+    matched += 1;
+  }
+  return matched / Math.max(1, Math.min(left.length, right.length));
+}
+
+function latexTokens(latex) {
+  return [...String(latex || '').matchAll(/\\[A-Za-z]+|[A-Za-z]+|\d+|[+\-*/=()]/g)]
+    .map((match) => match[0].toLowerCase())
+    .filter((token) => token !== '\\cdots' && token !== '\\ldots');
 }
 
 function latexLineKind(latex) {

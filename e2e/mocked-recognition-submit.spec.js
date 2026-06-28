@@ -1,0 +1,79 @@
+import { expect, test } from '@playwright/test';
+import { getEquationProblemFixture } from './helpers/equationProblemFixtures.js';
+import { installMockRecognitionRoutes } from './helpers/mockRecognition.js';
+import { installProblemSourceRoute } from './helpers/problemSource.js';
+import { buildEquationSolvingScenario } from './helpers/studentWritingScenario.js';
+import {
+  getE2ESnapshot,
+  replayScenarioLines,
+  waitForE2EBridge
+} from './helpers/playback.js';
+
+test('mocked recognition calls start after submit and return timing metadata', async ({ page }) => {
+  const fixture = getEquationProblemFixture('algebra_prompt_context');
+  await installProblemSourceRoute(page, [fixture.name]);
+  await page.clock.install({ time: new Date('2026-06-28T12:00:00.000Z') });
+  const mockRecognition = await installMockRecognitionRoutes(page, {
+    latexLines: fixture.recognitionLines
+  });
+
+  await page.goto('/');
+  await waitForE2EBridge(page, { activeProblemLatex: fixture.problem.latex });
+
+  const initial = await getE2ESnapshot(page);
+  expect(initial.activeProblem.latex).toBe(fixture.problem.latex);
+  expect(initial.activeProblem.metadata.family).toBe(fixture.problem.family);
+  expect(initial.activeProblem.metadata.source).toBe('testing/fixture_catalog.py');
+  expect(initial.activeProblem.metadata.expectedLatexLines).toEqual(fixture.recognitionLines);
+  const scenario = buildEquationSolvingScenario(initial.activeProblem.boardPosition, {
+    variant: 'clean',
+    problem: fixture.problem
+  });
+  const snapshots = await replayScenarioLines(page, scenario);
+  const afterWriting = snapshots[snapshots.length - 1];
+
+  expect(afterWriting.strokes).toHaveLength(scenario.strokes.length);
+  expect(mockRecognition.calls).toHaveLength(0);
+
+  await page.getByTestId('submit-answer').click();
+  await page.waitForFunction(() => (
+    window.__whiteboardE2E.snapshot().recognitionResults.some((entry) => (
+      entry.recognition?.status === 'complete'
+    ))
+  ));
+
+  const afterRecognition = await getE2ESnapshot(page);
+  const endpoints = mockRecognition.endpoints();
+
+  expect(endpoints[0]).toBe('/segment-lines');
+  expect(endpoints).toContain('/recognize');
+  expect(endpoints).toContain('/score-latex-candidates');
+  expect(mockRecognition.calls.some((call) => (
+    call.postDataJson?.problemLatex === fixture.problem.latex ||
+    call.postDataJson?.context?.problemLatex === fixture.problem.latex
+  ))).toBe(true);
+  expect(mockRecognition.calls.some((call) => (
+    call.postDataJson?.problemMetadata?.family === fixture.problem.family &&
+    call.postDataJson?.problemMetadata?.source === 'testing/fixture_catalog.py'
+  ))).toBe(true);
+
+  const submitted = afterRecognition.events.findIndex((event) => event.type === 'submit-answer');
+  const started = afterRecognition.events.findIndex((event) => event.type === 'recognition-start');
+  const completed = afterRecognition.events.findIndex((event) => event.type === 'recognition-complete');
+  expect(submitted).toBeGreaterThanOrEqual(0);
+  expect(started).toBeGreaterThan(submitted);
+  expect(completed).toBeGreaterThan(started);
+
+  const completedResult = afterRecognition.recognitionResults.find((entry) => (
+    entry.recognition?.status === 'complete'
+  ));
+  const result = completedResult.recognition.result;
+  expect(result.lines.length).toBeGreaterThan(0);
+  expect(Number.isFinite(result.timing.totalElapsedSeconds)).toBe(true);
+
+  for (const line of result.lines) {
+    expect(line.timing).not.toBeNull();
+    expect(Number.isFinite(line.timing.submitToFinalPredictionSeconds)).toBe(true);
+    expect(Number.isFinite(line.timing.ocrElapsedSeconds)).toBe(true);
+  }
+});
