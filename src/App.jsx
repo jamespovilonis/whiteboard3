@@ -17,6 +17,7 @@ import {
   DEFAULT_PEN_COLOR,
   sliderToWidth
 } from './whiteboard/constants.js';
+import { isProblemReadyForNext } from './state/problemFlow.js';
 
 export default function App() {
   const [penColor, setPenColor] = useState(DEFAULT_PEN_COLOR);
@@ -51,6 +52,8 @@ export default function App() {
     modelResponse,
     recognitionResults,
     reconcileStrokes,
+    beginStroke,
+    setRecognitionPaused,
     createCustomProblem,
     goToNextProblem,
     submitAnswer
@@ -79,8 +82,9 @@ export default function App() {
 
   const handlePenStrokeStart = useCallback(() => {
     recordE2EEvent(e2eEventsRef, 'pen-stroke-start');
+    beginStroke();
     collapseToolbarForDrawing();
-  }, [collapseToolbarForDrawing]);
+  }, [beginStroke, collapseToolbarForDrawing]);
 
   const handleStrokeFinalized = useCallback((stroke) => {
     recordE2EEvent(e2eEventsRef, 'stroke-finalized', {
@@ -115,7 +119,8 @@ export default function App() {
     viewport,
     problemFlow,
     recognitionResults,
-    eventsRef: e2eEventsRef
+    eventsRef: e2eEventsRef,
+    onRecognitionPausedChange: setRecognitionPaused
   });
 
   return (
@@ -155,8 +160,8 @@ export default function App() {
         response={modelResponse}
         recognitionResults={recognitionResults}
         debugMode={debugBoxesEnabled || E2E_TEST_ENABLED}
-        submitDisabled={activeProblem?.status !== 'solving'}
-        nextProblemDisabled={activeProblem?.status !== 'submitted'}
+        submitDisabled={true}
+        nextProblemDisabled={!isProblemReadyForNext(activeProblem)}
         onSubmitAnswer={handleSubmitAnswer}
         onNextProblem={goToNextProblem}
       />

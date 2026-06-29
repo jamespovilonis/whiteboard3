@@ -1,27 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getRecognitionApiUrl } from '../recognition/config.js';
-import { recognizeStudentWriting } from '../recognition/studentWritingPipeline.js';
+import { IncrementalRecognitionScheduler } from '../recognition/incrementalRecognitionScheduler.js';
 import {
   E2E_PROBLEM_SOURCE_ENABLED,
   loadE2EEquationSolvingProblems
 } from '../state/equationProblemSource.js';
 import {
-  applyProblemRecognitionError,
-  applyProblemRecognitionResult,
+  applyProblemRecognitionProgress,
   createInitialProblemFlow,
   getActiveProblem,
   getCompletedRecognitionResults,
   getActiveModelResponse,
   reconcileProblemFlowWithStrokes,
   requestNextProblem,
-  startCustomProblem,
-  submitActiveProblem
+  startCustomProblem
 } from '../state/problemFlow.js';
 
 export function useProblemFlowController({ moveHomeViewport, engineRef, onRecognitionEvent }) {
   const [problemFlow, setProblemFlow] = useState(() => (
     createInitialProblemFlow(getViewportWidth())
   ));
+  const latestStrokesRef = useRef([]);
+  const schedulerRef = useRef(null);
+  const startedInputSignaturesRef = useRef(new Set());
+  const completedInputSignaturesRef = useRef(new Set());
 
   useEffect(() => {
     if (!E2E_PROBLEM_SOURCE_ENABLED) return undefined;
@@ -49,8 +51,78 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
     getCompletedRecognitionResults(problemFlow)
   ), [problemFlow]);
 
+  useEffect(() => {
+    const scheduler = new IncrementalRecognitionScheduler({
+      debounceMs: 500,
+      apiUrl: getRecognitionApiUrl(),
+      semanticScoring: true,
+      onEvent: (type, detail) => {
+        onRecognitionEvent?.(type, detail);
+      },
+      onStateChange: (snapshot) => {
+        const inputSignature = snapshot.realtime?.inputSignature || '';
+        if (snapshot.status === 'pending' && inputSignature && !startedInputSignaturesRef.current.has(inputSignature)) {
+          startedInputSignaturesRef.current.add(inputSignature);
+          onRecognitionEvent?.('recognition-start', {
+            problemId: snapshot.problemId,
+            answerStrokeCount: snapshot.realtime?.answerStrokeCount || 0,
+            realtime: true
+          });
+        }
+
+        setProblemFlow((currentFlow) => (
+          applyProblemRecognitionProgress(currentFlow, snapshot.problemId, {
+            status: snapshot.status,
+            result: snapshot.result,
+            realtime: snapshot.realtime
+          })
+        ));
+
+        if (snapshot.status === 'complete' && inputSignature && !completedInputSignaturesRef.current.has(inputSignature)) {
+          completedInputSignaturesRef.current.add(inputSignature);
+          const result = snapshot.result || {};
+          onRecognitionEvent?.('recognition-complete', {
+            problemId: snapshot.problemId,
+            lineCount: result.lines?.length || 0,
+            candidateCount: result.candidatePredictions?.length || 0,
+            latex: result.latex || '',
+            realtime: true
+          });
+        }
+      }
+    });
+    schedulerRef.current = scheduler;
+
+    return () => {
+      scheduler.dispose();
+      if (schedulerRef.current === scheduler) schedulerRef.current = null;
+    };
+  }, [onRecognitionEvent]);
+
+  useEffect(() => {
+    const activeProblem = getActiveProblem(problemFlow);
+    schedulerRef.current?.update({
+      problemId: activeProblem?.status === 'solving' ? activeProblem.id : null,
+      strokes: latestStrokesRef.current,
+      answerBox: activeProblem?.answerBox || null,
+      problemLatex: activeProblem?.latex || '',
+      problemMetadata: activeProblem?.metadata || {},
+      previousLatex: activeProblem ? previousLatexForSubmission(problemFlow, activeProblem.id) : [],
+      apiUrl: getRecognitionApiUrl()
+    });
+  }, [problemFlow]);
+
   const reconcileStrokes = useCallback((strokes) => {
+    latestStrokesRef.current = strokes || [];
     setProblemFlow((currentFlow) => reconcileProblemFlowWithStrokes(currentFlow, strokes));
+  }, []);
+
+  const beginStroke = useCallback(() => {
+    schedulerRef.current?.beginStroke();
+  }, []);
+
+  const setRecognitionPaused = useCallback((paused) => {
+    schedulerRef.current?.setPaused(paused);
   }, []);
 
   const createCustomProblem = useCallback((latex) => {
@@ -71,76 +143,14 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
 
   const submitAnswer = useCallback(() => {
     const activeProblem = getActiveProblem(problemFlow);
-    if (!activeProblem) {
-      onRecognitionEvent?.('submit-active-problem', {
-        problemId: null,
-        strokeCount: engineRef?.current?.getStrokes?.()?.length || 0,
-        answerStrokeCount: 0
-      });
-      onRecognitionEvent?.('recognition-skipped', {
-        problemId: null,
-        reason: 'no-active-problem'
-      });
-      return;
-    }
-
     const strokes = engineRef?.current?.getStrokes?.() || [];
-    const result = submitActiveProblem(problemFlow, getViewportWidth());
     onRecognitionEvent?.('submit-active-problem', {
       problemId: activeProblem?.id || null,
       strokeCount: strokes.length,
-      answerStrokeCount: activeProblem?.answerStrokeIds?.length || 0
+      answerStrokeCount: activeProblem?.answerStrokeIds?.length || 0,
+      disabled: true
     });
-    setProblemFlow(result.flow);
-
-    if (result.targetViewport) {
-      moveHomeViewport(result.targetViewport, 420);
-    }
-
-    if (!activeProblem || activeProblem.answerStrokeIds.length === 0) {
-      onRecognitionEvent?.('recognition-skipped', {
-        problemId: activeProblem?.id || null,
-        reason: activeProblem ? 'empty-answer' : 'no-active-problem'
-      });
-      return;
-    }
-
-    onRecognitionEvent?.('recognition-start', {
-      problemId: activeProblem.id,
-      strokeCount: strokes.length,
-      answerStrokeCount: activeProblem.answerStrokeIds.length,
-      answerBox: activeProblem.answerBox
-    });
-    recognizeStudentWriting({
-      strokes,
-      answerBox: activeProblem.answerBox,
-      problemLatex: activeProblem.latex,
-      problemMetadata: activeProblem.metadata || {},
-      previousLatex: previousLatexForSubmission(problemFlow, activeProblem.id),
-      apiUrl: getRecognitionApiUrl(),
-      detectLineBands: true,
-      semanticScoring: true
-    }).then((recognitionResult) => {
-      const summary = summarizeRecognitionResult(recognitionResult);
-      setProblemFlow((currentFlow) => (
-        applyProblemRecognitionResult(currentFlow, activeProblem.id, summary)
-      ));
-      onRecognitionEvent?.('recognition-complete', {
-        problemId: activeProblem.id,
-        lineCount: summary.lines.length,
-        candidateCount: summary.candidatePredictions.length,
-        latex: summary.latex
-      });
-    }).catch((error) => {
-      setProblemFlow((currentFlow) => (
-        applyProblemRecognitionError(currentFlow, activeProblem.id, error)
-      ));
-      onRecognitionEvent?.('recognition-error', {
-        problemId: activeProblem.id,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    });
-  }, [engineRef, moveHomeViewport, onRecognitionEvent, problemFlow]);
+  }, [engineRef, onRecognitionEvent, problemFlow]);
 
   const goToNextProblem = useCallback(() => {
     const result = requestNextProblem(problemFlow, getViewportWidth());
@@ -161,6 +171,8 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
     modelResponse,
     recognitionResults,
     reconcileStrokes,
+    beginStroke,
+    setRecognitionPaused,
     createCustomProblem,
     goToNextProblem,
     submitAnswer

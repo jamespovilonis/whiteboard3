@@ -131,11 +131,11 @@ function RecognitionDebugInspector({ results = [] }) {
     <div className="recognition-debug">
       <div className="recognition-debug-heading">
         <span>Recognition Debug</span>
-        <span>{submitted.length ? `${submitted.length} submitted` : 'No submissions'}</span>
+        <span>{submitted.length ? `${submitted.length} tracked` : 'No reads'}</span>
       </div>
 
       {submitted.length === 0 && (
-        <p className="recognition-message">Submit an answer to inspect line candidates.</p>
+        <p className="recognition-message">Write an answer to inspect line candidates.</p>
       )}
 
       {submitted.map((entry) => (
@@ -158,7 +158,7 @@ function DebugRecognitionResult({ entry }) {
   return (
     <section className="recognition-debug-result" data-status={status}>
       <div className="recognition-result-top">
-        <span>Submission {entry.problemId.replace('problem-', '')}</span>
+        <span>Problem {entry.problemId.replace('problem-', '')}</span>
         <span>{debugStatusLabel(status, result)}</span>
       </div>
 
@@ -323,7 +323,7 @@ function RecognitionResult({ entry }) {
   return (
     <div className="recognition-result" data-status={status}>
       <div className="recognition-result-top">
-        <span>Submission {entry.problemId.replace('problem-', '')}</span>
+        <span>Problem {entry.problemId.replace('problem-', '')}</span>
         <span>{statusLabel(status)}</span>
       </div>
 
@@ -449,6 +449,9 @@ function RecognizedLatexLineText({ latex }) {
 
 function candidateDebugStatus(candidate) {
   if (candidate.prediction?.failed || candidate.prediction?.timedOut) return 'failed';
+  if (candidate.realtimeStatus === 'contested') return 'contested';
+  if (candidate.realtimeStatus === 'provisional' || candidate.provisional) return 'provisional';
+  if (candidate.realtimeStatus === 'pending' || candidate.realtimeStatus === 'running') return 'unread';
   if (candidate.selected) return 'selected';
   if (!candidate.latex) return 'unread';
   return 'discarded';
@@ -456,8 +459,13 @@ function candidateDebugStatus(candidate) {
 
 function candidateStatusLabel(candidate, status) {
   if (status === 'selected') return `selected L${Number(candidate.selectedLineIndex) + 1}`;
+  if (status === 'contested') return 'contested';
+  if (status === 'provisional') return candidate.prediction?.cached ? 'cached partial' : 'partial';
   if (status === 'failed') return 'failed';
+  if (candidate.realtimeStatus === 'pending') return 'pending';
+  if (candidate.realtimeStatus === 'running') return 'reading';
   if (status === 'unread') return 'not OCRed';
+  if (candidate.prediction?.cached) return 'cached';
   return 'discarded';
 }
 
@@ -495,6 +503,12 @@ function formatSeconds(value) {
 }
 
 function debugStatusLabel(status, result) {
+  if (status === 'pending' && result?.realtime?.components?.some((component) => component.contested)) {
+    return 'Reviewing overlap';
+  }
+  if (status === 'pending' && result?.realtime?.components?.some((component) => component.hasResult)) {
+    return 'Reading partial';
+  }
   if (status !== 'complete') return statusLabel(status);
   const total = formatSeconds(result?.timing?.totalElapsedSeconds);
   return total === 'n/a' ? 'Complete' : total;

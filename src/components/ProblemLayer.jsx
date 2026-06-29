@@ -196,6 +196,9 @@ function estimateLabelWidth(candidate) {
 
 function candidateDebugState(candidate) {
   if (candidate.prediction?.failed || candidate.prediction?.timedOut) return 'failed';
+  if (candidate.realtimeStatus === 'contested') return 'contested';
+  if (candidate.realtimeStatus === 'provisional' || candidate.provisional) return 'provisional';
+  if (candidate.realtimeStatus === 'pending' || candidate.realtimeStatus === 'running') return 'unread';
   if (candidate.selected) return 'selected';
   if (!candidate.latex) return 'unread';
   return 'discarded';
@@ -205,6 +208,10 @@ function candidateDebugLabel(candidate, index) {
   const label = candidate.debugLabel || `C${index + 1}`;
   if (candidate.selected) return `${label} selected`;
   if (candidate.prediction?.failed || candidate.prediction?.timedOut) return `${label} failed`;
+  if (candidate.realtimeStatus === 'contested') return `${label} contested`;
+  if (candidate.realtimeStatus === 'provisional' || candidate.provisional) return `${label} partial`;
+  if (candidate.realtimeStatus === 'pending') return `${label} pending`;
+  if (candidate.realtimeStatus === 'running') return `${label} reading`;
   if (!candidate.latex) return `${label} not OCRed`;
   return `${label} discarded`;
 }

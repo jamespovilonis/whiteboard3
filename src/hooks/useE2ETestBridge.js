@@ -8,7 +8,8 @@ export function useE2ETestBridge({
   viewport,
   problemFlow,
   recognitionResults,
-  eventsRef
+  eventsRef,
+  onRecognitionPausedChange
 }) {
   useEffect(() => {
     if (!E2E_TEST_ENABLED || typeof window === 'undefined') return undefined;
@@ -17,13 +18,17 @@ export function useE2ETestBridge({
       snapshot() {
         const activeProblem = getActiveProblem(problemFlow);
         const strokes = engineRef.current?.getStrokes?.() || [];
+        const lightProblemFlow = stripRecognitionImageData(problemFlow);
+        const lightActiveProblem = activeProblem
+          ? lightProblemFlow.problems.find((problem) => problem.id === activeProblem.id) || activeProblem
+          : null;
 
         return deepClone({
           strokes,
-          activeProblem,
-          answerBox: activeProblem?.answerBox || null,
-          problemFlow,
-          recognitionResults,
+          activeProblem: lightActiveProblem,
+          answerBox: lightActiveProblem?.answerBox || null,
+          problemFlow: lightProblemFlow,
+          recognitionResults: stripRecognitionImageData(recognitionResults),
           events: eventsRef.current || [],
           viewport,
           canvas: canvasRect()
@@ -42,6 +47,12 @@ export function useE2ETestBridge({
           x: viewport.x + (Number(point.x) - rect.left) / viewport.scale,
           y: viewport.y + (Number(point.y) - rect.top) / viewport.scale
         };
+      },
+      setRealtimeRecognitionPaused(paused) {
+        onRecognitionPausedChange?.(Boolean(paused));
+      },
+      replaceStrokes(strokes, reason = 'e2e-inject') {
+        engineRef.current?.replaceStrokesForE2E?.(strokes, reason);
       }
     };
 
@@ -52,7 +63,7 @@ export function useE2ETestBridge({
         delete window.__whiteboardE2E;
       }
     };
-  }, [engineRef, eventsRef, problemFlow, recognitionResults, viewport]);
+  }, [engineRef, eventsRef, onRecognitionPausedChange, problemFlow, recognitionResults, viewport]);
 }
 
 export function recordE2EEvent(eventsRef, type, detail = {}) {
@@ -85,4 +96,22 @@ function canvasRect() {
 
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value ?? null));
+}
+
+function stripRecognitionImageData(value) {
+  if (Array.isArray(value)) return value.map(stripRecognitionImageData);
+  if (!value || typeof value !== 'object') return value;
+
+  if (value.dataUrl && typeof value.dataUrl === 'string') {
+    return {
+      ...value,
+      dataUrl: value.dataUrl ? '[stripped]' : ''
+    };
+  }
+
+  const output = {};
+  for (const [key, child] of Object.entries(value)) {
+    output[key] = stripRecognitionImageData(child);
+  }
+  return output;
 }

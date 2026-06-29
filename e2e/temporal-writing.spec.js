@@ -18,6 +18,7 @@ test('replays temporally spaced student handwriting into app stroke state', asyn
   await page.clock.install({ time: new Date('2026-06-28T12:00:00.000Z') });
   await page.goto('/');
   await waitForE2EBridge(page, { activeProblemLatex: fixture.problem.latex });
+  await pauseRealtimeRecognition(page);
 
   const initial = await getE2ESnapshot(page);
   expect(initial.activeProblem.latex).toBe(fixture.problem.latex);
@@ -58,6 +59,7 @@ test('messy handwriting still preserves the aligned equation-bar column', async 
   await page.clock.install({ time: new Date('2026-06-28T12:00:00.000Z') });
   await page.goto('/');
   await waitForE2EBridge(page, { activeProblemLatex: fixture.problem.latex });
+  await pauseRealtimeRecognition(page);
 
   const initial = await getE2ESnapshot(page);
   expect(initial.activeProblem.latex).toBe(fixture.problem.latex);
@@ -241,6 +243,12 @@ function assertEqualsBarsAligned(strokes, scenario, tolerance = 4) {
       expect(Math.abs(width(reference.rendered.canvasBbox) - width(candidate.rendered.canvasBbox))).toBeLessThanOrEqual(tolerance + 5);
     }
   }
+}
+
+async function pauseRealtimeRecognition(page) {
+  await page.evaluate(() => {
+    window.__whiteboardE2E?.setRealtimeRecognitionPaused?.(true);
+  });
 }
 
 function averagePointDeviation(cleanScenario, messyScenario) {

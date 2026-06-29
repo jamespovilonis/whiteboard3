@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import { getRecognitionApiUrl, normalizeConfiguredApiUrl } from '../src/recognition/config.js';
+import { IncrementalRecognitionScheduler } from '../src/recognition/incrementalRecognitionScheduler.js';
 import { translateDetections } from '../src/recognition/segmentationClient.js';
 import { previousLatexForSubmission, summarizeRecognitionResult } from '../src/hooks/useProblemFlowController.js';
 import { recognizeStudentWriting, shouldUseSemanticLatex } from '../src/recognition/studentWritingPipeline.js';
@@ -15,9 +16,12 @@ import {
 } from '../src/recognition/lineSegmentation.js';
 import {
   applyProblemRecognitionError,
+  applyProblemRecognitionProgress,
   applyProblemRecognitionResult,
   createInitialProblemFlow,
   getActiveProblem,
+  isProblemReadyForNext,
+  reconcileProblemFlowWithStrokes,
   requestNextProblem,
   startCustomProblem,
   submitActiveProblem
@@ -618,6 +622,59 @@ test('semantic scoring can choose a better top-five latex candidate', async () =
   assert.equal(result.semantic.source, 'semantic-service');
   assert.equal(result.latex, '2 x = 8');
   assert.equal(result.lines[0].semantic.bestLatex, '2 x = 8');
+});
+
+test('recognized single-letter variables inherit lowercase problem context', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('a', 0, 0, 80, 36)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 90, yMax: 46 },
+    problemLatex: '2 x + 3 = 11',
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    recognizeLine: async () => ({
+      latex: '2X = 8',
+      top: { latex: '2X = 8', score: 2 },
+      candidates: [{ latex: '2X = 8', score: 2 }],
+      elapsedSeconds: 0.03
+    })
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '2x = 8');
+  assert.equal(result.latexLines[0], '2x = 8');
+});
+
+test('malformed quadratic formula row is repaired from problem coefficients', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('formula', 0, 0, 520, 120)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 540, yMax: 140 },
+    problemLatex: 'x ^ { 2 } + 4 x - 5 = 0',
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    recognizeLine: async () => ({
+      latex: 'x = \\frac { - 1 + \\sqrt { 1 ^ { 2 } - 1 ( 1 ) - b ) } } { 2 ( 1 ) }',
+      top: {
+        latex: 'x = \\frac { - 1 + \\sqrt { 1 ^ { 2 } - 1 ( 1 ) - b ) } } { 2 ( 1 ) }',
+        score: 2
+      },
+      candidates: [{
+        latex: 'x = \\frac { - 1 + \\sqrt { 1 ^ { 2 } - 1 ( 1 ) - b ) } } { 2 ( 1 ) }',
+        score: 2
+      }],
+      elapsedSeconds: 0.03
+    })
+  });
+
+  assert.equal(
+    result.lines[0].acceptedLatex,
+    'x = \\frac { - 4 + \\sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }'
+  );
+  assert.equal(result.lines[0].ocrRepair.source, 'contextual-quadratic-formula');
 });
 
 test('recognition semantic scoring receives selected testing catalog problem context', async () => {
@@ -2662,6 +2719,551 @@ test('detector rasterization ignores strokes that only graze the answer box', as
   assert.deepEqual(result.detection.source, 'detector');
 });
 
+test('incremental scheduler keeps non-overlapping line OCR running', async () => {
+  const snapshots = [];
+  const calls = [];
+  const scheduler = new IncrementalRecognitionScheduler({
+    debounceMs: 0,
+    semanticScoring: false,
+    recognizeWriting: (request) => {
+      calls.push({
+        strokeIds: request.strokes.map((item) => item.id).sort(),
+        detectLineBands: Boolean(request.detectLineBands)
+      });
+      return new Promise(() => {});
+    },
+    onStateChange: (snapshot) => snapshots.push(snapshot)
+  });
+  const first = stroke('a', 0, 0, 50, 30);
+  const second = stroke('b', 0, 180, 50, 210);
+  const base = {
+    problemId: 'problem-1',
+    answerBox: { xMin: -10, yMin: -10, xMax: 120, yMax: 260 },
+    problemLatex: 'x = 1'
+  };
+
+  scheduler.update({ ...base, strokes: [first] });
+  await scheduler.flushNow();
+  await nextMicrotask();
+  scheduler.update({ ...base, strokes: [first, second] });
+  await scheduler.flushNow();
+  await nextMicrotask();
+
+  const latest = snapshots.at(-1);
+  const components = latest.realtime.components;
+  assert.equal(components.length, 2);
+  assert.equal(components.find((component) => component.strokeIds.includes('a')).contested, false);
+  assert.equal(components.find((component) => component.strokeIds.includes('b')).contested, false);
+  assert.ok(latest.result.candidatePredictions.some((candidate) => (
+    candidate.candidateId.startsWith('realtime_') &&
+    candidate.realtimeStatus === 'running'
+  )));
+  assert.ok(calls.some((call) => call.strokeIds.join('|') === 'a'));
+  assert.ok(calls.some((call) => call.strokeIds.join('|') === 'b'));
+});
+
+test('incremental scheduler keeps partial OCR visible while an overlap is contested', async () => {
+  const snapshots = [];
+  const dbnetPending = new Promise(() => {});
+  const scheduler = new IncrementalRecognitionScheduler({
+    debounceMs: 0,
+    semanticScoring: false,
+    recognizeWriting: (request) => (
+      request.detectLineBands
+        ? dbnetPending
+        : Promise.resolve(fakeRecognitionResult(request.strokes, 'deterministic'))
+    ),
+    onStateChange: (snapshot) => snapshots.push(snapshot)
+  });
+  const secondLine = stroke('b', 0, 80, 50, 110);
+  const overlappingInk = stroke('c', 24, 104, 72, 136);
+  const base = {
+    problemId: 'problem-1',
+    answerBox: { xMin: -10, yMin: -10, xMax: 140, yMax: 180 },
+    problemLatex: 'x = 1'
+  };
+
+  scheduler.update({ ...base, strokes: [secondLine] });
+  await scheduler.flushNow();
+  await waitForSnapshot(snapshots, (snapshot) => (
+    snapshot.realtime.components.some((component) => (
+      component.strokeIds.includes('b') &&
+      component.status === 'provisional' &&
+      component.hasResult
+    ))
+  ));
+
+  scheduler.update({ ...base, strokes: [secondLine, overlappingInk] });
+  await nextMicrotask();
+
+  const latest = snapshots.at(-1);
+  const contested = latest.realtime.components.find((component) => component.strokeIds.includes('b'));
+  assert.equal(contested.status, 'contested');
+  assert.equal(contested.contested, true);
+  assert.equal(contested.hasResult, true);
+  assert.equal(latest.status, 'pending');
+});
+
+test('incremental scheduler reuses OCR when DBNet confirms the same line signature', async () => {
+  installFakeCanvas();
+  const snapshots = [];
+  const ocrCalls = [];
+  const scheduler = new IncrementalRecognitionScheduler({
+    debounceMs: 0,
+    semanticScoring: false,
+    detectLines: async () => ({ detections: [], failed: false }),
+    recognizeLine: async (image) => {
+      ocrCalls.push({
+        strokeIds: image.strokeIds.slice().sort(),
+        bbox: image.tightBbox,
+        targetPixelHeight: image.targetPixelHeight
+      });
+      return {
+        latex: 'x = 1',
+        top: { latex: 'x = 1', score: 2 },
+        candidates: [{ latex: 'x = 1', score: 2 }],
+        elapsedSeconds: 0.02
+      };
+    },
+    onStateChange: (snapshot) => snapshots.push(snapshot)
+  });
+  const line = stroke('a', 0, 0, 50, 30);
+
+  scheduler.update({
+    problemId: 'problem-1',
+    strokes: [line],
+    answerBox: { xMin: -10, yMin: -10, xMax: 80, yMax: 60 },
+    problemLatex: 'x = 1'
+  });
+  await scheduler.flushNow();
+  await waitForSnapshot(snapshots, (snapshot) => snapshot.status === 'complete');
+
+  assert.equal(ocrCalls.length, 1);
+  assert.equal(snapshots.at(-1).realtime.components[0].status, 'final');
+});
+
+test('incremental scheduler final pass preserves one-shot whole-answer candidates', async () => {
+  const snapshots = [];
+  const calls = [];
+  const first = stroke('line_a', 0, 0, 80, 30);
+  const second = stroke('line_b', 0, 120, 90, 150);
+  const answerBox = { xMin: -10, yMin: -10, xMax: 140, yMax: 190 };
+  const oneShot = fakeFullAnswerResult([first, second], {
+    latexLines: ['2 x = 8', 'x = 4'],
+    candidateIds: ['full_line_a', 'full_line_b', 'full_parent']
+  });
+  const scheduler = new IncrementalRecognitionScheduler({
+    debounceMs: 0,
+    semanticScoring: false,
+    recognizeWriting: (request) => {
+      const call = {
+        strokeIds: request.strokes.map((item) => item.id).sort(),
+        answerBox: request.answerBox,
+        detectLineBands: Boolean(request.detectLineBands)
+      };
+      calls.push(call);
+      if (
+        call.detectLineBands &&
+        call.strokeIds.join('|') === 'line_a|line_b' &&
+        sameBboxForTest(request.answerBox, answerBox)
+      ) {
+        return Promise.resolve(oneShot);
+      }
+      return Promise.resolve(fakeRecognitionResult(request.strokes, 'deterministic'));
+    },
+    onStateChange: (snapshot) => snapshots.push(snapshot)
+  });
+
+  scheduler.update({
+    problemId: 'problem-1',
+    strokes: [first, second],
+    answerBox,
+    problemLatex: '2 x + 3 = 11'
+  });
+  await scheduler.flushNow();
+  const completed = await waitForSnapshot(snapshots, (snapshot) => snapshot.status === 'complete');
+
+  assert.ok(calls.some((call) => (
+    call.detectLineBands &&
+    call.strokeIds.join('|') === 'line_a|line_b' &&
+    sameBboxForTest(call.answerBox, answerBox)
+  )));
+  assert.deepEqual(completed.result.latexLines, oneShot.latexLines);
+  assert.deepEqual(
+    completed.result.segmentation.candidates.map((candidate) => candidate.candidateId).sort(),
+    oneShot.segmentation.candidates.map((candidate) => candidate.candidateId).sort()
+  );
+  assert.deepEqual(
+    completed.result.candidatePredictions.map((candidate) => candidate.candidateId).sort(),
+    oneShot.candidatePredictions.map((candidate) => candidate.candidateId).sort()
+  );
+});
+
+test('incremental scheduler does not let stale local OCR downgrade the final one-shot result', async () => {
+  let resolveLocal;
+  const snapshots = [];
+  const line = stroke('line_a', 0, 0, 80, 30);
+  const answerBox = { xMin: -10, yMin: -10, xMax: 120, yMax: 70 };
+  const scheduler = new IncrementalRecognitionScheduler({
+    debounceMs: 0,
+    semanticScoring: false,
+    recognizeWriting: (request) => {
+      if (request.detectLineBands && request.strokes.length === 1) {
+        return Promise.resolve(fakeFullAnswerResult([line], {
+          latexLines: ['x = 4'],
+          candidateIds: ['full_line_a', 'full_parent']
+        }));
+      }
+      return new Promise((resolve) => {
+        resolveLocal = resolve;
+      });
+    },
+    onStateChange: (snapshot) => snapshots.push(snapshot)
+  });
+
+  scheduler.update({
+    problemId: 'problem-1',
+    strokes: [line],
+    answerBox,
+    problemLatex: 'x = 4'
+  });
+  await scheduler.flushNow();
+  const completed = await waitForSnapshot(snapshots, (snapshot) => snapshot.status === 'complete');
+  assert.equal(completed.result.latexLines.join('|'), 'x = 4');
+
+  resolveLocal(fakeRecognitionResult([line], 'stale-local'));
+  await nextMicrotask();
+  const latest = snapshots.at(-1);
+  assert.equal(latest.status, 'complete');
+  assert.equal(latest.result.latexLines.join('|'), 'x = 4');
+  assert.ok(latest.realtime.components.every((component) => component.status === 'final'));
+});
+
+test('incremental scheduler matches one-shot final pass across varied equation families', async () => {
+  const cases = [
+    {
+      name: 'algebra',
+      problemLatex: '2 x + 3 = 11',
+      latexLines: ['2 x = 8', '/ 2      / 2', 'x = 4']
+    },
+    {
+      name: 'rational',
+      problemLatex: '\\frac { x } { 2 } + \\frac { 1 } { 3 } = 2',
+      latexLines: [
+        '\\times 6       \\times 6',
+        '3 x + 2 = 12',
+        'x = \\frac { 10 } { 3 }'
+      ]
+    },
+    {
+      name: 'logarithmic',
+      problemLatex: '\\log _ { 2 } ( x ) + 3 = 7',
+      latexLines: [
+        '- 3       - 3',
+        '\\log _ { 2 } ( x ) = 4',
+        'x = 16'
+      ]
+    },
+    {
+      name: 'quadratic',
+      problemLatex: 'x ^ { 2 } - 5 x + 6 = 0',
+      latexLines: [
+        '( x - 2 ) ( x - 3 ) = 0',
+        'x = 2',
+        'x = 3'
+      ]
+    }
+  ];
+
+  for (const item of cases) {
+    const snapshots = [];
+    const strokes = item.latexLines.map((_, index) => (
+      stroke(`${item.name}_${index + 1}`, 20, index * 96, 220 + index * 20, index * 96 + 38)
+    ));
+    const answerBox = padBboxForTest(bboxForStrokes(strokes), 20);
+    const oneShot = fakeFullAnswerResult(strokes, {
+      latexLines: item.latexLines,
+      candidateIds: [
+        ...item.latexLines.map((_, index) => `${item.name}_line_${index + 1}`),
+        `${item.name}_whole_answer_parent`
+      ]
+    });
+    const scheduler = new IncrementalRecognitionScheduler({
+      debounceMs: 0,
+      semanticScoring: false,
+      recognizeWriting: (request) => {
+        const ids = request.strokes.map((entry) => entry.id).sort().join('|');
+        const fullIds = strokes.map((entry) => entry.id).sort().join('|');
+        if (request.detectLineBands && ids === fullIds && sameBboxForTest(request.answerBox, answerBox)) {
+          return Promise.resolve(oneShot);
+        }
+        return Promise.resolve(fakeRecognitionResult(request.strokes, 'local'));
+      },
+      onStateChange: (snapshot) => snapshots.push(snapshot)
+    });
+
+    scheduler.update({
+      problemId: `problem-${item.name}`,
+      strokes,
+      answerBox,
+      problemLatex: item.problemLatex
+    });
+    await scheduler.flushNow();
+    const completed = await waitForSnapshot(snapshots, (snapshot) => snapshot.status === 'complete');
+
+    assert.deepEqual(completed.result.latexLines, oneShot.latexLines, item.name);
+    assert.deepEqual(
+      completed.result.segmentation.candidates.map((candidate) => candidate.candidateId).sort(),
+      oneShot.segmentation.candidates.map((candidate) => candidate.candidateId).sort(),
+      item.name
+    );
+    assert.equal(completed.result.realtime.allFinal, true, item.name);
+    assert.ok(completed.result.realtime.components.every((component) => (
+      component.status === 'final' && !component.contested
+    )), item.name);
+  }
+});
+
+test('incremental scheduler matches one-shot recognition on synthetic catalog boards', async () => {
+  installFakeCanvas();
+  const problemNames = equationCatalogProblemNames();
+
+  for (const problemName of problemNames) {
+    const board = syntheticCatalogBoard(problemName, {
+      spacing: problemName.includes('mixed') ? 'dense' : 'standard',
+      inkStyle: problemName.includes('rational') ? 'compact' : 'normal',
+      seed: 140 + problemNames.indexOf(problemName)
+    });
+    const strokes = strokesFromSyntheticBoard(board);
+    const answerBox = padBboxForTest(bboxForStrokes(strokes), 24);
+    const expectedLines = board.fixture.expectedLatexLines || [];
+    const fakeReaders = fakeReadersForSyntheticBoard(board, strokes);
+    const oneShot = await recognizeStudentWriting({
+      strokes,
+      answerBox,
+      problemLatex: board.fixture.problemLatex,
+      problemMetadata: {
+        name: board.fixture.problem,
+        family: board.fixture.family,
+        expectedLatexLines: expectedLines
+      },
+      detectLineBands: true,
+      semanticScoring: false,
+      detectLines: fakeReaders.detectLines,
+      recognizeLine: fakeReaders.recognizeLine
+    });
+
+    const snapshots = [];
+    const scheduler = new IncrementalRecognitionScheduler({
+      debounceMs: 0,
+      semanticScoring: false,
+      detectLines: fakeReaders.detectLines,
+      recognizeLine: fakeReaders.recognizeLine,
+      onStateChange: (snapshot) => snapshots.push(snapshot)
+    });
+
+    scheduler.update({
+      problemId: `problem-${problemName}`,
+      strokes,
+      answerBox,
+      problemLatex: board.fixture.problemLatex,
+      problemMetadata: {
+        name: board.fixture.problem,
+        family: board.fixture.family,
+        expectedLatexLines: expectedLines
+      }
+    });
+    await scheduler.flushNow();
+    const completed = await waitForSnapshot(snapshots, (snapshot) => snapshot.status === 'complete');
+
+    assert.deepEqual(completed.result.latexLines, oneShot.latexLines, problemName);
+    assert.deepEqual(
+      completed.result.lines.map((line) => line.candidateId),
+      oneShot.lines.map((line) => line.candidateId),
+      problemName
+    );
+    assert.deepEqual(
+      completed.result.candidatePredictions.map((candidate) => candidate.candidateId).sort(),
+      oneShot.candidatePredictions.map((candidate) => candidate.candidateId).sort(),
+      problemName
+    );
+    assert.deepEqual(
+      completed.result.segmentation.candidates.map((candidate) => candidate.candidateId).sort(),
+      oneShot.segmentation.candidates.map((candidate) => candidate.candidateId).sort(),
+      problemName
+    );
+    assert.equal(completed.result.realtime.allFinal, true, problemName);
+  }
+});
+
+test('incremental scheduler matches one-shot recognition on messy synthetic latex renderings', async () => {
+  installFakeCanvas();
+  const cases = [
+    {
+      problemName: 'algebra_prompt_context',
+      spacing: 'dense',
+      inkStyle: 'messy',
+      gapPattern: 'pinched-middle',
+      seed: 616
+    },
+    {
+      problemName: 'rational_two_fraction_solve',
+      spacing: 'tight-steps',
+      inkStyle: 'messy',
+      gapPattern: 'accordion',
+      seed: 1720
+    },
+    {
+      problemName: 'rational_mixed_fraction_operations',
+      spacing: 'dense',
+      inkStyle: 'compact',
+      gapPattern: 'stair-step',
+      seed: 907
+    },
+    {
+      problemName: 'logarithmic_solve',
+      spacing: 'mixed',
+      inkStyle: 'loose',
+      gapPattern: 'pinched-middle',
+      seed: 421
+    },
+    {
+      problemName: 'square_root_solve',
+      spacing: 'tight-steps',
+      inkStyle: 'messy',
+      gapPattern: 'accordion',
+      seed: 533
+    },
+    {
+      problemName: 'quadratic_formula_positive_root',
+      spacing: 'dense',
+      inkStyle: 'messy',
+      gapPattern: 'stair-step',
+      seed: 808
+    }
+  ];
+
+  for (const item of cases) {
+    const board = syntheticCatalogBoard(item.problemName, item);
+    const label = [
+      item.problemName,
+      item.spacing,
+      item.inkStyle,
+      item.gapPattern
+    ].filter(Boolean).join('/');
+    const strokes = strokesFromSyntheticBoard(board, {
+      order: item.order || 'interleaved-lines',
+      strokeIntervalMs: 17,
+      linePauseMs: 540
+    });
+    const answerBox = padBboxForTest(bboxForStrokes(strokes), 24);
+    const expectedLines = board.fixture.expectedLatexLines || [];
+    const fakeReaders = fakeReadersForSyntheticBoard(board, strokes);
+    const oneShot = await recognizeStudentWriting({
+      strokes,
+      answerBox,
+      problemLatex: board.fixture.problemLatex,
+      problemMetadata: {
+        name: board.fixture.problem,
+        family: board.fixture.family,
+        spacing: board.fixture.spacing,
+        inkStyle: board.fixture.inkStyle,
+        gapPattern: board.fixture.gapPattern,
+        lineGaps: board.fixture.lineGaps,
+        expectedLatexLines: expectedLines
+      },
+      detectLineBands: true,
+      semanticScoring: false,
+      detectLines: fakeReaders.detectLines,
+      recognizeLine: fakeReaders.recognizeLine
+    });
+
+    const snapshots = [];
+    const scheduler = new IncrementalRecognitionScheduler({
+      debounceMs: 0,
+      semanticScoring: false,
+      detectLines: fakeReaders.detectLines,
+      recognizeLine: fakeReaders.recognizeLine,
+      onStateChange: (snapshot) => snapshots.push(snapshot)
+    });
+
+    scheduler.update({
+      problemId: `messy-${label}`,
+      strokes,
+      answerBox,
+      problemLatex: board.fixture.problemLatex,
+      problemMetadata: {
+        name: board.fixture.problem,
+        family: board.fixture.family,
+        spacing: board.fixture.spacing,
+        inkStyle: board.fixture.inkStyle,
+        gapPattern: board.fixture.gapPattern,
+        lineGaps: board.fixture.lineGaps,
+        expectedLatexLines: expectedLines
+      }
+    });
+    await scheduler.flushNow();
+    const completed = await waitForSnapshot(snapshots, (snapshot) => snapshot.status === 'complete');
+
+    assert.deepEqual(completed.result.latexLines, oneShot.latexLines, label);
+    assert.deepEqual(
+      completed.result.lines.map((line) => line.candidateId),
+      oneShot.lines.map((line) => line.candidateId),
+      label
+    );
+    assert.deepEqual(
+      completed.result.candidatePredictions.map((candidate) => candidate.candidateId).sort(),
+      oneShot.candidatePredictions.map((candidate) => candidate.candidateId).sort(),
+      label
+    );
+    assert.deepEqual(
+      completed.result.segmentation.candidates.map((candidate) => candidate.candidateId).sort(),
+      oneShot.segmentation.candidates.map((candidate) => candidate.candidateId).sort(),
+      label
+    );
+    assert.equal(completed.result.realtime.allFinal, true, label);
+    assert.ok(completed.result.realtime.components.every((component) => (
+      component.status === 'final' && !component.contested
+    )), label);
+  }
+});
+
+test('full recognition preserves deterministic rational rows when detector merges them', async () => {
+  installFakeCanvas();
+  const board = syntheticCatalogBoard('rational_quadratic_solve', {
+    spacing: 'standard',
+    inkStyle: 'compact',
+    seed: 1720
+  });
+  const strokes = strokesFromSyntheticBoard(board);
+  const answerBox = padBboxForTest(bboxForStrokes(strokes), 24);
+  const expectedLines = board.fixture.expectedLatexLines || [];
+  const fakeReaders = fakeReadersForSyntheticBoard(board, strokes);
+  const mergedBbox = bboxForStrokes(strokes);
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox,
+    problemLatex: board.fixture.problemLatex,
+    problemMetadata: {
+      name: board.fixture.problem,
+      family: board.fixture.family,
+      expectedLatexLines: expectedLines
+    },
+    detectLineBands: true,
+    semanticScoring: false,
+    detectLines: async () => ({
+      detections: [{ bbox: mergedBbox }],
+      failed: false,
+      elapsedSeconds: 0.01
+    }),
+    recognizeLine: fakeReaders.recognizeLine
+  });
+
+  assert.deepEqual(result.latexLines, expectedLines);
+  assert.equal(result.lines.length, expectedLines.length);
+});
+
 test('stacked fraction with a right-hand side remains one math line', () => {
   const strokes = [
     stroke('frac_num_x', 122, 100, 148, 128),
@@ -2800,6 +3402,137 @@ test('next problem request opens the latex prompt after a custom submission', ()
   assert.equal(next.activeProblemId, null);
   assert.equal(next.awaitingEquation, true);
   assert.equal(next.completedCount, 1);
+});
+
+test('first answer stroke can seed below the problem box without overlapping it', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
+  const active = getActiveProblem(started);
+  const belowProblem = stroke(
+    'first-line',
+    active.problemBox.xMin + 28,
+    active.problemBox.yMax + 42,
+    active.problemBox.xMin + 180,
+    active.problemBox.yMax + 82
+  );
+
+  const reconciled = reconcileProblemFlowWithStrokes(started, [belowProblem]);
+  const problem = getActiveProblem(reconciled);
+
+  assert.deepEqual(problem.answerStrokeIds, ['first-line']);
+  assert.ok(problem.answerBox);
+  assert.equal(problem.answerBoxFrozen, false);
+});
+
+test('answer box keeps horizontally aligned continuation rows with larger vertical gaps', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, '\\frac{x^2 - 1}{x - 1} = 4', 1200).flow;
+  const active = getActiveProblem(started);
+  const x = active.problemBox.xMin + 80;
+  const y = active.problemBox.yMax + 64;
+  const rows = [
+    stroke('row-1', x, y, x + 220, y + 54),
+    stroke('row-2', x + 30, y + 154, x + 260, y + 210),
+    stroke('row-3', x + 20, y + 308, x + 190, y + 360),
+    stroke('row-4', x + 60, y + 462, x + 210, y + 518)
+  ];
+
+  const reconciled = reconcileProblemFlowWithStrokes(started, rows);
+  const problem = getActiveProblem(reconciled);
+
+  assert.deepEqual(problem.answerStrokeIds, ['row-1', 'row-2', 'row-3', 'row-4']);
+  assert.ok(problem.answerBox.yMax >= rows[3].canvasBbox.yMax);
+});
+
+test('next problem request finalizes a realtime-read solving problem', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
+  const active = getActiveProblem(started);
+  const withAnswer = {
+    ...started,
+    problems: started.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            answerStrokeIds: ['a'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 20, yMax: 20 }
+          }
+        : problem
+    ))
+  };
+  const read = applyProblemRecognitionProgress(withAnswer, active.id, {
+    status: 'complete',
+    result: {
+      latex: 'x = 2',
+      latexLines: ['x = 2'],
+      lines: [],
+      candidatePredictions: [],
+      realtime: {
+        allFinal: true,
+        components: [{
+          signature: 'a@0,0,20,20',
+          status: 'final',
+          contested: false
+        }]
+      }
+    }
+  });
+
+  assert.equal(isProblemReadyForNext(getActiveProblem(read)), true);
+  const next = requestNextProblem(read, 1200).flow;
+
+  assert.equal(next.problems[0].status, 'submitted');
+  assert.equal(next.activeProblemId, null);
+  assert.equal(next.awaitingEquation, true);
+  assert.equal(next.completedCount, 1);
+});
+
+test('custom problem flow can render another user latex problem after realtime next', () => {
+  const initial = createInitialProblemFlow(1200);
+  const firstFlow = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
+  const firstProblem = getActiveProblem(firstFlow);
+  const withAnswer = {
+    ...firstFlow,
+    problems: firstFlow.problems.map((problem) => (
+      problem.id === firstProblem.id
+        ? {
+            ...problem,
+            answerStrokeIds: ['first-answer'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 80, yMax: 40 }
+          }
+        : problem
+    ))
+  };
+  const read = applyProblemRecognitionProgress(withAnswer, firstProblem.id, {
+    status: 'complete',
+    result: {
+      latex: 'x = 2',
+      latexLines: ['x = 2'],
+      lines: [],
+      candidatePredictions: [],
+      realtime: {
+        allFinal: true,
+        components: [{
+          signature: 'first-answer@0,0,80,40',
+          status: 'final',
+          contested: false
+        }]
+      }
+    }
+  });
+  const awaitingNextLatex = requestNextProblem(read, 1200).flow;
+  const secondStarted = startCustomProblem(awaitingNextLatex, '\\sqrt{x + 9} = 7', 1200);
+  const secondProblem = getActiveProblem(secondStarted.flow);
+
+  assert.equal(awaitingNextLatex.activeProblemId, null);
+  assert.equal(awaitingNextLatex.awaitingEquation, true);
+  assert.equal(awaitingNextLatex.problems[0].status, 'submitted');
+  assert.equal(secondStarted.flow.awaitingEquation, false);
+  assert.equal(secondStarted.flow.activeProblemId, 'problem-2');
+  assert.equal(secondProblem.latex, '\\sqrt{x + 9} = 7');
+  assert.equal(secondProblem.metadata.source, 'user-latex');
+  assert.ok(secondProblem.boardPosition.y > firstProblem.boardPosition.y);
+  assert.ok(secondStarted.targetViewport);
 });
 
 test('fixture-backed problem flow finishes after next problem request exhausts definitions', () => {
@@ -3062,6 +3795,321 @@ function candidateFromStrokeList(candidateId, profiles, strokes) {
     tightBbox,
     expandedBbox: tightBbox,
     conflicts: []
+  };
+}
+
+function fakeRecognitionResult(strokes, source = 'deterministic') {
+  const strokeIds = strokes.map((item) => String(item.id)).sort();
+  const tightBbox = bboxForStrokes(strokes);
+  const candidateId = `fake_${strokeIds.join('_')}`;
+  const latex = strokeIds.join(' + ') || 'x';
+  const line = {
+    lineIndex: 0,
+    candidateId,
+    debugLabel: 'C1',
+    selected: true,
+    profiles: [source === 'dbnet' ? 'dbnet-line' : 'row-line'],
+    strokeIds,
+    tightBbox,
+    image: null,
+    latex,
+    acceptedLatex: latex,
+    ocrLatex: latex,
+    candidates: [{ latex, score: 2 }],
+    prediction: {
+      latex,
+      top: { latex, score: 2 },
+      candidates: [{ latex, score: 2 }],
+      elapsedSeconds: 0.01
+    },
+    evidenceScore: 3,
+    timing: {
+      submitToFinalPredictionSeconds: 0.01,
+      ocrElapsedSeconds: 0.01
+    }
+  };
+
+  return {
+    latex,
+    latexLines: [latex],
+    lines: [line],
+    candidatePredictions: [line],
+    detection: { source, failed: false },
+    semantic: { source: 'disabled', failed: false },
+    timing: { totalElapsedSeconds: 0.01 },
+    segmentation: {
+      selected: [{
+        candidateId,
+        profiles: line.profiles,
+        strokeIds,
+        tightBbox
+      }],
+      candidates: [{
+        candidateId,
+        profiles: line.profiles,
+        strokeIds,
+        tightBbox,
+        conflicts: []
+      }],
+      partitions: {},
+      parentCandidateId: null,
+      ocrSelectedCandidateIds: [candidateId]
+    }
+  };
+}
+
+function fakeFullAnswerResult(strokes, options = {}) {
+  const sortedStrokes = strokes.slice().sort((left, right) => (
+    left.canvasBbox.yMin - right.canvasBbox.yMin ||
+    left.canvasBbox.xMin - right.canvasBbox.xMin
+  ));
+  const latexLines = options.latexLines || sortedStrokes.map((item) => item.id);
+  const lineCandidateIds = options.candidateIds?.slice(0, sortedStrokes.length) ||
+    sortedStrokes.map((item) => `full_${item.id}`);
+  const lines = sortedStrokes.map((item, index) => {
+    const latex = latexLines[index] || item.id;
+    const candidateId = lineCandidateIds[index] || `full_${item.id}`;
+    return {
+      lineIndex: index,
+      candidateId,
+      debugLabel: `C${index + 1}`,
+      selected: true,
+      profiles: ['one-shot', 'dbnet-line'],
+      strokeIds: [String(item.id)],
+      tightBbox: item.canvasBbox,
+      image: null,
+      latex,
+      acceptedLatex: latex,
+      ocrLatex: latex,
+      candidates: [{ latex, score: 3 }],
+      prediction: {
+        latex,
+        top: { latex, score: 3 },
+        candidates: [{ latex, score: 3 }],
+        elapsedSeconds: 0.02
+      },
+      evidenceScore: 5,
+      timing: {
+        submitToFinalPredictionSeconds: 0.02,
+        ocrElapsedSeconds: 0.02
+      }
+    };
+  });
+  const selected = lines.map((line) => ({
+    candidateId: line.candidateId,
+    profiles: line.profiles,
+    strokeIds: line.strokeIds,
+    tightBbox: line.tightBbox
+  }));
+  const candidateIds = options.candidateIds || selected.map((item) => item.candidateId);
+  const candidates = candidateIds.map((candidateId, index) => {
+    if (selected[index]) {
+      return {
+        ...selected[index],
+        candidateId,
+        conflicts: []
+      };
+    }
+    return {
+      candidateId,
+      profiles: ['one-shot-parent'],
+      strokeIds: sortedStrokes.map((item) => String(item.id)),
+      tightBbox: bboxForStrokes(sortedStrokes),
+      conflicts: []
+    };
+  });
+
+  return {
+    latex: latexLines.join(' \\\\ '),
+    latexLines,
+    lines,
+    candidatePredictions: lines,
+    detection: { source: 'one-shot', failed: false },
+    semantic: { source: 'disabled', failed: false },
+    timing: { totalElapsedSeconds: 0.02 },
+    segmentation: {
+      selected,
+      candidates,
+      partitions: {},
+      parentCandidateId: candidates.at(-1)?.candidateId || null,
+      ocrSelectedCandidateIds: selected.map((candidate) => candidate.candidateId)
+    }
+  };
+}
+
+function syntheticCatalogBoard(problemName, options = {}) {
+  const script = `
+import json
+import sys
+from pathlib import Path
+root = Path.cwd()
+testing_dir = root / "testing"
+sys.path.insert(0, str(testing_dir))
+from fixture_catalog import build_board, fixture_payload, get_problem, line_gaps_for_pattern, placements_for
+problem = get_problem(sys.argv[1])
+spacing = sys.argv[2]
+ink_style = sys.argv[3]
+seed = int(sys.argv[4])
+gap_pattern = sys.argv[5] if len(sys.argv) > 5 else ""
+line_gaps = line_gaps_for_pattern(len(problem.lines), gap_pattern) if gap_pattern else None
+board = build_board(problem.name, spacing=spacing, line_gaps=line_gaps, seed=seed, ink_style=ink_style)
+_, _, _, gaps = placements_for(problem, spacing, line_gaps)
+payload = fixture_payload(problem, spacing, gaps, board, ink_style=ink_style)
+if gap_pattern:
+    payload["fixture"]["gapPattern"] = gap_pattern
+print(json.dumps(payload))
+`;
+  const output = execFileSync('python3', [
+    '-c',
+    script,
+    problemName,
+    options.spacing || 'standard',
+    options.inkStyle || 'normal',
+    String(options.seed ?? 101),
+    options.gapPattern || ''
+  ], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    maxBuffer: 10 * 1024 * 1024
+  });
+  return JSON.parse(output);
+}
+
+function equationCatalogProblemNames() {
+  const output = execFileSync('python3', ['testing/export_equation_problem_catalog.py'], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    maxBuffer: 10 * 1024 * 1024
+  });
+  return (JSON.parse(output).problems || []).map((problem) => problem.name);
+}
+
+function strokesFromSyntheticBoard(board, options = {}) {
+  const lineEntries = (board.lines || []).map((line, lineIndex) => (
+    (line.contours || []).map((contour, contourIndex) => ({
+      line,
+      lineIndex,
+      contour,
+      contourIndex
+    }))
+  ));
+  const entries = options.order === 'interleaved-lines'
+    ? interleaveLineEntries(lineEntries)
+    : lineEntries.flat();
+  const strokeIntervalMs = Number.isFinite(options.strokeIntervalMs) ? options.strokeIntervalMs : 12;
+  const linePauseMs = Number.isFinite(options.linePauseMs) ? options.linePauseMs : 0;
+  let previousLineIndex = null;
+  let timestamp = 0;
+
+  return entries.map(({ line, lineIndex, contour, contourIndex }) => {
+      const box = bboxForPoints(contour);
+      if (previousLineIndex !== null && previousLineIndex !== lineIndex) {
+        timestamp += linePauseMs;
+      }
+      const startTime = timestamp;
+      timestamp += strokeIntervalMs;
+      previousLineIndex = lineIndex;
+      return {
+        id: `fixture_${lineIndex + 1}_${contourIndex + 1}`,
+        canvasBbox: box,
+        rawPoints: contour,
+        outlinePoints: contour,
+        syntheticLineIndex: lineIndex,
+        syntheticLatex: line.latex,
+        startTime,
+        endTime: startTime + Math.max(1, Math.min(8, strokeIntervalMs / 2))
+      };
+  });
+}
+
+function interleaveLineEntries(lineEntries) {
+  const entries = [];
+  const longest = Math.max(0, ...lineEntries.map((line) => line.length));
+  for (let contourIndex = 0; contourIndex < longest; contourIndex += 1) {
+    for (const line of lineEntries) {
+      if (line[contourIndex]) entries.push(line[contourIndex]);
+    }
+  }
+  return entries;
+}
+
+function fakeReadersForSyntheticBoard(board, strokes) {
+  const expectedLines = board.fixture?.expectedLatexLines || [];
+  const strokesById = new Map(strokes.map((item) => [String(item.id), item]));
+  return {
+    detectLines: async () => ({
+      detections: (board.lines || []).map((line) => ({ bbox: line.bbox })),
+      failed: false,
+      elapsedSeconds: 0.01
+    }),
+    recognizeLine: async (image) => {
+      const lineIndexes = syntheticLineIndexesForStrokeIds(image.strokeIds || [], strokesById);
+      const latex = lineIndexes.length === 1
+        ? expectedLines[lineIndexes[0]]
+        : lineIndexes.map((index) => expectedLines[index]).filter(Boolean).join(' \\\\ ');
+      return {
+        latex: latex || 'x',
+        top: { latex: latex || 'x', score: 3 },
+        candidates: [
+          { latex: latex || 'x', score: 3 },
+          { latex: 'x', score: 0.1 }
+        ],
+        elapsedSeconds: 0.01
+      };
+    }
+  };
+}
+
+function syntheticLineIndexesForStrokeIds(strokeIds, strokesById) {
+  return [...new Set(
+    (strokeIds || [])
+      .map((id) => strokesById.get(String(id))?.syntheticLineIndex)
+      .filter((index) => Number.isInteger(index))
+  )].sort((left, right) => left - right);
+}
+
+async function waitForSnapshot(snapshots, predicate) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const match = snapshots.find(predicate);
+    if (match) return match;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.fail(`Timed out waiting for scheduler snapshot. Latest: ${JSON.stringify(snapshots.at(-1) || null)}`);
+}
+
+async function nextMicrotask() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function bboxForPoints(points) {
+  return points.reduce((box, point) => ({
+    xMin: Math.min(box.xMin, point.x),
+    yMin: Math.min(box.yMin, point.y),
+    xMax: Math.max(box.xMax, point.x),
+    yMax: Math.max(box.yMax, point.y)
+  }), {
+    xMin: Infinity,
+    yMin: Infinity,
+    xMax: -Infinity,
+    yMax: -Infinity
+  });
+}
+
+function sameBboxForTest(left, right) {
+  return Boolean(left && right) &&
+    left.xMin === right.xMin &&
+    left.yMin === right.yMin &&
+    left.xMax === right.xMax &&
+    left.yMax === right.yMax;
+}
+
+function padBboxForTest(bbox, padding) {
+  return {
+    xMin: bbox.xMin - padding,
+    yMin: bbox.yMin - padding,
+    xMax: bbox.xMax + padding,
+    yMax: bbox.yMax + padding
   };
 }
 

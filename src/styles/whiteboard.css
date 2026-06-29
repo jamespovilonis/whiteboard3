@@ -85,6 +85,8 @@
 .debug-board-box-candidate-selected,
 .debug-board-box-candidate-discarded,
 .debug-board-box-candidate-unread,
+.debug-board-box-candidate-provisional,
+.debug-board-box-candidate-contested,
 .debug-board-box-candidate-failed {
   border-width: 2px;
   border-style: solid;
@@ -103,6 +105,16 @@
 .debug-board-box-candidate-unread {
   border-color: rgba(91, 104, 124, 0.72);
   background: rgba(91, 104, 124, 0.12);
+}
+
+.debug-board-box-candidate-provisional {
+  border-color: rgba(48, 113, 184, 0.78);
+  background: rgba(48, 113, 184, 0.16);
+}
+
+.debug-board-box-candidate-contested {
+  border-color: rgba(153, 93, 32, 0.86);
+  background: rgba(153, 93, 32, 0.18);
 }
 
 .debug-board-box-candidate-failed {

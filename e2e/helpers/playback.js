@@ -18,6 +18,75 @@ export async function getE2ESnapshot(page) {
   return page.evaluate(() => window.__whiteboardE2E.snapshot());
 }
 
+export async function waitForProblemSourceLoaded(page) {
+  await page.waitForFunction(() => (
+    window.__whiteboardE2E?.snapshot?.().events.some((event) => (
+      event.type === 'problem-source-loaded'
+    ))
+  ));
+}
+
+export async function enterCustomLatexProblem(page, latex) {
+  await expectBridge(page);
+  await page.getByTestId('latex-equation-input').fill(latex);
+  await page.getByTestId('latex-equation-submit').click();
+  await waitForE2EBridge(page, { activeProblemLatex: latex });
+  const snapshot = await getE2ESnapshot(page);
+  await waitForActiveProblemOnCanvas(page, snapshot.activeProblem?.id || null);
+  await page.locator('.problem-print').first().waitFor({ state: 'visible' });
+  return getE2ESnapshot(page);
+}
+
+export async function drawAnswerStrokeInsideProblemBox(page, problemBox, options = {}) {
+  const yOffset = options.yOffset ?? 28;
+  const start = await page.evaluate((point) => (
+    window.__whiteboardE2E.boardToScreen(point)
+  ), {
+    x: problemBox.xMin + (options.startXOffset ?? 40),
+    y: problemBox.yMin + yOffset
+  });
+  const end = await page.evaluate((point) => (
+    window.__whiteboardE2E.boardToScreen(point)
+  ), {
+    x: problemBox.xMin + (options.endXOffset ?? 150),
+    y: problemBox.yMin + (options.endYOffset ?? yOffset + 16)
+  });
+
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: options.steps ?? 8 });
+  await page.mouse.up();
+  await waitForAnswerBox(page);
+}
+
+export async function clickAndScrollCanvasDown(page, deltaY = 520) {
+  const before = await getE2ESnapshot(page);
+  const canvas = before.canvas || { left: 0, top: 0, width: 1280, height: 900 };
+  await page.keyboard.press('M');
+  await page.locator('.whiteboard-stage.tool-mouse').waitFor({ state: 'visible' });
+  await page.mouse.click(
+    canvas.left + canvas.width / 2,
+    canvas.top + canvas.height / 2
+  );
+  await page.mouse.wheel(0, deltaY);
+  await page.waitForFunction((previousY) => (
+    window.__whiteboardE2E?.snapshot?.().viewport.y > previousY
+  ), before.viewport.y);
+  await page.keyboard.press('P');
+  await page.locator('.whiteboard-stage.tool-pen').waitFor({ state: 'visible' });
+  return getE2ESnapshot(page);
+}
+
+export async function waitForRecognitionComplete(page, problemId = null) {
+  await page.waitForFunction((expectedProblemId) => (
+    window.__whiteboardE2E?.snapshot?.().recognitionResults.some((entry) => (
+      (!expectedProblemId || entry.problemId === expectedProblemId) &&
+      (entry.recognition?.status === 'complete' || entry.recognition?.status === 'error')
+    ))
+  ), problemId);
+  return getE2ESnapshot(page);
+}
+
 export async function replayFixtureLines(page, fixture, options = {}) {
   const timings = { ...DEFAULT_TIMINGS, ...(options.timings || {}) };
   const fromLineIndex = options.fromLineIndex ?? 0;
@@ -30,17 +99,45 @@ export async function replayFixtureLines(page, fixture, options = {}) {
     if (!line) continue;
 
     for (const contour of line.contours || []) {
-      await drawContour(page, contour, timings);
+      const drewStroke = await drawContour(page, contour, timings);
+      if (!drewStroke) continue;
       expectedStrokeCount += 1;
       await waitForStrokeCount(page, expectedStrokeCount);
-      await advanceClock(page, timings.interStrokeGapMs);
+      await advanceTiming(page, timings.interStrokeGapMs, timings);
     }
 
-    await advanceClock(page, timings.linePauseMs);
+    await advanceTiming(page, timings.linePauseMs, timings);
     snapshots.push(await waitForLineSnapshot(page, expectedStrokeCount));
   }
 
   return snapshots;
+}
+
+async function waitForAnswerBox(page) {
+  await page.waitForFunction(() => (
+    window.__whiteboardE2E?.snapshot?.().answerBox !== null
+  ));
+}
+
+async function waitForActiveProblemOnCanvas(page, problemId) {
+  if (!problemId) return;
+  await page.waitForFunction((expectedProblemId) => {
+    const bridge = window.__whiteboardE2E;
+    const snapshot = bridge?.snapshot?.();
+    const problem = snapshot?.activeProblem || null;
+    if (!bridge || !problem || problem.id !== expectedProblemId) return false;
+
+    const screenPoint = bridge.boardToScreen(problem.boardPosition);
+    const canvas = snapshot.canvas || {};
+    return screenPoint.y >= canvas.top + 16 &&
+      screenPoint.y <= canvas.bottom - 120 &&
+      screenPoint.x >= canvas.left + 16 &&
+      screenPoint.x <= canvas.right - 120;
+  }, problemId);
+}
+
+async function expectBridge(page) {
+  await page.waitForFunction(() => Boolean(window.__whiteboardE2E?.snapshot));
 }
 
 export async function replayScenarioLines(page, scenario, options = {}) {
@@ -58,10 +155,10 @@ export async function replayScenarioLines(page, scenario, options = {}) {
       await drawPath(page, stroke.points, timings, stroke.timing);
       expectedStrokeCount += 1;
       await waitForStrokeCount(page, expectedStrokeCount);
-      await advanceClock(page, stroke.timing?.pauseAfterMs ?? timings.interStrokeGapMs);
+      await advanceTiming(page, stroke.timing?.pauseAfterMs ?? timings.interStrokeGapMs, timings);
     }
 
-    await advanceClock(page, line.timing?.pauseAfterMs ?? timings.linePauseMs);
+    await advanceTiming(page, line.timing?.pauseAfterMs ?? timings.linePauseMs, timings);
     snapshots.push(await waitForLineSnapshot(page, expectedStrokeCount));
   }
 
@@ -85,9 +182,10 @@ async function waitForLineSnapshot(page, expectedStrokeCount) {
 
 async function drawContour(page, contour, timings) {
   const path = usablePath(contour);
-  if (path.length < 2) return;
+  if (path.length < 2) return false;
 
   await drawPath(page, path, timings);
+  return true;
 }
 
 async function drawPath(page, path, timings, strokeTiming = null) {
@@ -102,19 +200,23 @@ async function drawPath(page, path, timings, strokeTiming = null) {
 
   await page.mouse.move(points[0].x, points[0].y);
   await page.mouse.down();
-  await advanceClock(page, pointIntervalMs);
+  await advanceTiming(page, pointIntervalMs, timings);
 
   for (const point of points.slice(1)) {
     await page.mouse.move(point.x, point.y);
-    await advanceClock(page, pointIntervalMs);
+    await advanceTiming(page, pointIntervalMs, timings);
   }
 
   await page.mouse.up();
-  await advanceClock(page, timings.postStrokeFrameMs);
+  await advanceTiming(page, timings.postStrokeFrameMs, timings);
 }
 
-async function advanceClock(page, ms) {
+async function advanceTiming(page, ms, timings = {}) {
   if (ms <= 0) return;
+  if (timings.useRealTime) {
+    await page.waitForTimeout(ms);
+    return;
+  }
   await page.clock.fastForward(ms);
 }
 

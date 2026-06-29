@@ -61,6 +61,18 @@ export async function recognizeStudentWriting(options = {}) {
     problemLatex,
     previousLatex
   });
+  const deterministicSegmentation = detection.detections?.length
+    ? segmentMathLines(strokes, {
+        answerBox,
+        detections: [],
+        problemLatex,
+        previousLatex
+      })
+    : null;
+  const baselineCover = recognitionBaselineCover(
+    segmentation.selected,
+    deterministicSegmentation?.selected
+  );
 
   const candidatePredictions = [];
   const candidatesToRecognize = recognizeAlternatives
@@ -151,7 +163,7 @@ export async function recognizeStudentWriting(options = {}) {
   let selected = recognizeAlternatives
     ? selectCandidateCover(candidatesToRecognize, {
         scoreByCandidateId: evidenceByCandidateId,
-        baselineCandidates: segmentation.selected
+        baselineCandidates: baselineCover
       })
     : segmentation.selected;
   const contextualCandidateSemantic = await resolveContextualCandidateSemanticScores({
@@ -190,7 +202,7 @@ export async function recognizeStudentWriting(options = {}) {
     if (recognizeAlternatives) {
       selected = selectCandidateCover(candidatesToRecognize, {
         scoreByCandidateId: evidenceByCandidateId,
-        baselineCandidates: segmentation.selected
+        baselineCandidates: baselineCover
       });
     }
   }
@@ -406,9 +418,32 @@ export async function recognizeStudentWriting(options = {}) {
     if (shouldUseSemanticLatex(line.latex, lineSemantic)) {
       line.latex = lineSemantic.bestLatex;
     }
+    const quadraticFormulaRepair = repairQuadraticFormulaFromProblem(line.latex, problemLatex);
+    if (quadraticFormulaRepair && quadraticFormulaRepair !== line.latex) {
+      line.ocrRepair = {
+        source: 'contextual-quadratic-formula',
+        originalLatex: line.latex,
+        repairedLatex: quadraticFormulaRepair
+      };
+      line.latex = quadraticFormulaRepair;
+    }
     if (line.latex) acceptedContextLatex.push(line.latex);
   }
   for (const line of recognizedLines) {
+    const quadraticFormulaRepair = repairQuadraticFormulaFromProblem(line.latex, problemLatex);
+    if (quadraticFormulaRepair && quadraticFormulaRepair !== line.latex) {
+      line.ocrRepair = {
+        source: 'contextual-quadratic-formula',
+        originalLatex: line.latex,
+        repairedLatex: quadraticFormulaRepair
+      };
+      line.latex = quadraticFormulaRepair;
+    }
+    line.latex = normalizeContextualVariableCase(line.latex, [
+      problemLatex,
+      ...previousLatex,
+      ...acceptedContextLatex
+    ]);
     line.acceptedLatex = line.latex;
     line.timing = {
       ...(line.timing || {}),
@@ -1954,6 +1989,91 @@ function looksLikeOperationAnnotation(latex) {
   return /^([+\-*/]).+\1.+$/.test(normalized) && !/[=<>]/.test(normalized);
 }
 
+function normalizeContextualVariableCase(latex, contextLatex = []) {
+  let output = String(latex || '');
+  if (!output) return output;
+
+  const variables = contextualLowercaseVariables(contextLatex);
+  for (const variable of variables) {
+    const upper = variable.toUpperCase();
+    if (upper === variable) continue;
+    const pattern = new RegExp(`(^|[^\\\\A-Za-z])${escapeRegExp(upper)}(?=$|[^A-Za-z])`, 'g');
+    output = output.replace(pattern, `$1${variable}`);
+  }
+  return output;
+}
+
+function repairQuadraticFormulaFromProblem(latex, problemLatex = '') {
+  const text = String(latex || '');
+  if (!/\\frac\b/.test(text) || !/\\sqrt\b/.test(text) || !/\bx\b/.test(text) || !/=/.test(text)) {
+    return null;
+  }
+  const coefficients = simpleQuadraticCoefficients(problemLatex);
+  if (!coefficients) return null;
+  const { a, b, c } = coefficients;
+  if (a === 0) return null;
+
+  return [
+    'x = \\frac {',
+    spacedSigned(-b),
+    '+ \\sqrt {',
+    coefficientMagnitude(b),
+    '^ { 2 } - 4 (',
+    coefficientLatex(a),
+    ') (',
+    coefficientLatex(c),
+    ') } } { 2 (',
+    coefficientLatex(a),
+    ') }'
+  ].join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function simpleQuadraticCoefficients(problemLatex = '') {
+  const compact = String(problemLatex || '')
+    .replace(/\\left|\\right/g, '')
+    .replace(/\s+/g, '')
+    .replace(/\^\{2\}/g, '^2')
+    .replace(/\{|\}/g, '');
+  const match = compact.match(/^([+-]?\d*)x\^2([+-]\d*)x([+-]\d+)=0$/);
+  if (!match) return null;
+  return {
+    a: parseCoefficient(match[1]),
+    b: parseCoefficient(match[2]),
+    c: Number(match[3])
+  };
+}
+
+function parseCoefficient(raw) {
+  if (raw === '' || raw === '+') return 1;
+  if (raw === '-') return -1;
+  if (raw === '+') return 1;
+  return Number(raw);
+}
+
+function coefficientMagnitude(value) {
+  return coefficientLatex(Math.abs(value));
+}
+
+function coefficientLatex(value) {
+  if (value < 0) return `- ${Math.abs(value)}`;
+  return String(value);
+}
+
+function spacedSigned(value) {
+  return value < 0 ? `- ${Math.abs(value)}` : String(value);
+}
+
+function contextualLowercaseVariables(contextLatex = []) {
+  const variables = new Set();
+  for (const latex of contextLatex || []) {
+    const text = String(latex || '').replace(/\\[A-Za-z]+/g, ' ');
+    for (const match of text.matchAll(/[a-z]/g)) {
+      variables.add(match[0]);
+    }
+  }
+  return variables;
+}
+
 function isSuspiciousOperationLatex(latex) {
   const normalized = String(latex || '').replace(/\s+/g, ' ').trim();
   if (/\\(?:ldots|cdots)\b/.test(normalized)) return true;
@@ -1989,6 +2109,36 @@ function candidatesForRecognition(segmentation) {
   }
 
   return [...byId.values()];
+}
+
+function recognitionBaselineCover(primaryCover = [], deterministicCover = []) {
+  const primary = Array.isArray(primaryCover) ? primaryCover : [];
+  const deterministic = Array.isArray(deterministicCover) ? deterministicCover : [];
+  if (!primary.length || !deterministic.length) return primary;
+  if (deterministic.length <= primary.length) return primary;
+  if (coverStrokeKey(primary) !== coverStrokeKey(deterministic)) return primary;
+  if (!deterministic.every(isUsableBaselineLineCandidate)) return primary;
+  return deterministic;
+}
+
+function coverStrokeKey(cover = []) {
+  return [...new Set(
+    cover.flatMap((candidate) => candidate.strokeIds || []).map(String)
+  )].sort().join('|');
+}
+
+function isUsableBaselineLineCandidate(candidate) {
+  const profiles = candidate?.profiles || [];
+  if (profiles.includes('fallback-stroke')) return false;
+  return profiles.some((profile) => (
+    profile === 'dbnet-line' ||
+    profile === 'fraction-stack-line' ||
+    profile === 'row-line' ||
+    profile === 'raw-row-line' ||
+    profile === 'projection-line' ||
+    profile === 'strict' ||
+    profile === 'loose'
+  ));
 }
 
 function priorLineContextLatex(entry, candidatePredictions, limit = 3) {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import ProblemLayer from './ProblemLayer.jsx';
 import { CanvasStrokeEngine } from '../whiteboard/CanvasStrokeEngine.js';
 import { StrokeStore } from '../whiteboard/StrokeStore.js';
@@ -92,8 +92,27 @@ export default function WhiteboardStage({
     engineRef.current?.setPenWidth(penWidth);
   }, [penWidth]);
 
+  const handleWheel = useCallback((event) => {
+    event.preventDefault();
+    const deltaModeScale = event.deltaMode === 1
+      ? 16
+      : (event.deltaMode === 2 ? window.innerHeight : 1);
+    const dx = (Number(event.deltaX) || 0) * deltaModeScale / viewport.scale;
+    const dy = (Number(event.deltaY) || 0) * deltaModeScale / viewport.scale;
+    if (dx === 0 && dy === 0) return;
+
+    onViewportChange?.({
+      ...viewport,
+      x: viewport.x + dx,
+      y: viewport.y + dy
+    });
+  }, [onViewportChange, viewport]);
+
   return (
-    <div className={`whiteboard-stage tool-${activeTool} ${isPanning ? 'is-panning' : ''}`}>
+    <div
+      className={`whiteboard-stage tool-${activeTool} ${isPanning ? 'is-panning' : ''}`}
+      onWheel={handleWheel}
+    >
       <canvas ref={bgCanvasRef} className="whiteboard-canvas whiteboard-bg" aria-hidden="true" />
       <canvas
         ref={fgCanvasRef}

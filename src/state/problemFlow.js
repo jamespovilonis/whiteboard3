@@ -60,11 +60,16 @@ export function getActiveModelResponse(flow) {
 
 export function getCompletedRecognitionResults(flow) {
   return flow.problems
-    .filter((problem) => problem.status === 'submitted')
+    .filter((problem) => (
+      problem.status === 'submitted' ||
+      problem.recognition?.status !== 'idle' ||
+      problem.recognition?.result
+    ))
     .map((problem) => ({
       problemId: problem.id,
       problemLatex: problem.latex,
       problemMetadata: problem.metadata || {},
+      problemStatus: problem.status,
       recognition: problem.recognition
     }));
 }
@@ -126,28 +131,37 @@ export function submitActiveProblem(flow, viewportWidth) {
 }
 
 export function requestNextProblem(flow, viewportWidth) {
-  const activeProblem = getActiveProblem(flow);
+  let workingFlow = flow;
+  let activeProblem = getActiveProblem(workingFlow);
+  if (activeProblem?.status === 'solving' && isProblemReadyForNext(activeProblem)) {
+    workingFlow = updateProblem(workingFlow, activeProblem.id, (problem) => ({
+      ...problem,
+      status: 'submitted',
+      answerBoxFrozen: true
+    }));
+    activeProblem = getActiveProblem(workingFlow);
+  }
   if (!activeProblem || activeProblem.status !== 'submitted') {
-    return { flow, targetViewport: null };
+    return { flow: workingFlow, targetViewport: null };
   }
 
-  const definitions = normalizeProblemDefinitions(flow.problemDefinitions || []);
+  const definitions = normalizeProblemDefinitions(workingFlow.problemDefinitions || []);
   const frozenBottom = getFrozenBottom(activeProblem);
 
   const nextIndex = activeProblem.index + 1;
   if (nextIndex >= definitions.length) {
-    const completedCount = flow.problems.filter((problem) => (
+    const completedCount = workingFlow.problems.filter((problem) => (
       problem.status === 'submitted'
     )).length;
 
     return {
       flow: {
-        ...flow,
+        ...workingFlow,
         problemDefinitions: definitions,
         activeProblemId: null,
         completedCount,
-        awaitingEquation: Boolean(flow.customProblems),
-        customProblems: Boolean(flow.customProblems)
+        awaitingEquation: Boolean(workingFlow.customProblems),
+        customProblems: Boolean(workingFlow.customProblems)
       },
       targetViewport: null
     };
@@ -169,13 +183,13 @@ export function requestNextProblem(flow, viewportWidth) {
 
   return {
     flow: {
-      ...flow,
+      ...workingFlow,
       problemDefinitions: definitions,
       activeProblemId: nextProblem.id,
       completedCount: nextIndex,
-      problems: [...flow.problems, nextProblem],
+      problems: [...workingFlow.problems, nextProblem],
       awaitingEquation: false,
-      customProblems: Boolean(flow.customProblems)
+      customProblems: Boolean(workingFlow.customProblems)
     },
     targetViewport
   };
@@ -257,7 +271,23 @@ export function applyProblemRecognitionResult(flow, problemId, result) {
       status: 'complete',
       error: null,
       result,
+      realtime: result?.realtime || problem.recognition.realtime || null,
       completedAt: Date.now()
+    }
+  }));
+}
+
+export function applyProblemRecognitionProgress(flow, problemId, { status = 'pending', result = null, realtime = null } = {}) {
+  return updateProblem(flow, problemId, (problem) => ({
+    ...problem,
+    recognition: {
+      ...problem.recognition,
+      status,
+      error: null,
+      result: result || problem.recognition.result,
+      realtime: realtime || result?.realtime || problem.recognition.realtime || null,
+      updatedAt: Date.now(),
+      completedAt: status === 'complete' ? Date.now() : problem.recognition.completedAt || null
     }
   }));
 }
@@ -272,6 +302,21 @@ export function applyProblemRecognitionError(flow, problemId, error) {
       failedAt: Date.now()
     }
   }));
+}
+
+export function isProblemReadyForNext(problem) {
+  if (!problem || problem.answerStrokeIds.length === 0) return false;
+  if (problem.status === 'submitted' && problem.recognition?.status === 'complete') return true;
+  if (problem.status !== 'solving') return false;
+  if (problem.recognition?.status !== 'complete') return false;
+  const realtime = problem.recognition?.result?.realtime || problem.recognition?.realtime || null;
+  if (realtime && realtime.allFinal === false) return false;
+  if (realtime?.components?.some((component) => (
+    component.status !== 'final' || component.contested
+  ))) {
+    return false;
+  }
+  return true;
 }
 
 export function viewportForProblemPosition(boardPosition, viewportWidth) {
@@ -299,7 +344,8 @@ function createProblemSession({ definition, index, boardPosition, viewportWidth,
     recognition: {
       status: 'idle',
       error: null,
-      result: null
+      result: null,
+      realtime: null
     }
   };
 }
@@ -363,8 +409,10 @@ function buildActiveAnswerBox(problem, strokes) {
 
       const overlapsProblemBox = bboxOverlap(stroke.canvasBbox, problem.problemBox);
       const overlapsAnswerBox = Boolean(answerBox && bboxOverlap(stroke.canvasBbox, answerBox));
+      const continuesAnswerColumn = Boolean(answerBox && strokeContinuesAnswerColumn(stroke, answerBox));
+      const startsAnswerNearProblem = !answerBox && strokeStartsAnswerNearProblem(stroke, problem);
 
-      if (!overlapsProblemBox && !overlapsAnswerBox) continue;
+      if (!overlapsProblemBox && !overlapsAnswerBox && !continuesAnswerColumn && !startsAnswerNearProblem) continue;
 
       selectedIds.add(stroke.id);
       contentBox = unionBbox(contentBox, stroke.canvasBbox);
@@ -380,6 +428,49 @@ function buildActiveAnswerBox(problem, strokes) {
     contentBox,
     answerBox
   };
+}
+
+function strokeStartsAnswerNearProblem(stroke, problem) {
+  const box = stroke?.canvasBbox;
+  const problemBox = problem?.problemBox;
+  if (!box || !problemBox) return false;
+
+  const centerX = (box.xMin + box.xMax) / 2;
+  const centerY = (box.yMin + box.yMax) / 2;
+  const horizontalRange = {
+    xMin: problemBox.xMin - ANSWER_BOX_PADDING,
+    xMax: problemBox.xMax + ANSWER_BOX_PADDING
+  };
+  const verticalRange = {
+    yMin: problemBox.yMin,
+    yMax: problemBox.yMax + ANSWER_BOX_PADDING * 3
+  };
+
+  return centerX >= horizontalRange.xMin &&
+    centerX <= horizontalRange.xMax &&
+    centerY >= verticalRange.yMin &&
+    centerY <= verticalRange.yMax;
+}
+
+function strokeContinuesAnswerColumn(stroke, answerBox) {
+  const box = stroke?.canvasBbox;
+  if (!box || !answerBox) return false;
+
+  const centerX = (box.xMin + box.xMax) / 2;
+  const centerY = (box.yMin + box.yMax) / 2;
+  const horizontalRange = {
+    xMin: answerBox.xMin - ANSWER_BOX_PADDING,
+    xMax: answerBox.xMax + ANSWER_BOX_PADDING
+  };
+  const verticalRange = {
+    yMin: answerBox.yMin,
+    yMax: answerBox.yMax + ANSWER_BOX_PADDING * 2.5
+  };
+
+  return centerX >= horizontalRange.xMin &&
+    centerX <= horizontalRange.xMax &&
+    centerY >= verticalRange.yMin &&
+    centerY <= verticalRange.yMax;
 }
 
 function updateProblem(flow, problemId, updater) {

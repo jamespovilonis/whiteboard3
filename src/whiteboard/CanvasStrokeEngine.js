@@ -414,6 +414,19 @@ export class CanvasStrokeEngine {
     return this.strokeStore.getStrokes();
   }
 
+  replaceStrokesForE2E(strokes, reason = 'e2e-inject') {
+    this.strokeStore.restore({
+      strokes: Array.isArray(strokes) ? strokes : [],
+      strokeCounter: Array.isArray(strokes) ? strokes.length : 0,
+      strokeStartTimes: (Array.isArray(strokes) ? strokes : []).map((stroke) => [
+        stroke.id,
+        stroke.startTime
+      ])
+    });
+    this.redraw();
+    this.notifyStrokesChanged(reason);
+  }
+
   getScreenPoint(event) {
     const rect = this.fgCanvas.getBoundingClientRect();
     return {

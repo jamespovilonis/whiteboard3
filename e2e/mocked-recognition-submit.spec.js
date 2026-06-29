@@ -9,7 +9,7 @@ import {
   waitForE2EBridge
 } from './helpers/playback.js';
 
-test('mocked recognition calls start after submit and return timing metadata', async ({ page }) => {
+test('mocked recognition calls start after realtime debounce and return timing metadata', async ({ page }) => {
   const fixture = getEquationProblemFixture('algebra_prompt_context');
   await installProblemSourceRoute(page, [fixture.name]);
   await page.clock.install({ time: new Date('2026-06-28T12:00:00.000Z') });
@@ -29,13 +29,19 @@ test('mocked recognition calls start after submit and return timing metadata', a
     variant: 'clean',
     problem: fixture.problem
   });
-  const snapshots = await replayScenarioLines(page, scenario);
+  const snapshots = await replayScenarioLines(page, withShortLinePauses(scenario));
   const afterWriting = snapshots[snapshots.length - 1];
 
   expect(afterWriting.strokes).toHaveLength(scenario.strokes.length);
   expect(mockRecognition.calls).toHaveLength(0);
+  await expect(page.getByTestId('submit-answer')).toBeDisabled();
 
-  await page.getByTestId('submit-answer').click();
+  await page.clock.fastForward(650);
+  await page.waitForFunction(() => (
+    window.__whiteboardE2E.snapshot().events.some((event) => (
+      event.type === 'recognition-start'
+    ))
+  ));
   await page.waitForFunction(() => (
     window.__whiteboardE2E.snapshot().recognitionResults.some((entry) => (
       entry.recognition?.status === 'complete'
@@ -45,7 +51,7 @@ test('mocked recognition calls start after submit and return timing metadata', a
   const afterRecognition = await getE2ESnapshot(page);
   const endpoints = mockRecognition.endpoints();
 
-  expect(endpoints[0]).toBe('/segment-lines');
+  expect(endpoints).toContain('/segment-lines');
   expect(endpoints).toContain('/recognize');
   expect(endpoints).toContain('/score-latex-candidates');
   expect(mockRecognition.calls.some((call) => (
@@ -57,12 +63,11 @@ test('mocked recognition calls start after submit and return timing metadata', a
     call.postDataJson?.problemMetadata?.source === 'testing/fixture_catalog.py'
   ))).toBe(true);
 
-  const submitted = afterRecognition.events.findIndex((event) => event.type === 'submit-answer');
   const started = afterRecognition.events.findIndex((event) => event.type === 'recognition-start');
   const completed = afterRecognition.events.findIndex((event) => event.type === 'recognition-complete');
-  expect(submitted).toBeGreaterThanOrEqual(0);
-  expect(started).toBeGreaterThan(submitted);
+  expect(started).toBeGreaterThanOrEqual(0);
   expect(completed).toBeGreaterThan(started);
+  await expect(page.getByTestId('next-problem')).toBeEnabled();
 
   const completedResult = afterRecognition.recognitionResults.find((entry) => (
     entry.recognition?.status === 'complete'
@@ -77,3 +82,16 @@ test('mocked recognition calls start after submit and return timing metadata', a
     expect(Number.isFinite(line.timing.ocrElapsedSeconds)).toBe(true);
   }
 });
+
+function withShortLinePauses(scenario) {
+  return {
+    ...scenario,
+    rows: scenario.rows.map((row) => ({
+      ...row,
+      timing: {
+        ...(row.timing || {}),
+        pauseAfterMs: 120
+      }
+    }))
+  };
+}

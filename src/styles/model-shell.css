@@ -220,6 +220,16 @@
   background: rgba(91, 104, 124, 0.06);
 }
 
+.recognition-debug-candidate[data-status="provisional"] {
+  border-color: rgba(48, 113, 184, 0.36);
+  background: rgba(48, 113, 184, 0.08);
+}
+
+.recognition-debug-candidate[data-status="contested"] {
+  border-color: rgba(153, 93, 32, 0.42);
+  background: rgba(153, 93, 32, 0.09);
+}
+
 .recognition-debug-candidate[data-status="failed"] {
   border-color: rgba(190, 56, 48, 0.38);
   background: rgba(190, 56, 48, 0.07);
