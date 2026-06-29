@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
+import { getRecognitionApiUrl } from '../src/recognition/config.js';
 import { translateDetections } from '../src/recognition/segmentationClient.js';
 import { previousLatexForSubmission, summarizeRecognitionResult } from '../src/hooks/useProblemFlowController.js';
 import { recognizeStudentWriting, shouldUseSemanticLatex } from '../src/recognition/studentWritingPipeline.js';
@@ -42,6 +43,44 @@ const FLOW_TEST_PROBLEMS = Object.freeze([
     }
   }
 ]);
+
+test('recognition API defaults to the local gateway port', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    location: {
+      protocol: 'http:',
+      hostname: '127.0.0.1'
+    }
+  };
+  try {
+    assert.equal(getRecognitionApiUrl(), 'http://127.0.0.1:8010');
+  } finally {
+    if (previousWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = previousWindow;
+    }
+  }
+});
+
+test('recognition API maps wildcard dev host to loopback gateway', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    location: {
+      protocol: 'http:',
+      hostname: '0.0.0.0'
+    }
+  };
+  try {
+    assert.equal(getRecognitionApiUrl(), 'http://127.0.0.1:8010');
+  } finally {
+    if (previousWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = previousWindow;
+    }
+  }
+});
 
 test('OCR evidence can promote a parent candidate over child rows', () => {
   const parent = candidate('parent_a|b', ['parent'], ['a', 'b'], 0, 0, 100, 100);

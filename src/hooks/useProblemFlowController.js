@@ -3,7 +3,6 @@ import { getRecognitionApiUrl } from '../recognition/config.js';
 import { recognizeStudentWriting } from '../recognition/studentWritingPipeline.js';
 import {
   E2E_PROBLEM_SOURCE_ENABLED,
-  TEST_PROBLEM_SOURCE_ENABLED,
   loadE2EEquationSolvingProblems
 } from '../state/equationProblemSource.js';
 import {
@@ -23,11 +22,12 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
   ));
 
   useEffect(() => {
-    if (!E2E_PROBLEM_SOURCE_ENABLED && !TEST_PROBLEM_SOURCE_ENABLED) return undefined;
+    if (!E2E_PROBLEM_SOURCE_ENABLED) return undefined;
 
     let didCancel = false;
     loadE2EEquationSolvingProblems().then((problemDefinitions) => {
       if (didCancel) return;
+      if (!problemDefinitions.length) return;
       setProblemFlow(createInitialProblemFlow(getViewportWidth(), problemDefinitions));
       onRecognitionEvent?.('problem-source-loaded', {
         problemCount: problemDefinitions.length,

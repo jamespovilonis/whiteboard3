@@ -4,7 +4,8 @@ export function getRecognitionApiUrl() {
 
   if (typeof window !== 'undefined' && window.location?.hostname) {
     const protocol = window.location.protocol || 'http:';
-    return `${protocol}//${window.location.hostname}:8000`;
+    const hostname = gatewayHostname(window.location.hostname);
+    return `${protocol}//${hostname}:8010`;
   }
 
   return '';
@@ -14,3 +15,8 @@ function trimTrailingSlash(url) {
   return String(url || '').replace(/\/$/, '');
 }
 
+function gatewayHostname(hostname) {
+  const value = String(hostname || '').trim();
+  if (!value || value === '0.0.0.0' || value === '::') return '127.0.0.1';
+  return value;
+}

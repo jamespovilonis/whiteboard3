@@ -2,6 +2,7 @@ export async function requestLineDetections(candidateImage, options = {}) {
   const apiUrl = String(options.apiUrl || '').replace(/\/$/, '');
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 10000;
   const dataUrl = candidateImage?.dataUrl || candidateImage;
+  const url = `${apiUrl}/segment-lines`;
   if (!dataUrl) throw new Error('requestLineDetections requires a data URL');
 
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -13,7 +14,7 @@ export async function requestLineDetections(candidateImage, options = {}) {
     const body = new FormData();
     body.append('file', blob, 'answer.png');
 
-    const response = await fetch(`${apiUrl}/segment-lines`, {
+    const response = await fetch(url, {
       method: 'POST',
       body,
       signal: controller?.signal
@@ -25,7 +26,7 @@ export async function requestLineDetections(candidateImage, options = {}) {
       return {
         detections: [],
         failed: true,
-        error: payload?.detail || `HTTP ${response.status}`,
+        error: payload?.detail || `HTTP ${response.status} from ${url}`,
         elapsedSeconds
       };
     }
@@ -43,12 +44,17 @@ export async function requestLineDetections(candidateImage, options = {}) {
     return {
       detections: [],
       failed: true,
-      error: error instanceof Error ? error.message : String(error),
+      error: fetchErrorMessage(error, url),
       elapsedSeconds: (performanceNow() - startedAt) / 1000
     };
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function fetchErrorMessage(error, url) {
+  const message = error instanceof Error ? error.message : String(error);
+  return `${message} (${url})`;
 }
 
 export function translateDetections(detections, candidateImage = {}) {
@@ -86,4 +92,3 @@ function performanceNow() {
   }
   return Date.now();
 }
-

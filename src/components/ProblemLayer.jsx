@@ -104,6 +104,7 @@ function DebugBox({ bbox, kind, label, labelOffset, problemId, viewport }) {
   return (
     <div
       className={`debug-board-box debug-board-box-${kind}`}
+      data-box-kind={kind}
       data-problem-id={problemId}
       style={{
         width,
@@ -194,14 +195,16 @@ function estimateLabelWidth(candidate) {
 }
 
 function candidateDebugState(candidate) {
-  if (candidate.prediction?.failed || candidate.prediction?.timedOut || !candidate.latex) return 'failed';
+  if (candidate.prediction?.failed || candidate.prediction?.timedOut) return 'failed';
   if (candidate.selected) return 'selected';
+  if (!candidate.latex) return 'unread';
   return 'discarded';
 }
 
 function candidateDebugLabel(candidate, index) {
   const label = candidate.debugLabel || `C${index + 1}`;
   if (candidate.selected) return `${label} selected`;
-  if (candidate.prediction?.failed || candidate.prediction?.timedOut || !candidate.latex) return `${label} failed`;
+  if (candidate.prediction?.failed || candidate.prediction?.timedOut) return `${label} failed`;
+  if (!candidate.latex) return `${label} not OCRed`;
   return `${label} discarded`;
 }

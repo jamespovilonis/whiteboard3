@@ -425,14 +425,16 @@ function RecognizedLatexLineText({ latex }) {
 }
 
 function candidateDebugStatus(candidate) {
-  if (candidate.prediction?.failed || candidate.prediction?.timedOut || !candidate.latex) return 'failed';
+  if (candidate.prediction?.failed || candidate.prediction?.timedOut) return 'failed';
   if (candidate.selected) return 'selected';
+  if (!candidate.latex) return 'unread';
   return 'discarded';
 }
 
 function candidateStatusLabel(candidate, status) {
   if (status === 'selected') return `selected L${Number(candidate.selectedLineIndex) + 1}`;
   if (status === 'failed') return 'failed';
+  if (status === 'unread') return 'not OCRed';
   return 'discarded';
 }
 

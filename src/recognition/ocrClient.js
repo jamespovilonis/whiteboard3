@@ -3,6 +3,7 @@ export async function recognizeLineImage(lineImage, options = {}) {
   const model = options.model || 'comer';
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 20000;
   const timeoutSeconds = Math.max(0.1, Math.min(20, timeoutMs / 1000));
+  const url = `${apiUrl}/recognize?model=${encodeURIComponent(model)}&timeout_seconds=${encodeURIComponent(timeoutSeconds)}`;
 
   const dataUrl = typeof lineImage === 'string' ? lineImage : lineImage?.dataUrl;
   if (!dataUrl) throw new Error('recognizeLineImage requires a data URL');
@@ -16,14 +17,11 @@ export async function recognizeLineImage(lineImage, options = {}) {
     const body = new FormData();
     body.append('file', blob, 'line.png');
 
-    const response = await fetch(
-      `${apiUrl}/recognize?model=${encodeURIComponent(model)}&timeout_seconds=${encodeURIComponent(timeoutSeconds)}`,
-      {
-        method: 'POST',
-        body,
-        signal: controller?.signal
-      }
-    );
+    const response = await fetch(url, {
+      method: 'POST',
+      body,
+      signal: controller?.signal
+    });
     const payload = await response.json().catch(() => null);
     const elapsedSeconds = payload?.elapsedSeconds ?? ((performanceNow() - startedAt) / 1000);
 
@@ -34,7 +32,7 @@ export async function recognizeLineImage(lineImage, options = {}) {
         candidates: [],
         confidence: 0,
         failed: true,
-        error: payload?.detail || `HTTP ${response.status}`,
+        error: payload?.detail || `HTTP ${response.status} from ${url}`,
         elapsedSeconds
       };
     }
@@ -56,12 +54,17 @@ export async function recognizeLineImage(lineImage, options = {}) {
       candidates: [],
       confidence: 0,
       failed: true,
-      error: error instanceof Error ? error.message : String(error),
+      error: fetchErrorMessage(error, url),
       elapsedSeconds: (performanceNow() - startedAt) / 1000
     };
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function fetchErrorMessage(error, url) {
+  const message = error instanceof Error ? error.message : String(error);
+  return `${message} (${url})`;
 }
 
 async function dataUrlToBlob(dataUrl) {

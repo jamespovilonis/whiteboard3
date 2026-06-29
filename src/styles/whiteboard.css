@@ -84,6 +84,7 @@
 
 .debug-board-box-candidate-selected,
 .debug-board-box-candidate-discarded,
+.debug-board-box-candidate-unread,
 .debug-board-box-candidate-failed {
   border-width: 2px;
   border-style: solid;
@@ -97,6 +98,11 @@
 .debug-board-box-candidate-discarded {
   border-color: rgba(196, 127, 18, 0.84);
   background: rgba(196, 127, 18, 0.18);
+}
+
+.debug-board-box-candidate-unread {
+  border-color: rgba(91, 104, 124, 0.72);
+  background: rgba(91, 104, 124, 0.12);
 }
 
 .debug-board-box-candidate-failed {

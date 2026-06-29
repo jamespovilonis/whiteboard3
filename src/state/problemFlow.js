@@ -6,8 +6,9 @@ import {
 } from '../whiteboard/constants.js';
 import { bboxOverlap, padBbox, unionBbox } from '../whiteboard/geometry.js';
 import { getInitialProblemPosition } from '../whiteboard/viewport.js';
+import { TEST_PROBLEMS } from './problemFixtures.js';
 
-export function createInitialProblemFlow(viewportWidth, problemDefinitions = []) {
+export function createInitialProblemFlow(viewportWidth, problemDefinitions = TEST_PROBLEMS) {
   const definitions = normalizeProblemDefinitions(problemDefinitions);
   if (!definitions.length) {
     return {
@@ -40,9 +41,9 @@ export function getActiveProblem(flow) {
 
 export function getActiveModelResponse(flow) {
   return getActiveProblem(flow)?.modelResponse || {
-    before: 'No equation problems are loaded.',
+    before: 'All done.',
     latex: '\\checkmark',
-    after: 'Start the temporary testing problem source to render catalog problems.'
+    after: 'You have submitted every equation.'
   };
 }
 
@@ -88,7 +89,9 @@ export function submitActiveProblem(flow, viewportWidth) {
   const activeProblem = getActiveProblem(flow);
   if (!activeProblem) return { flow, targetViewport: null };
 
-  const definitions = normalizeProblemDefinitions(flow.problemDefinitions);
+  const definitions = normalizeProblemDefinitions(
+    flow.problemDefinitions?.length ? flow.problemDefinitions : TEST_PROBLEMS
+  );
   const frozenBottom = getFrozenBottom(activeProblem);
   const completedFlow = updateProblem(flow, activeProblem.id, (problem) => ({
     ...problem,

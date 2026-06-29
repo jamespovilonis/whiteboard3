@@ -111,10 +111,10 @@ previous line, a high semantic score, or a repair from an unsound current top
 candidate. The same conservative rule is used when deciding which recognized
 line to feed into the next line's semantic context.
 
-By default the browser posts OCR and detector requests to the current page
-hostname on port `8000`, matching the whiteboard_2 CoMER/DBNet server shape. Set
+By default the browser posts OCR, detector, and semantic-scoring requests to the
+current page hostname on port `8010`, matching the local recognition gateway. Set
 `VITE_OCR_API_URL` to override this, for example
-`VITE_OCR_API_URL=http://localhost:8000 npm run dev`.
+`VITE_OCR_API_URL=http://localhost:8010 npm run dev`.
 
 The semantic endpoint is optional, but it is most useful when it sits beside the
 model endpoints. During local experiments, run the CoMER/DBNet API on port

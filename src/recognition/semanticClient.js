@@ -1,12 +1,13 @@
 export async function scoreLatexCandidates(request, options = {}) {
   const apiUrl = String(options.apiUrl || '').replace(/\/$/, '');
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 5000;
+  const url = `${apiUrl}/score-latex-candidates`;
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   const startedAt = performanceNow();
 
   try {
-    const response = await fetch(`${apiUrl}/score-latex-candidates`, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
@@ -19,7 +20,7 @@ export async function scoreLatexCandidates(request, options = {}) {
       return {
         candidateScores: [],
         failed: true,
-        error: payload?.detail || `HTTP ${response.status}`,
+        error: payload?.detail || `HTTP ${response.status} from ${url}`,
         elapsedSeconds
       };
     }
@@ -33,12 +34,17 @@ export async function scoreLatexCandidates(request, options = {}) {
     return {
       candidateScores: [],
       failed: true,
-      error: error instanceof Error ? error.message : String(error),
+      error: fetchErrorMessage(error, url),
       elapsedSeconds: (performanceNow() - startedAt) / 1000
     };
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function fetchErrorMessage(error, url) {
+  const message = error instanceof Error ? error.message : String(error);
+  return `${message} (${url})`;
 }
 
 function performanceNow() {
@@ -47,4 +53,3 @@ function performanceNow() {
   }
   return Date.now();
 }
-

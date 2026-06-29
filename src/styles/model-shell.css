@@ -215,6 +215,11 @@
   background: rgba(196, 127, 18, 0.07);
 }
 
+.recognition-debug-candidate[data-status="unread"] {
+  border-color: rgba(91, 104, 124, 0.32);
+  background: rgba(91, 104, 124, 0.06);
+}
+
 .recognition-debug-candidate[data-status="failed"] {
   border-color: rgba(190, 56, 48, 0.38);
   background: rgba(190, 56, 48, 0.07);

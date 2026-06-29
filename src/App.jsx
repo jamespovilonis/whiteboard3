@@ -21,7 +21,7 @@ export default function App() {
   const [penColor, setPenColor] = useState(DEFAULT_PEN_COLOR);
   const [sliderValue, setSliderValue] = useState(4);
   const [isPanning, setIsPanning] = useState(false);
-  const [debugBoxesEnabled, setDebugBoxesEnabled] = useState(false);
+  const [debugBoxesEnabled, setDebugBoxesEnabled] = useState(true);
   const engineRef = useRef(null);
   const e2eEventsRef = useRef([]);
 
