@@ -189,6 +189,113 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.grading-debug {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(32, 34, 40, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.grading-debug[data-status="correct"] {
+  border-color: rgba(20, 132, 82, 0.38);
+  background: rgba(20, 132, 82, 0.08);
+}
+
+.grading-debug[data-status="incorrect"] {
+  border-color: rgba(190, 56, 48, 0.36);
+  background: rgba(190, 56, 48, 0.07);
+}
+
+.grading-debug[data-status="incomplete"] {
+  border-color: rgba(196, 127, 18, 0.34);
+  background: rgba(196, 127, 18, 0.07);
+}
+
+.grading-debug-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.grading-debug-top span:first-child {
+  color: rgba(48, 48, 56, 0.9);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.grading-debug-top span:last-child {
+  color: rgba(48, 48, 56, 0.62);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.grading-debug-metrics {
+  margin-top: 0;
+}
+
+.grading-debug-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.grading-debug-lines li {
+  min-width: 0;
+  padding-top: 7px;
+  border-top: 1px solid rgba(32, 34, 40, 0.08);
+}
+
+.grading-debug-lines li:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.grading-debug-lines div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.grading-debug-lines span {
+  color: rgba(48, 48, 56, 0.82);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.grading-debug-lines span:last-child {
+  color: rgba(48, 48, 56, 0.58);
+  text-transform: uppercase;
+}
+
+.grading-debug-lines p,
+.grading-debug-lines small {
+  display: block;
+  overflow: hidden;
+  margin: 3px 0 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grading-debug-lines p {
+  color: rgba(48, 48, 56, 0.8);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+}
+
+.grading-debug-lines small {
+  color: rgba(48, 48, 56, 0.58);
+  font-size: 10px;
+}
+
 .recognition-debug-candidates {
   display: flex;
   flex-direction: column;

@@ -830,6 +830,8 @@ function aggregateComponentResults(components, metadata) {
   const selectedBySignature = new Map();
   const allCandidatesByKey = new Map();
   const latexLines = [];
+  let gradingManifest = null;
+  let gradingProblem = null;
 
   for (const component of components) {
     const componentCandidate = componentDebugCandidate(component);
@@ -842,6 +844,10 @@ function aggregateComponentResults(components, metadata) {
 
     const result = component.result;
     if (!result) continue;
+    if (!gradingManifest && result.grading?.problem?.manifest) {
+      gradingManifest = result.grading.problem.manifest;
+      gradingProblem = result.grading.problem;
+    }
     for (const line of result.lines || []) {
       const signature = lineSignature(line);
       if (!signature || linesBySignature.has(signature)) continue;
@@ -880,6 +886,7 @@ function aggregateComponentResults(components, metadata) {
   for (const line of lines) {
     latexLines.push(line.acceptedLatex || line.latex || '');
   }
+  const grading = aggregateGradingFromLines(lines, gradingManifest, gradingProblem);
 
   return {
     latexLines,
@@ -899,6 +906,7 @@ function aggregateComponentResults(components, metadata) {
       totalElapsedSeconds: maxTiming(lines)
     },
     candidatePredictions: [...candidatesByKey.values()].sort(compareLines),
+    grading,
     segmentation: {
       selected: [...selectedBySignature.values()].sort(compareLines),
       candidates: [...allCandidatesByKey.values()].sort(compareLines),
@@ -919,6 +927,68 @@ function aggregateComponentResults(components, metadata) {
         contested: Boolean(component.contested),
         hasResult: Boolean(component.result)
       }))
+    }
+  };
+}
+
+function aggregateGradingFromLines(lines = [], manifest = null, problem = null) {
+  if (!manifest && !problem) return null;
+  const exactSet = Array.isArray(manifest?.exact_set)
+    ? manifest.exact_set.map(String)
+    : Array.isArray(problem?.solutionSet)
+      ? problem.solutionSet.map(String)
+      : [];
+  const steps = (lines || []).map((line, index) => {
+    const grading = line.grading || line.sequentialSemantic?.grading || line.contextualSemantic?.grading || null;
+    return {
+      lineIndex: line.lineIndex ?? index,
+      studentLatex: line.acceptedLatex || line.latex || grading?.studentLatex || '',
+      classification: grading?.classification || 'other',
+      selectedCandidateIndex: grading?.selectedCandidateIndex ?? null,
+      solutionCoverage: grading?.solutionCoverage || 'none',
+      matchedSolutions: Array.isArray(grading?.matchedSolutions) ? grading.matchedSolutions : []
+    };
+  });
+  const matched = new Set();
+  let sawValid = false;
+  let firstInvalid = null;
+  for (const step of steps) {
+    if (step.classification === 'valid_step') sawValid = true;
+    if (step.classification === 'invalid_step' && firstInvalid === null) {
+      firstInvalid = step.lineIndex;
+    }
+    for (const solution of step.matchedSolutions || []) {
+      if (solution) matched.add(String(solution));
+    }
+  }
+  const cardinality = manifest?.cardinality || problem?.cardinality || 'unsupported';
+  const complete = cardinality === 'finite'
+    ? exactSet.length > 0 && exactSet.every((solution) => matched.has(solution))
+    : steps.some((step) => step.solutionCoverage === 'full' || (step.matchedSolutions || []).length > 0);
+  const problemStatus = complete
+    ? 'correct'
+    : firstInvalid !== null
+      ? 'incorrect'
+      : sawValid
+        ? 'incomplete'
+        : 'not_started';
+  return {
+    status: 'complete',
+    failed: false,
+    problem: {
+      ...(problem || {}),
+      manifest,
+      solutionSet: exactSet,
+      cardinality
+    },
+    steps,
+    result: {
+      problemStatus,
+      breakdownLineIndex: problemStatus === 'incorrect' ? firstInvalid : null,
+      foundSolutions: [...matched],
+      missingSolutions: cardinality === 'finite'
+        ? exactSet.filter((solution) => !matched.has(solution))
+        : []
     }
   };
 }
@@ -1019,6 +1089,7 @@ function componentDebugCandidate(component) {
     semantic: null,
     contextualSemantic: null,
     sequentialSemantic: null,
+    grading: null,
     retryPredictions: [],
     semanticRetryPredictions: [],
     ocrRepair: null,

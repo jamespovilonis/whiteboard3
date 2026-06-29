@@ -164,6 +164,7 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
       answerStrokeCount: activeProblem?.answerStrokeIds?.length || 0,
       frozen: activeProblem?.status === 'solving'
     });
+
   }, [engineRef, onRecognitionEvent, problemFlow]);
 
   const goToNextProblem = useCallback(() => {
@@ -222,6 +223,7 @@ export function summarizeRecognitionResult(result) {
       prediction: line.prediction,
       contextualSemantic: line.contextualSemantic,
       sequentialSemantic: line.sequentialSemantic,
+      grading: line.grading || null,
       semanticRetryPredictions: line.semanticRetryPredictions || [],
       retryPredictions: line.retryPredictions || [],
       ocrRepair: line.ocrRepair || null,
@@ -249,6 +251,7 @@ export function summarizeRecognitionResult(result) {
       semantic: entry.semantic,
       contextualSemantic: entry.contextualSemantic,
       sequentialSemantic: entry.sequentialSemantic,
+      grading: entry.grading || null,
       retryPredictions: entry.retryPredictions || [],
       semanticRetryPredictions: entry.semanticRetryPredictions || [],
       ocrRepair: entry.ocrRepair || null,
@@ -272,7 +275,8 @@ export function summarizeRecognitionResult(result) {
       partitions: result.segmentation.partitions,
       parentCandidateId: result.segmentation.parentCandidateId,
       ocrSelectedCandidateIds: result.segmentation.ocrSelectedCandidateIds || []
-    }
+    },
+    grading: result.grading || null
   };
 }
 

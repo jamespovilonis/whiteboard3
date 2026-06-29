@@ -177,6 +177,7 @@ function DebugRecognitionResult({ entry }) {
       {result && (
         <>
           <DebugMetrics result={result} />
+          <GradingDebugPanel grading={result.grading} />
           {candidates.length > 0 && (
             <div className="recognition-debug-candidates">
               {candidates.map((candidate, index) => (
@@ -192,6 +193,67 @@ function DebugRecognitionResult({ entry }) {
         </>
       )}
     </section>
+  );
+}
+
+function GradingDebugPanel({ grading = null }) {
+  if (!grading) return null;
+
+  const status = grading.status || (grading.failed ? 'failed' : 'complete');
+  const problemStatus = grading.result?.problemStatus || (status === 'pending' ? 'pending' : 'n/a');
+  const steps = grading.steps || [];
+  const problem = grading.problem || {};
+  const solutionSet = problem.solutionSet || [];
+
+  return (
+    <div className="grading-debug" data-status={problemStatus}>
+      <div className="grading-debug-top">
+        <span>Grading</span>
+        <span>{gradingDecisionLabel(problemStatus, status)}</span>
+      </div>
+
+      {grading.failed && (
+        <p className="recognition-message">{grading.error || 'Grading failed.'}</p>
+      )}
+
+      {!grading.failed && (
+        <>
+          <dl className="recognition-metrics grading-debug-metrics">
+            <div>
+              <dt>Status</dt>
+              <dd>{gradingDecisionLabel(problemStatus, status)}</dd>
+            </div>
+            <div>
+              <dt>Variable</dt>
+              <dd>{problem.solveVariable || 'n/a'}</dd>
+            </div>
+            <div>
+              <dt>Solutions</dt>
+              <dd>{solutionSet.length ? solutionSet.join(', ') : problem.cardinality || 'n/a'}</dd>
+            </div>
+          </dl>
+
+          {steps.length > 0 ? (
+            <ol className="grading-debug-lines">
+              {steps.map((step, index) => (
+                <li key={`${step.lineIndex ?? index}-${step.studentLatex || ''}`}>
+                  <div>
+                    <span>Line {(step.lineIndex ?? index) + 1}</span>
+                    <span>{lineClassificationLabel(step.classification)}</span>
+                  </div>
+                  <p>{step.studentLatex || 'No LaTeX'}</p>
+                  <small>{gradingLineDetail(step)}</small>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            status === 'pending'
+              ? <p className="recognition-message">Grading is running.</p>
+              : <p className="recognition-message">No graded lines returned.</p>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -484,7 +546,39 @@ function semanticScoreLabel(semantic, timing) {
     timing?.contextualSemanticElapsedSeconds ??
     timing?.semanticElapsedSeconds;
   if (score === 'n/a') return formatSeconds(elapsed);
-  return `${score} · ${formatSeconds(elapsed)}`;
+  return `${score} | ${formatSeconds(elapsed)}`;
+}
+
+function gradingDecisionLabel(problemStatus, status = '') {
+  if (status === 'pending') return 'Pending';
+  if (status === 'failed') return 'Failed';
+  if (!problemStatus || problemStatus === 'n/a') return 'n/a';
+  return problemStatus
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function lineClassificationLabel(classification = '') {
+  if (!classification) return 'n/a';
+  return classification
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function gradingLineDetail(step = {}) {
+  const parts = [];
+  if (step.solutionCoverage && step.solutionCoverage !== 'none') {
+    parts.push(`coverage ${step.solutionCoverage}`);
+  }
+  if (step.matchedSolutions?.length) {
+    parts.push(`matched ${step.matchedSolutions.join(', ')}`);
+  }
+  if (Number.isFinite(Number(step.selectedCandidateIndex))) {
+    parts.push(`candidate ${Number(step.selectedCandidateIndex) + 1}`);
+  }
+  return parts.join(' | ') || 'no solution match';
 }
 
 function bboxLabel(bbox) {
@@ -516,7 +610,7 @@ function debugStatusLabel(status, result) {
 
 function lineLabel(line) {
   const score = Number(line.evidenceScore);
-  const scoreText = Number.isFinite(score) ? ` · ${score.toFixed(2)}` : '';
+  const scoreText = Number.isFinite(score) ? ` | ${score.toFixed(2)}` : '';
   return `Line ${(line.lineIndex ?? 0) + 1}${scoreText}`;
 }
 

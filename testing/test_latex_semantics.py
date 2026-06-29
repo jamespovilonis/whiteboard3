@@ -113,6 +113,26 @@ class LatexSemanticsTests(unittest.TestCase):
         self.assertTrue(scored[0].sound)
         self.assertTrue(scored[0].equivalent_to_problem)
 
+    def test_semantic_payload_returns_grading_and_prefers_solution_candidate(self):
+        payload = score_semantic_payload({
+            "problemLatex": "3x + 5 = 17",
+            "candidateGroups": [{
+                "candidateId": "line-1",
+                "latex": "x = 5",
+                "candidates": [
+                    {"latex": "x = 5", "score": 1.0},
+                    {"latex": "x = 4", "score": -5.0},
+                ],
+            }],
+        })
+
+        self.assertEqual(payload["answerManifest"]["cardinality"], "finite")
+        score = payload["candidateScores"][0]
+        self.assertEqual(score["bestLatex"], "x = 4")
+        self.assertEqual(score["grading"]["classification"], "valid_step")
+        self.assertEqual(score["grading"]["selectedCandidateIndex"], 1)
+        self.assertEqual(score["grading"]["matchedSolutions"], ["4"])
+
     def test_scores_transformed_first_student_line_against_explicit_prompt(self):
         scored = score_ocr_predictions(
             [

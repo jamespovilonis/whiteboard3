@@ -136,11 +136,16 @@ export async function recognizeStudentWriting(options = {}) {
     const semanticEntry = semanticByCandidateId.get(entry.candidateId);
     if (!semanticEntry) continue;
     entry.semantic = semanticEntry;
+    entry.grading = semanticEntry.grading || null;
     entry.timing.semanticElapsedSeconds = finiteSeconds(semantic.elapsedSeconds);
     entry.timing.submitToFinalPredictionSeconds = secondsSince(pipelineStartedAt);
     entry.evidenceScore += Number(semanticEntry.semanticScore) || 0;
+    entry.evidenceScore += gradingEvidenceBoost(semanticEntry.grading);
     evidenceByCandidateId.set(entry.candidateId, entry.evidenceScore);
-    if (shouldUseSemanticLatex(entry.latex, semanticEntry)) {
+    const gradingLatex = gradingSelectedLatex(entry, semanticEntry);
+    if (gradingLatex) {
+      entry.latex = gradingLatex;
+    } else if (shouldUseSemanticLatex(entry.latex, semanticEntry)) {
       entry.latex = semanticEntry.bestLatex;
     }
   }
@@ -179,11 +184,15 @@ export async function recognizeStudentWriting(options = {}) {
         ...contextualEntry,
         evidenceDelta
       };
+      entry.grading = contextualEntry.grading || entry.grading || null;
       entry.timing.contextualSemanticElapsedSeconds = finiteSeconds(contextualCandidateSemantic.elapsedSeconds);
       entry.timing.submitToFinalPredictionSeconds = secondsSince(pipelineStartedAt);
-      entry.evidenceScore += evidenceDelta;
+      entry.evidenceScore += evidenceDelta + gradingEvidenceBoost(contextualEntry.grading);
       evidenceByCandidateId.set(entry.candidateId, entry.evidenceScore);
-      if (shouldUseSemanticLatex(entry.latex, contextualEntry)) {
+      const gradingLatex = gradingSelectedLatex(entry, contextualEntry);
+      if (gradingLatex) {
+        entry.latex = gradingLatex;
+      } else if (shouldUseSemanticLatex(entry.latex, contextualEntry)) {
         entry.latex = contextualEntry.bestLatex;
       }
     }
@@ -385,6 +394,7 @@ export async function recognizeStudentWriting(options = {}) {
     selectedLineSemantic = await resolveSelectedLineSemanticScores({
       recognizedLines,
       problemLatex,
+      problemMetadata,
       previousLatex,
       semanticScoring: semanticScoring && !semantic.failed,
       scoreSemantics,
@@ -406,6 +416,7 @@ export async function recognizeStudentWriting(options = {}) {
     const lineSemantic = selectedLineSemanticById.get(line.candidateId);
     if (!lineSemantic) continue;
     line.sequentialSemantic = lineSemantic;
+    line.grading = lineSemantic.grading || line.grading || null;
     line.timing = {
       ...(line.timing || {}),
       sequentialSemanticElapsedSeconds: finiteSeconds(selectedLineSemantic.elapsedSeconds),
@@ -436,7 +447,10 @@ export async function recognizeStudentWriting(options = {}) {
       acceptedContextLatex.push(line.latex);
       continue;
     }
-    if (shouldUseSemanticLatex(line.latex, lineSemantic)) {
+    const gradingLatex = gradingSelectedLatex(line, lineSemantic);
+    if (gradingLatex) {
+      line.latex = gradingLatex;
+    } else if (shouldUseSemanticLatex(line.latex, lineSemantic)) {
       line.latex = lineSemantic.bestLatex;
     }
     const quadraticFormulaRepair = repairQuadraticFormulaFromProblem(line.latex, problemLatex);
@@ -495,6 +509,14 @@ export async function recognizeStudentWriting(options = {}) {
     sequential: selectedLineSemantic,
     sequentialBeforeRetry: semanticRetryUsed ? selectedLineSemanticBeforeRetry : null
   };
+  const grading = buildLiveGradingResult({
+    problemLatex,
+    answerManifest: semantic.answerManifest ||
+      contextualCandidateSemantic.answerManifest ||
+      selectedLineSemantic.answerManifest ||
+      null,
+    lines: recognizedLines
+  });
 
   return {
     segmentation: {
@@ -508,6 +530,7 @@ export async function recognizeStudentWriting(options = {}) {
     lines: recognizedLines,
     latexLines: recognizedLines.map((line) => line.acceptedLatex),
     latex: recognizedLines.map((line) => line.acceptedLatex).filter(Boolean).join(' \\\\ '),
+    grading,
     timing: {
       totalElapsedSeconds: secondsSince(pipelineStartedAt)
     }
@@ -654,6 +677,7 @@ async function resolveContextualCandidateSemanticScores({
       if (score) {
         candidateScores.push({
           ...score,
+          answerManifest: payload?.answerManifest || score.answerManifest || null,
           sameAnswerContext
         });
       }
@@ -663,6 +687,7 @@ async function resolveContextualCandidateSemanticScores({
       source: 'semantic-service',
       failed: false,
       elapsedSeconds,
+      answerManifest: candidateScores.find((entry) => entry.answerManifest)?.answerManifest || null,
       candidateScores
     };
   } catch (error) {
@@ -722,13 +747,13 @@ async function resolveSelectedLineSemanticScores({
       if (score) {
         const lineScore = {
           ...score,
+          answerManifest: payload?.answerManifest || score.answerManifest || null,
           lineIndex: line.lineIndex,
           candidateId: line.candidateId
         };
         lineScores.push(lineScore);
-        const trustedLatex = shouldUseSemanticLatex(line.latex, lineScore)
-          ? lineScore.bestLatex
-          : line.latex;
+        const trustedLatex = gradingSelectedLatex(line, lineScore) ||
+          (shouldUseSemanticLatex(line.latex, lineScore) ? lineScore.bestLatex : line.latex);
         if (trustedLatex) {
           contextLatex.push(trustedLatex);
           continue;
@@ -741,6 +766,7 @@ async function resolveSelectedLineSemanticScores({
       source: 'semantic-service',
       failed: false,
       elapsedSeconds,
+      answerManifest: lineScores.find((entry) => entry.answerManifest)?.answerManifest || null,
       lineScores
     };
   } catch (error) {
@@ -793,6 +819,7 @@ async function resolveSemanticScores({
       failed: Boolean(payload?.failed),
       error: payload?.error || null,
       elapsedSeconds: payload?.elapsedSeconds ?? null,
+      answerManifest: payload?.answerManifest || null,
       candidateScores: payload?.candidateScores || []
     };
   } catch (error) {
@@ -1172,6 +1199,7 @@ function applyFinalCandidateDebugState(candidatePredictions, recognizedLines, pi
     entry.retryPredictions = selectedLine.retryPredictions || entry.retryPredictions || [];
     entry.semanticRetryPredictions = selectedLine.semanticRetryPredictions || entry.semanticRetryPredictions || [];
     entry.sequentialSemantic = selectedLine.sequentialSemantic || null;
+    entry.grading = selectedLine.grading || entry.grading || null;
     entry.ocrRepair = selectedLine.ocrRepair || null;
     entry.timing = {
       ...(entry.timing || {}),
@@ -2167,6 +2195,98 @@ export function shouldUseSemanticLatex(currentLatex, semanticEntry = {}) {
   if (shouldTrustContextualSemanticBest(current, bestLatex, semanticEntry, currentScore)) return true;
 
   return currentScore?.sound === false && semanticEntry.sound === true;
+}
+
+function gradingSelectedLatex(entry = {}, semanticEntry = {}) {
+  const grading = semanticEntry?.grading || entry?.grading || null;
+  if (!gradingPreferred(grading)) return '';
+  const selectedIndex = Number(grading.selectedCandidateIndex);
+  const candidates = Array.isArray(entry?.candidates) ? entry.candidates : [];
+  if (Number.isInteger(selectedIndex) && selectedIndex >= 0) {
+    const selectedLatex = String(candidates[selectedIndex]?.latex || '').trim();
+    if (selectedLatex) return selectedLatex;
+  }
+  const studentLatex = String(grading.studentLatex || '').trim();
+  if (studentLatex) return studentLatex;
+  return String(semanticEntry.bestLatex || '').trim();
+}
+
+function gradingPreferred(grading = null) {
+  if (!grading) return false;
+  if (grading.solutionCoverage === 'full' || grading.solutionCoverage === 'partial') return true;
+  if ((grading.matchedSolutions || []).length > 0) return true;
+  return grading.classification === 'valid_step';
+}
+
+function gradingEvidenceBoost(grading = null) {
+  if (!gradingPreferred(grading)) return 0;
+  if (grading.solutionCoverage === 'full') return 8;
+  if (grading.solutionCoverage === 'partial') return 6;
+  return 4;
+}
+
+function buildLiveGradingResult({ problemLatex = '', answerManifest = null, lines = [] } = {}) {
+  const steps = (lines || []).map((line, index) => {
+    const grading = line.grading || line.sequentialSemantic?.grading || line.contextualSemantic?.grading || null;
+    return {
+      lineIndex: line.lineIndex ?? index,
+      studentLatex: line.acceptedLatex || line.latex || grading?.studentLatex || '',
+      classification: grading?.classification || 'other',
+      selectedCandidateIndex: grading?.selectedCandidateIndex ?? null,
+      solutionCoverage: grading?.solutionCoverage || 'none',
+      matchedSolutions: Array.isArray(grading?.matchedSolutions) ? grading.matchedSolutions : []
+    };
+  });
+  const exactSet = Array.isArray(answerManifest?.exact_set)
+    ? answerManifest.exact_set.map(String)
+    : [];
+  const matched = new Set();
+  let sawValid = false;
+  let firstInvalid = null;
+  for (const step of steps) {
+    if (step.classification === 'valid_step') sawValid = true;
+    if (step.classification === 'invalid_step' && firstInvalid === null) {
+      firstInvalid = step.lineIndex;
+    }
+    for (const solution of step.matchedSolutions || []) {
+      if (solution) matched.add(String(solution));
+    }
+  }
+  const cardinality = answerManifest?.cardinality || 'unsupported';
+  const complete = cardinality === 'finite'
+    ? exactSet.length > 0 && exactSet.every((solution) => matched.has(solution))
+    : steps.some((step) => step.solutionCoverage === 'full' || (step.matchedSolutions || []).length > 0);
+  const problemStatus = complete
+    ? 'correct'
+    : firstInvalid !== null
+      ? 'incorrect'
+      : sawValid
+        ? 'incomplete'
+        : 'not_started';
+
+  return {
+    status: 'complete',
+    failed: false,
+    problem: {
+      latex: problemLatex,
+      standardized: answerManifest?.problem_standardized || '',
+      solveVariable: answerManifest?.variable || null,
+      cardinality,
+      solutionSet: exactSet,
+      decimalSet: Array.isArray(answerManifest?.decimal_set) ? answerManifest.decimal_set : [],
+      tolerance: answerManifest?.tolerance ?? 0.005,
+      manifest: answerManifest
+    },
+    steps,
+    result: {
+      problemStatus,
+      breakdownLineIndex: problemStatus === 'incorrect' ? firstInvalid : null,
+      foundSolutions: [...matched],
+      missingSolutions: cardinality === 'finite'
+        ? exactSet.filter((solution) => !matched.has(solution))
+        : []
+    }
+  };
 }
 
 function semanticBestIsProblemSupportedNumericRepair(bestScore = null) {

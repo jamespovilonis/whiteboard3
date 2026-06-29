@@ -21,10 +21,14 @@ import urllib.error
 import urllib.request
 
 TESTING_DIR = Path(__file__).resolve().parent
+REPO_ROOT = TESTING_DIR.parent
 if str(TESTING_DIR) not in sys.path:
     sys.path.insert(0, str(TESTING_DIR))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from latex_semantics import score_semantic_payload
+from src.grading import grade_equation_payload
 
 
 class SemanticScoringTimeout(TimeoutError):
@@ -54,6 +58,7 @@ class SemanticScoreHandler(BaseHTTPRequestHandler):
             self._send_json({
                 "status": "ok",
                 "semantic": True,
+                "grading": True,
                 "upstreamApiUrl": self._upstream_api_url(),
             })
             return
@@ -63,7 +68,7 @@ class SemanticScoreHandler(BaseHTTPRequestHandler):
         self.send_error(404, "Not found")
 
     def do_POST(self):
-        if self.path != "/score-latex-candidates":
+        if self.path not in {"/score-latex-candidates", "/grade-equation-work"}:
             if self._is_proxy_path():
                 self._proxy_request()
                 return
@@ -79,17 +84,25 @@ class SemanticScoreHandler(BaseHTTPRequestHandler):
 
         started = time.monotonic()
         try:
-            result = score_semantic_payload_with_timeout(
-                payload,
-                timeout_seconds=getattr(self.server, "semantic_timeout", 2.5),
-                scorer=getattr(self.server, "semantic_scorer", score_semantic_payload),
-            )
+            if self.path == "/grade-equation-work":
+                result = score_semantic_payload_with_timeout(
+                    payload,
+                    timeout_seconds=getattr(self.server, "semantic_timeout", 2.5),
+                    scorer=getattr(self.server, "grading_scorer", grade_equation_payload),
+                )
+            else:
+                result = score_semantic_payload_with_timeout(
+                    payload,
+                    timeout_seconds=getattr(self.server, "semantic_timeout", 2.5),
+                    scorer=getattr(self.server, "semantic_scorer", score_semantic_payload),
+                )
             result["elapsedSeconds"] = round(time.monotonic() - started, 3)
         except SemanticScoringTimeout as exc:
             self._send_json({"detail": str(exc)}, status=504)
             return
         except Exception as exc:
-            self._send_json({"detail": f"Semantic scoring failed: {exc}"}, status=500)
+            label = "Grading" if self.path == "/grade-equation-work" else "Semantic scoring"
+            self._send_json({"detail": f"{label} failed: {exc}"}, status=500)
             return
 
         self._send_json(result)

@@ -304,6 +304,23 @@ export function applyProblemRecognitionError(flow, problemId, error) {
   }));
 }
 
+export function applyProblemGradingProgress(flow, problemId, grading) {
+  return updateProblem(flow, problemId, (problem) => {
+    const currentResult = problem.recognition?.result || {};
+    return {
+      ...problem,
+      recognition: {
+        ...problem.recognition,
+        result: {
+          ...currentResult,
+          grading
+        },
+        updatedAt: Date.now()
+      }
+    };
+  });
+}
+
 export function isProblemReadyForNext(problem) {
   if (!problem || problem.answerStrokeIds.length === 0) return false;
   if (problem.status === 'submitted' && problem.recognition?.status === 'complete') return true;

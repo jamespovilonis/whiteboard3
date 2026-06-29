@@ -11,8 +11,10 @@ from __future__ import annotations
 import contextlib
 import re
 import signal
+import sys
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
 import sympy
@@ -22,6 +24,12 @@ from sympy.parsing.sympy_parser import (
     parse_expr,
     standard_transformations,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.grading import create_answer_manifest, grade_candidate_group
 
 
 TRANSFORMATIONS = standard_transformations + (
@@ -3005,6 +3013,7 @@ def score_candidate_group(
     *,
     problem_latex: str,
     previous_latex: Sequence[str] = (),
+    answer_manifest: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     elapsed_seconds = group.get("elapsedSeconds")
     predictions = list(group.get("candidates") or [])
@@ -3022,14 +3031,34 @@ def score_candidate_group(
         previous_latex=previous_latex,
     )
     best = scored[0] if scored else None
+    grading = None
+    if answer_manifest is not None:
+        grading = grade_candidate_group(
+            answer_manifest,
+            group,
+            previous_latex=previous_latex,
+            problem_latex=problem_latex,
+        )
+        grading_latex = str(grading.get("studentLatex") or "").strip()
+        grading_is_preferred = (
+            grading.get("classification") == "valid_step" or
+            grading.get("solutionCoverage") in {"partial", "full"} or
+            bool(grading.get("matchedSolutions"))
+        )
+        if grading_is_preferred and grading_latex:
+            grading_best = next((item for item in scored if item.latex == grading_latex), None)
+            if grading_best is not None:
+                best = grading_best
 
     return {
         "candidateId": group.get("candidateId"),
+        "lineIndex": group.get("lineIndex"),
         "semanticScore": best.score if best else -1000,
         "bestLatex": best.latex if best else "",
         "sound": best.sound if best else False,
         "equivalentToProblem": best.equivalent_to_problem if best else False,
         "equivalentToPrevious": best.equivalent_to_previous if best else False,
+        "grading": grading,
         "candidateScores": [item.to_json() for item in scored],
     }
 
@@ -3046,13 +3075,22 @@ def score_semantic_payload(payload: dict[str, Any]) -> dict[str, Any]:
     problem_latex = str(payload.get("problemLatex") or "")
     previous_latex = [str(item) for item in payload.get("previousLatex") or []]
     groups = payload.get("candidateGroups") or payload.get("candidates") or []
+    problem_metadata = payload.get("problemMetadata") if isinstance(payload.get("problemMetadata"), dict) else {}
+    answer_manifest = payload.get("answerManifest") if isinstance(payload.get("answerManifest"), dict) else None
+    if answer_manifest is None:
+        answer_manifest = create_answer_manifest(
+            problem_latex,
+            variable=payload.get("variable") or problem_metadata.get("solveVariable"),
+        )
 
     return {
+        "answerManifest": answer_manifest,
         "candidateScores": [
             score_candidate_group(
                 group,
                 problem_latex=problem_latex,
                 previous_latex=previous_latex,
+                answer_manifest=answer_manifest,
             )
             for group in groups
         ]

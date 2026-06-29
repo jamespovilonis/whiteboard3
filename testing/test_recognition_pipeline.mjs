@@ -834,6 +834,60 @@ test('semantic scoring can choose a better top-five latex candidate', async () =
   assert.equal(result.lines[0].semantic.bestLatex, '2 x = 8');
 });
 
+test('grading verdict selects a valid top-five candidate over OCR top one', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('a', 0, 0, 50, 30)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 60, yMax: 40 },
+    problemLatex: '3 x + 5 = 17',
+    semanticScoring: true,
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: 'x = 5',
+      top: { latex: 'x = 5', score: 2 },
+      candidates: [
+        { latex: 'x = 5', score: 2 },
+        { latex: 'x = 4', score: -4 },
+      ],
+      elapsedSeconds: 0.3
+    }),
+    scoreSemantics: async (request) => ({
+      answerManifest: {
+        problem_raw: request.problemLatex,
+        variable: 'x',
+        cardinality: 'finite',
+        exact_set: ['4'],
+        decimal_set: [4],
+        tolerance: 0.005
+      },
+      candidateScores: [{
+        candidateId: request.candidateGroups[0].candidateId,
+        semanticScore: 1,
+        bestLatex: 'x = 5',
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        grading: {
+          studentLatex: 'x = 4',
+          classification: 'valid_step',
+          selectedCandidateIndex: 1,
+          solutionCoverage: 'full',
+          matchedSolutions: ['4']
+        },
+        candidateScores: []
+      }],
+      elapsedSeconds: 0.05
+    })
+  });
+
+  assert.equal(result.latex, 'x = 4');
+  assert.equal(result.lines[0].grading.classification, 'valid_step');
+  assert.equal(result.lines[0].grading.selectedCandidateIndex, 1);
+  assert.equal(result.grading.result.problemStatus, 'correct');
+});
+
 test('semantic scoring payload is capped to top-five OCR candidates', async () => {
   installFakeCanvas();
   const strokes = [stroke('a', 0, 0, 50, 30)];

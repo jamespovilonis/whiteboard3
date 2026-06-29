@@ -9,7 +9,7 @@ import {
   waitForE2EBridge
 } from './helpers/playback.js';
 
-test('mocked recognition calls start after realtime debounce and return timing metadata', async ({ page }) => {
+test('mocked recognition grades live after realtime debounce and keeps submit disabled', async ({ page }) => {
   const fixture = getEquationProblemFixture('algebra_prompt_context');
   await installProblemSourceRoute(page, [fixture.name]);
   await page.clock.install({ time: new Date('2026-06-28T12:00:00.000Z') });
@@ -34,7 +34,7 @@ test('mocked recognition calls start after realtime debounce and return timing m
 
   expect(afterWriting.strokes).toHaveLength(scenario.strokes.length);
   expect(mockRecognition.calls).toHaveLength(0);
-  await expect(page.getByTestId('submit-answer')).toBeEnabled();
+  await expect(page.getByTestId('submit-answer')).toBeDisabled();
 
   await page.clock.fastForward(650);
   await page.waitForFunction(() => (
@@ -75,36 +75,21 @@ test('mocked recognition calls start after realtime debounce and return timing m
   const result = completedResult.recognition.result;
   expect(result.lines.length).toBeGreaterThan(0);
   expect(Number.isFinite(result.timing.totalElapsedSeconds)).toBe(true);
+  expect(result.grading.status).toBe('complete');
+  expect(result.grading.result.problemStatus).toBe('correct');
+  expect(result.grading.steps.length).toBeGreaterThan(0);
+  expect(result.grading.steps[0].classification).toBe('valid_step');
 
   for (const line of result.lines) {
     expect(line.timing).not.toBeNull();
     expect(Number.isFinite(line.timing.submitToFinalPredictionSeconds)).toBe(true);
     expect(Number.isFinite(line.timing.ocrElapsedSeconds)).toBe(true);
+    expect(line.grading?.classification).toBe('valid_step');
   }
 
-  const answerBoxBeforeSubmit = afterRecognition.activeProblem.answerBox;
-  const recognitionStartsBeforeSubmit = afterRecognition.events.filter((event) => (
-    event.type === 'recognition-start'
-  )).length;
-  await page.getByTestId('submit-answer').click();
   await expect(page.getByTestId('submit-answer')).toBeDisabled();
-
-  const afterSubmit = await getE2ESnapshot(page);
-  expect(afterSubmit.activeProblem.status).toBe('submitted');
-  expect(afterSubmit.activeProblem.answerBoxFrozen).toBe(true);
-
-  await page.mouse.move(answerBoxBeforeSubmit.xMin + 16, answerBoxBeforeSubmit.yMax + 80);
-  await page.mouse.down();
-  await page.mouse.move(answerBoxBeforeSubmit.xMin + 180, answerBoxBeforeSubmit.yMax + 96, { steps: 4 });
-  await page.mouse.up();
-  await page.clock.fastForward(750);
-
-  const afterLateInk = await getE2ESnapshot(page);
-  expect(afterLateInk.activeProblem.status).toBe('submitted');
-  expect(afterLateInk.activeProblem.answerBox).toEqual(answerBoxBeforeSubmit);
-  expect(afterLateInk.events.filter((event) => event.type === 'recognition-start')).toHaveLength(
-    recognitionStartsBeforeSubmit
-  );
+  expect(mockRecognition.endpoints()).not.toContain('/grade-equation-work');
+  expect(afterRecognition.activeProblem.status).toBe('solving');
 });
 
 function withShortLinePauses(scenario) {
