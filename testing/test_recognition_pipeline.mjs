@@ -487,6 +487,7 @@ test('student writing pipeline skips CoMER for contained single-stroke alternati
   assert.ok(result.candidatePredictions.some((entry) => (
     entry.strokeIds.length === 1 &&
     entry.skippedRecognition &&
+    entry.image === null &&
     entry.prediction.skipReason === 'single-stroke-alternative'
   )));
   assert.equal(result.latex, 'x = 1');
@@ -510,6 +511,79 @@ test('student writing pipeline skips CoMER for contained single-stroke alternati
   });
 
   assert.ok(noSkipCalls.length > calls.length);
+});
+
+test('student writing pipeline defers contained nonstructural alternatives', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('a', 0, 0, 20, 30),
+    stroke('b', 35, 0, 55, 30),
+    stroke('c', 140, 0, 160, 30),
+  ];
+  const calls = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 180, yMax: 60 },
+    problemLatex: 'x = 1',
+    semanticScoring: true,
+    recognizeLine: async (image) => {
+      calls.push(image.candidateId);
+      if (image.candidateId === 'strict_a|b') {
+        throw new Error('contained strict alternatives should be deferred');
+      }
+      return {
+        latex: 'x = 1',
+        top: { latex: 'x = 1', score: 2 },
+        candidates: [{ latex: 'x = 1', score: 2 }],
+        elapsedSeconds: 0.04
+      };
+    },
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 3,
+        bestLatex: group.latex,
+        sound: true,
+        equivalentToProblem: true,
+        equivalentToPrevious: false,
+        candidateScores: []
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.ok(calls.includes('parent_a|b|c'));
+  assert.equal(calls.includes('strict_a|b'), false);
+  assert.ok(result.candidatePredictions.some((entry) => (
+    entry.candidateId === 'strict_a|b' &&
+    entry.skippedRecognition &&
+    entry.image === null &&
+    entry.prediction.skipReason === 'contained-nonstructural-alternative'
+  )));
+  assert.equal(result.latex, 'x = 1');
+
+  const eagerCalls = [];
+  await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 180, yMax: 60 },
+    problemLatex: 'x = 1',
+    semanticScoring: false,
+    stagedAlternativeRecognition: false,
+    recognizeLine: async (image) => {
+      eagerCalls.push(image.candidateId);
+      return {
+        latex: 'x = 1',
+        top: { latex: 'x = 1', score: 2 },
+        candidates: [{ latex: 'x = 1', score: 2 }],
+        elapsedSeconds: 0.04
+      };
+    }
+  });
+
+  assert.ok(eagerCalls.includes('strict_a|b'));
+  assert.ok(eagerCalls.length > calls.length);
 });
 
 test('student writing pipeline still recognizes a single-stroke answer when it has no containing alternative', async () => {
@@ -760,6 +834,51 @@ test('semantic scoring can choose a better top-five latex candidate', async () =
   assert.equal(result.lines[0].semantic.bestLatex, '2 x = 8');
 });
 
+test('semantic scoring payload is capped to top-five OCR candidates', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('a', 0, 0, 50, 30)];
+  let semanticRequest = null;
+  const candidates = Array.from({ length: 7 }, (_item, index) => ({
+    latex: `x = ${index + 1}`,
+    score: 7 - index
+  }));
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 60, yMax: 40 },
+    problemLatex: 'x = 1',
+    semanticScoring: true,
+    recognizeLine: async () => ({
+      latex: 'x = 1',
+      top: candidates[0],
+      candidates,
+      elapsedSeconds: 0.3
+    }),
+    scoreSemantics: async (request) => {
+      semanticRequest = request;
+      return {
+        candidateScores: request.candidateGroups.map((group) => ({
+          candidateId: group.candidateId,
+          semanticScore: 1,
+          bestLatex: group.latex,
+          sound: true,
+          equivalentToProblem: true,
+          candidateScores: []
+        })),
+        elapsedSeconds: 0.02
+      };
+    }
+  });
+
+  assert.equal(semanticRequest.candidateGroups[0].candidates.length, 5);
+  assert.deepEqual(
+    semanticRequest.candidateGroups[0].candidates.map((candidate) => candidate.latex),
+    ['x = 1', 'x = 2', 'x = 3', 'x = 4', 'x = 5']
+  );
+  assert.equal(result.candidatePredictions[0].candidates.length, 7);
+  assert.equal(result.latex, 'x = 1');
+});
+
 test('recognized single-letter variables inherit lowercase problem context', async () => {
   installFakeCanvas();
   const strokes = [stroke('a', 0, 0, 80, 36)];
@@ -811,6 +930,34 @@ test('malformed quadratic formula row is repaired from problem coefficients', as
     'x = \\frac { - 4 + \\sqrt { 4 ^ { 2 } - 4 ( 1 ) ( - 5 ) } } { 2 ( 1 ) }'
   );
   assert.equal(result.lines[0].ocrRepair.source, 'contextual-quadratic-formula');
+});
+
+test('variable-free rational problem line is repaired from problem context', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('rational', 0, 0, 420, 90)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 440, yMax: 110 },
+    problemLatex: '\\frac { x ^ { 2 } - 1 } { x - 1 } = 4',
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    recognizeLine: async () => ({
+      latex: '\\frac { 2 ^ { 2 } - 1 } { 2 ^ { 2 } - 1 } = 4',
+      top: {
+        latex: '\\frac { 2 ^ { 2 } - 1 } { 2 ^ { 2 } - 1 } = 4',
+        score: 2
+      },
+      candidates: [{
+        latex: '\\frac { 2 ^ { 2 } - 1 } { 2 ^ { 2 } - 1 } = 4',
+        score: 2
+      }],
+      elapsedSeconds: 0.03
+    })
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '\\frac { x ^ { 2 } - 1 } { x - 1 } = 4');
+  assert.equal(result.lines[0].ocrRepair.source, 'contextual-rational-problem');
 });
 
 test('recognition semantic scoring receives selected testing catalog problem context', async () => {
@@ -981,6 +1128,39 @@ test('selected line OCR retries normalized crop heights after a timeout', async 
   assert.equal(result.lines[0].prediction.retryUsed, true);
   assert.equal(result.lines[0].retryPredictions.length, 2);
   assert.equal(result.latex, '\\frac { x } { 2 } = 1');
+});
+
+test('student writing pipeline abort stops selected-line retries', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('a', 0, 0, 240, 150)];
+  const controller = new AbortController();
+  const calls = [];
+
+  await assert.rejects(
+    recognizeStudentWriting({
+      strokes,
+      answerBox: { xMin: -5, yMin: -5, xMax: 260, yMax: 170 },
+      problemLatex: '\\frac { x } { 2 } = 1',
+      recognizeAlternatives: false,
+      initialRasterHeight: 0,
+      retryRasterHeights: [88, 104],
+      signal: controller.signal,
+      recognizeLine: async (image) => {
+        calls.push(image.targetPixelHeight || image.height);
+        controller.abort();
+        return {
+          latex: '',
+          top: null,
+          candidates: [],
+          timedOut: true,
+          elapsedSeconds: 20
+        };
+      }
+    }),
+    { name: 'AbortError' }
+  );
+
+  assert.equal(calls.length, 1);
 });
 
 test('structural selected line gets longer timeout after short OCR retries fail', async () => {
@@ -2898,6 +3078,82 @@ test('incremental scheduler keeps non-overlapping line OCR running', async () =>
   assert.ok(calls.some((call) => call.strokeIds.join('|') === 'b'));
 });
 
+test('incremental scheduler aborts only recognition made stale by overlapping ink', async () => {
+  const line = stroke('a', 0, 0, 50, 30);
+  const farLine = stroke('b', 0, 180, 50, 210);
+  const overlappingInk = stroke('c', 24, 24, 72, 56);
+  const calls = [];
+  const scheduler = new IncrementalRecognitionScheduler({
+    debounceMs: 0,
+    semanticScoring: false,
+    recognizeWriting: (request) => {
+      const call = {
+        strokeIds: request.strokes.map((item) => item.id).sort(),
+        detectLineBands: Boolean(request.detectLineBands),
+        signal: request.signal
+      };
+      calls.push(call);
+      return new Promise(() => {});
+    }
+  });
+  const base = {
+    problemId: 'problem-1',
+    answerBox: { xMin: -10, yMin: -10, xMax: 140, yMax: 260 },
+    problemLatex: 'x = 1'
+  };
+
+  scheduler.update({ ...base, strokes: [line] });
+  await scheduler.flushNow();
+  await nextMicrotask();
+
+  const firstLineCall = calls.find((call) => (
+    !call.detectLineBands &&
+    call.strokeIds.join('|') === 'a'
+  ));
+  assert.ok(firstLineCall);
+  assert.equal(firstLineCall.signal.aborted, false);
+
+  scheduler.update({ ...base, strokes: [line, farLine] });
+  await nextMicrotask();
+  assert.equal(firstLineCall.signal.aborted, false);
+
+  scheduler.update({ ...base, strokes: [line, farLine, overlappingInk] });
+  await nextMicrotask();
+  assert.equal(firstLineCall.signal.aborted, true);
+});
+
+test('incremental scheduler retries a fresh component after abort', async () => {
+  const snapshots = [];
+  let calls = 0;
+  const scheduler = new IncrementalRecognitionScheduler({
+    debounceMs: 0,
+    semanticScoring: false,
+    recognizeWriting: (request) => {
+      calls += 1;
+      if (!request.detectLineBands && calls === 1) {
+        const error = new Error('Recognition aborted');
+        error.name = 'AbortError';
+        return Promise.reject(error);
+      }
+      return Promise.resolve(fakeRecognitionResult(request.strokes, 'deterministic'));
+    },
+    onStateChange: (snapshot) => snapshots.push(snapshot)
+  });
+  const line = stroke('a', 0, 0, 50, 30);
+
+  scheduler.update({
+    problemId: 'problem-1',
+    strokes: [line],
+    answerBox: { xMin: -10, yMin: -10, xMax: 80, yMax: 60 },
+    problemLatex: 'x = 1'
+  });
+  await scheduler.flushNow();
+  await waitForSnapshot(snapshots, (snapshot) => snapshot.status === 'complete');
+
+  assert.ok(calls >= 2);
+  assert.equal(snapshots.at(-1).realtime.components[0].status, 'final');
+});
+
 test('incremental scheduler keeps partial OCR visible while an overlap is contested', async () => {
   const snapshots = [];
   const dbnetPending = new Promise(() => {});
@@ -2978,6 +3234,99 @@ test('incremental scheduler reuses OCR when DBNet confirms the same line signatu
   assert.equal(snapshots.at(-1).realtime.components[0].status, 'final');
 });
 
+test('incremental scheduler does not cache abort-like OCR failures', async () => {
+  let calls = 0;
+  const scheduler = new IncrementalRecognitionScheduler({
+    semanticScoring: false,
+    recognizeLine: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          latex: '',
+          candidates: [],
+          failed: true,
+          error: 'signal is aborted without reason',
+          elapsedSeconds: 20
+        };
+      }
+      return {
+        latex: 'x = 1',
+        top: { latex: 'x = 1', score: 2 },
+        candidates: [{ latex: 'x = 1', score: 2 }],
+        elapsedSeconds: 0.02
+      };
+    }
+  });
+  const image = {
+    strokeIds: ['a'],
+    tightBbox: { xMin: 0, yMin: 0, xMax: 50, yMax: 30 },
+    padding: 24,
+    targetPixelHeight: 104,
+    width: 200,
+    height: 104
+  };
+
+  const failed = await scheduler.cachedRecognizeLine(image, { apiUrl: '', model: 'comer' });
+  assert.equal(failed.failed, true);
+  const result = await scheduler.cachedRecognizeLine(image, { apiUrl: '', model: 'comer' });
+
+  assert.equal(calls, 2);
+  assert.equal(result.latex, 'x = 1');
+  assert.equal(result.cached, undefined);
+});
+
+test('incremental scheduler isolates aborts for shared OCR inflight waiters', async () => {
+  let calls = 0;
+  let resolveOcr = null;
+  let upstreamSignal = null;
+  const scheduler = new IncrementalRecognitionScheduler({
+    semanticScoring: false,
+    recognizeLine: async (_image, options) => {
+      calls += 1;
+      upstreamSignal = options.signal;
+      return new Promise((resolve) => { resolveOcr = resolve; });
+    }
+  });
+  const image = {
+    strokeIds: ['a'],
+    tightBbox: { xMin: 0, yMin: 0, xMax: 50, yMax: 30 },
+    padding: 24,
+    targetPixelHeight: 104,
+    width: 200,
+    height: 104
+  };
+  const first = new AbortController();
+  const second = new AbortController();
+
+  const firstRequest = scheduler.cachedRecognizeLine(image, {
+    apiUrl: '',
+    model: 'comer',
+    signal: first.signal
+  });
+  const secondRequest = scheduler.cachedRecognizeLine(image, {
+    apiUrl: '',
+    model: 'comer',
+    signal: second.signal
+  });
+
+  await nextMicrotask();
+  assert.equal(calls, 1);
+  first.abort();
+  await assert.rejects(firstRequest, { name: 'AbortError' });
+  assert.equal(upstreamSignal.aborted, false);
+
+  resolveOcr({
+    latex: 'x = 1',
+    top: { latex: 'x = 1', score: 2 },
+    candidates: [{ latex: 'x = 1', score: 2 }],
+    elapsedSeconds: 0.02
+  });
+
+  const secondResult = await secondRequest;
+  assert.equal(secondResult.latex, 'x = 1');
+  assert.equal(secondResult.inFlightReused, true);
+});
+
 test('incremental scheduler final pass preserves one-shot whole-answer candidates', async () => {
   const snapshots = [];
   const calls = [];
@@ -2995,7 +3344,10 @@ test('incremental scheduler final pass preserves one-shot whole-answer candidate
       const call = {
         strokeIds: request.strokes.map((item) => item.id).sort(),
         answerBox: request.answerBox,
-        detectLineBands: Boolean(request.detectLineBands)
+        detectLineBands: Boolean(request.detectLineBands),
+        skipSingleStrokeAlternatives: request.skipSingleStrokeAlternatives,
+        stagedAlternativeRecognition: request.stagedAlternativeRecognition,
+        semanticCandidateLimit: request.semanticCandidateLimit
       };
       calls.push(call);
       if (
@@ -3033,6 +3385,14 @@ test('incremental scheduler final pass preserves one-shot whole-answer candidate
     completed.result.candidatePredictions.map((candidate) => candidate.candidateId).sort(),
     oneShot.candidatePredictions.map((candidate) => candidate.candidateId).sort()
   );
+  const fullAnswerCall = calls.find((call) => (
+    call.detectLineBands &&
+    call.strokeIds.join('|') === 'line_a|line_b' &&
+    sameBboxForTest(call.answerBox, answerBox)
+  ));
+  assert.equal(fullAnswerCall.skipSingleStrokeAlternatives, undefined);
+  assert.equal(fullAnswerCall.stagedAlternativeRecognition, undefined);
+  assert.equal(fullAnswerCall.semanticCandidateLimit, 0);
 });
 
 test('incremental scheduler does not let stale local OCR downgrade the final one-shot result', async () => {

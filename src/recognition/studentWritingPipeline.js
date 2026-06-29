@@ -30,6 +30,7 @@ export async function recognizeStudentWriting(options = {}) {
     detectionTimeoutMs = 10000,
     semanticScoring = false,
     semanticTimeoutMs = 5000,
+    semanticCandidateLimit = 5,
     scoreSemantics = scoreLatexCandidates,
     rasterPadding = 24,
     initialRasterHeight = 104,
@@ -43,10 +44,13 @@ export async function recognizeStudentWriting(options = {}) {
     chunkFallbackMinGap = 18,
     recognizeAlternatives = true,
     skipSingleStrokeAlternatives = true,
+    stagedAlternativeRecognition = true,
     initialRecognitionConcurrency = 1,
+    signal = null,
     recognizeLine = recognizeLineImage
   } = options;
 
+  throwIfAborted(signal);
   const detection = await resolveDetections({
     strokes,
     answerBox,
@@ -54,8 +58,10 @@ export async function recognizeStudentWriting(options = {}) {
     detectLineBands,
     detectLines,
     apiUrl,
-    timeoutMs: detectionTimeoutMs
+    timeoutMs: detectionTimeoutMs,
+    signal
   });
+  throwIfAborted(signal);
 
   const segmentation = segmentMathLines(strokes, {
     answerBox,
@@ -79,8 +85,10 @@ export async function recognizeStudentWriting(options = {}) {
   const candidatesToRecognize = recognizeAlternatives
     ? candidatesForRecognition(segmentation)
     : segmentation.selected;
-  const singleStrokeSkipContext = {
-    enabled: Boolean(skipSingleStrokeAlternatives && recognizeAlternatives),
+  const initialRecognitionSkipContext = {
+    enabled: Boolean(recognizeAlternatives),
+    skipSingleStrokeAlternatives: Boolean(skipSingleStrokeAlternatives),
+    stagedAlternativeRecognition: Boolean(stagedAlternativeRecognition),
     candidates: candidatesToRecognize,
     baselineCandidateIds: new Set((baselineCover || []).map((candidate) => candidate.candidateId))
   };
@@ -97,10 +105,12 @@ export async function recognizeStudentWriting(options = {}) {
       initialRasterHeight,
       initialRasterMinCssHeight,
       pipelineStartedAt,
-      singleStrokeSkipContext,
+      initialRecognitionSkipContext,
+      signal,
       recognizeLine
     })
   );
+  throwIfAborted(signal);
 
   const evidenceByCandidateId = new Map(
     candidatePredictions.map((entry) => [entry.candidateId, entry.evidenceScore])
@@ -113,8 +123,11 @@ export async function recognizeStudentWriting(options = {}) {
     semanticScoring,
     scoreSemantics,
     apiUrl,
-    timeoutMs: semanticTimeoutMs
+    timeoutMs: semanticTimeoutMs,
+    semanticCandidateLimit,
+    signal
   });
+  throwIfAborted(signal);
   const semanticByCandidateId = new Map(
     (semantic.candidateScores || []).map((entry) => [entry.candidateId, entry])
   );
@@ -146,8 +159,11 @@ export async function recognizeStudentWriting(options = {}) {
     semanticScoring: semanticScoring && !semantic.failed,
     scoreSemantics,
     apiUrl,
-    timeoutMs: semanticTimeoutMs
+    timeoutMs: semanticTimeoutMs,
+    semanticCandidateLimit,
+    signal
   });
+  throwIfAborted(signal);
   const contextualSemanticByCandidateId = new Map(
     (contextualCandidateSemantic.candidateScores || []).map((entry) => [entry.candidateId, entry])
   );
@@ -180,6 +196,7 @@ export async function recognizeStudentWriting(options = {}) {
   }
 
   for (const candidate of selected) {
+    throwIfAborted(signal);
     const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
     if (!entry?.skippedRecognition) continue;
     await recognizeSkippedSelectedEntry(entry, candidate, {
@@ -189,7 +206,9 @@ export async function recognizeStudentWriting(options = {}) {
       problemLatex,
       previousLatex,
       pipelineStartedAt,
+      rasterPadding,
       recognizeLine,
+      signal,
       evidenceByCandidateId
     });
   }
@@ -197,6 +216,7 @@ export async function recognizeStudentWriting(options = {}) {
   const selectedIds = new Set(selected.map((candidate) => candidate.candidateId));
   if (chunkFallback) {
     for (const candidate of selected) {
+      throwIfAborted(signal);
       const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
       if (!entry || entry.skippedRecognition || !predictionNeedsRetry(entry.prediction) || !candidateCanUseChunking(candidate, {
         rasterPadding,
@@ -216,12 +236,14 @@ export async function recognizeStudentWriting(options = {}) {
         recognizeLine,
         problemLatex,
         previousLatex,
+        signal,
         evidenceByCandidateId
       });
     }
   }
   if (retryRasterHeights?.length) {
     for (const candidate of selected) {
+      throwIfAborted(signal);
       const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
       if (!entry || entry.skippedRecognition || !predictionNeedsRetry(entry.prediction)) continue;
       const retry = await retrySelectedLineRecognition(candidate, {
@@ -233,6 +255,7 @@ export async function recognizeStudentWriting(options = {}) {
         retryRasterHeights,
         skipRasterHeights: [entry.initialTargetPixelHeight],
         extendedTimeoutMs: structuralRetryTimeoutMs,
+        signal,
         recognizeLine
       });
       if (!retry.attempts.length) continue;
@@ -251,6 +274,7 @@ export async function recognizeStudentWriting(options = {}) {
   }
   if (chunkFallback) {
     for (const candidate of selected) {
+      throwIfAborted(signal);
       const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
       if (!entry || entry.skippedRecognition || !predictionNeedsRetry(entry.prediction)) continue;
       await applyChunkFallbackToEntry(entry, candidate, {
@@ -265,6 +289,7 @@ export async function recognizeStudentWriting(options = {}) {
         recognizeLine,
         problemLatex,
         previousLatex,
+        signal,
         evidenceByCandidateId
       });
     }
@@ -287,8 +312,11 @@ export async function recognizeStudentWriting(options = {}) {
     semanticScoring: semanticScoring && !semantic.failed,
     scoreSemantics,
     apiUrl,
-    timeoutMs: semanticTimeoutMs
+    timeoutMs: semanticTimeoutMs,
+    semanticCandidateLimit,
+    signal
   });
+  throwIfAborted(signal);
   const selectedLineSemanticBeforeRetry = selectedLineSemantic;
   const selectedLineSemanticById = new Map(
     (selectedLineSemantic.lineScores || []).map((entry) => [entry.candidateId, entry])
@@ -297,6 +325,7 @@ export async function recognizeStudentWriting(options = {}) {
   let semanticRetryUsed = false;
   if (semanticRetryRasterHeights?.length && semanticScoring && !selectedLineSemantic.failed) {
     for (const line of recognizedLines) {
+      throwIfAborted(signal);
       const lineSemantic = selectedLineSemanticById.get(line.candidateId);
       if (!lineSemantic || !semanticNeedsRetry(line, lineSemantic)) continue;
 
@@ -319,6 +348,7 @@ export async function recognizeStudentWriting(options = {}) {
         chunkFallbackMinCssWidth,
         chunkFallbackMaxCssWidth,
         chunkFallbackMinGap,
+        signal,
         recognizeLine
       });
       if (!retry.attempts.length) continue;
@@ -359,8 +389,11 @@ export async function recognizeStudentWriting(options = {}) {
       semanticScoring: semanticScoring && !semantic.failed,
       scoreSemantics,
       apiUrl,
-      timeoutMs: semanticTimeoutMs
+      timeoutMs: semanticTimeoutMs,
+      semanticCandidateLimit,
+      signal
     });
+    throwIfAborted(signal);
     selectedLineSemanticById.clear();
     for (const entry of selectedLineSemantic.lineScores || []) {
       selectedLineSemanticById.set(entry.candidateId, entry);
@@ -435,6 +468,15 @@ export async function recognizeStudentWriting(options = {}) {
       };
       line.latex = quadraticFormulaRepair;
     }
+    const rationalProblemRepair = repairInitialRationalProblemLine(line.latex, problemLatex, line.lineIndex);
+    if (rationalProblemRepair && rationalProblemRepair !== line.latex) {
+      line.ocrRepair = {
+        source: 'contextual-rational-problem',
+        originalLatex: line.latex,
+        repairedLatex: rationalProblemRepair
+      };
+      line.latex = rationalProblemRepair;
+    }
     line.latex = normalizeContextualVariableCase(line.latex, [
       problemLatex,
       ...previousLatex,
@@ -482,7 +524,8 @@ async function recognizeInitialCandidate(candidate, {
   initialRasterHeight,
   initialRasterMinCssHeight,
   pipelineStartedAt,
-  singleStrokeSkipContext,
+  initialRecognitionSkipContext,
+  signal,
   recognizeLine
 }) {
   const initialTargetPixelHeight = initialTargetPixelHeightForCandidate(candidate, {
@@ -490,23 +533,44 @@ async function recognizeInitialCandidate(candidate, {
     initialRasterHeight,
     initialRasterMinCssHeight
   });
+  const initialSkipReason = initialRecognitionSkipReason(candidate, initialRecognitionSkipContext);
+  if (initialSkipReason) {
+    const prediction = skippedInitialRecognitionPrediction(model, initialSkipReason);
+    const initialPredictionElapsedSeconds = secondsSince(pipelineStartedAt);
+    return {
+      candidateId: candidate.candidateId,
+      profiles: (candidate.profiles || []).slice(),
+      strokeIds: (candidate.strokeIds || []).slice(),
+      tightBbox: candidate.tightBbox ? { ...candidate.tightBbox } : null,
+      image: null,
+      prediction,
+      ocrLatex: '',
+      latex: '',
+      candidates: [],
+      skippedRecognition: true,
+      skipReason: initialSkipReason,
+      initialTargetPixelHeight,
+      evidenceScore: scoreRecognitionEvidence(candidate, prediction, { problemLatex, previousLatex }),
+      timing: {
+        submitToInitialPredictionSeconds: initialPredictionElapsedSeconds,
+        submitToFinalPredictionSeconds: initialPredictionElapsedSeconds,
+        ocrElapsedSeconds: 0,
+        semanticElapsedSeconds: null,
+        contextualSemanticElapsedSeconds: null,
+        sequentialSemanticElapsedSeconds: null,
+        retryElapsedSeconds: null
+      }
+    };
+  }
+
   const image = rasterizeLineCandidate(candidate, {
     padding: rasterPadding,
     targetPixelHeight: initialTargetPixelHeight
   });
-  const prediction = shouldSkipSingleStrokeAlternative(candidate, singleStrokeSkipContext)
-    ? skippedSingleStrokePrediction(model)
-    : await Promise.resolve()
-      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs }))
-      .catch((error) => ({
-        model,
-        latex: '',
-        candidates: [],
-        confidence: 0,
-        failed: true,
-        error: error instanceof Error ? error.message : String(error),
-        elapsedSeconds: 0
-      }));
+  const prediction = await Promise.resolve()
+      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs, signal }))
+      .catch((error) => recognitionFailureFromError(error, { model }));
+  throwIfAborted(signal);
   const initialPredictionElapsedSeconds = secondsSince(pipelineStartedAt);
   const evidenceScore = scoreRecognitionEvidence(
     candidate,
@@ -548,7 +612,9 @@ async function resolveContextualCandidateSemanticScores({
   semanticScoring,
   scoreSemantics,
   apiUrl,
-  timeoutMs
+  timeoutMs,
+  semanticCandidateLimit,
+  signal
 }) {
   const scorablePredictions = (candidatePredictions || []).filter(isSemanticallyScorablePrediction);
   if (!semanticScoring || scorablePredictions.length === 0) {
@@ -577,10 +643,11 @@ async function resolveContextualCandidateSemanticScores({
         candidateGroups: [{
           candidateId: entry.candidateId,
           latex: entry.latex,
-          candidates: entry.candidates,
+          candidates: semanticCandidateAlternatives(entry.candidates, semanticCandidateLimit),
           elapsedSeconds: entry.prediction?.elapsedSeconds
         }]
-      }, { apiUrl, timeoutMs });
+      }, { apiUrl, timeoutMs, signal });
+      throwIfAborted(signal);
 
       elapsedSeconds += Number(payload?.elapsedSeconds) || 0;
       const score = (payload?.candidateScores || [])[0];
@@ -599,6 +666,7 @@ async function resolveContextualCandidateSemanticScores({
       candidateScores
     };
   } catch (error) {
+    throwIfAborted(signal);
     return {
       source: 'semantic-service',
       failed: true,
@@ -616,7 +684,9 @@ async function resolveSelectedLineSemanticScores({
   semanticScoring,
   scoreSemantics,
   apiUrl,
-  timeoutMs
+  timeoutMs,
+  semanticCandidateLimit,
+  signal
 }) {
   const scorableLines = (recognizedLines || []).filter(isSemanticallyScorablePrediction);
   if (!semanticScoring || scorableLines.length === 0) {
@@ -641,10 +711,11 @@ async function resolveSelectedLineSemanticScores({
           candidateId: line.candidateId,
           lineIndex: line.lineIndex,
           latex: line.latex,
-          candidates: line.candidates,
+          candidates: semanticCandidateAlternatives(line.candidates, semanticCandidateLimit),
           elapsedSeconds: line.prediction?.elapsedSeconds
         }]
-      }, { apiUrl, timeoutMs });
+      }, { apiUrl, timeoutMs, signal });
+      throwIfAborted(signal);
 
       elapsedSeconds += Number(payload?.elapsedSeconds) || 0;
       const score = (payload?.candidateScores || [])[0];
@@ -673,6 +744,7 @@ async function resolveSelectedLineSemanticScores({
       lineScores
     };
   } catch (error) {
+    throwIfAborted(signal);
     return {
       source: 'semantic-service',
       failed: true,
@@ -690,7 +762,9 @@ async function resolveSemanticScores({
   semanticScoring,
   scoreSemantics,
   apiUrl,
-  timeoutMs
+  timeoutMs,
+  semanticCandidateLimit,
+  signal
 }) {
   const scorablePredictions = (candidatePredictions || []).filter(isSemanticallyScorablePrediction);
   if (!semanticScoring || scorablePredictions.length === 0) {
@@ -709,10 +783,11 @@ async function resolveSemanticScores({
       candidateGroups: scorablePredictions.map((entry) => ({
         candidateId: entry.candidateId,
         latex: entry.latex,
-        candidates: entry.candidates,
+        candidates: semanticCandidateAlternatives(entry.candidates, semanticCandidateLimit),
         elapsedSeconds: entry.prediction?.elapsedSeconds
       }))
-    }, { apiUrl, timeoutMs });
+    }, { apiUrl, timeoutMs, signal });
+    throwIfAborted(signal);
     return {
       source: 'semantic-service',
       failed: Boolean(payload?.failed),
@@ -721,6 +796,7 @@ async function resolveSemanticScores({
       candidateScores: payload?.candidateScores || []
     };
   } catch (error) {
+    throwIfAborted(signal);
     return {
       source: 'semantic-service',
       failed: true,
@@ -737,7 +813,8 @@ async function resolveDetections({
   detectLineBands,
   detectLines,
   apiUrl,
-  timeoutMs
+  timeoutMs,
+  signal
 }) {
   if (detections && detections.length > 0) {
     return {
@@ -769,7 +846,8 @@ async function resolveDetections({
       padding: answerBox ? 0 : 12,
       devicePixelRatio: 1
     });
-    const result = await detectLines(image, { apiUrl, timeoutMs });
+    const result = await detectLines(image, { apiUrl, timeoutMs, signal });
+    throwIfAborted(signal);
     return {
       detections: result?.detections || [],
       source: 'detector',
@@ -779,6 +857,7 @@ async function resolveDetections({
       rawDetections: result?.rawDetections || []
     };
   } catch (error) {
+    throwIfAborted(signal);
     return {
       detections: [],
       source: 'detector',
@@ -819,6 +898,7 @@ async function retrySelectedLineRecognition(candidate, {
   chunkFallbackMinCssWidth = 460,
   chunkFallbackMaxCssWidth = 340,
   chunkFallbackMinGap = 18,
+  signal,
   recognizeLine
 }) {
   const attempts = [];
@@ -826,6 +906,7 @@ async function retrySelectedLineRecognition(candidate, {
     .map((height) => Number(height))
     .filter((height) => Number.isFinite(height) && height > 0));
   for (const height of retryRasterHeights || []) {
+    throwIfAborted(signal);
     const targetPixelHeight = Number(height);
     if (!Number.isFinite(targetPixelHeight) || targetPixelHeight <= 0 || seenHeights.has(targetPixelHeight)) {
       continue;
@@ -836,17 +917,12 @@ async function retrySelectedLineRecognition(candidate, {
       targetPixelHeight
     });
     const prediction = await Promise.resolve()
-      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs }))
-      .catch((error) => ({
+      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs, signal }))
+      .catch((error) => recognitionFailureFromError(error, {
         model,
-        latex: '',
-        candidates: [],
-        confidence: 0,
-        failed: true,
-        error: error instanceof Error ? error.message : String(error),
-        elapsedSeconds: 0,
         retryTargetPixelHeight: targetPixelHeight
       }));
+    throwIfAborted(signal);
     attempts.push({
       ...prediction,
       retryTargetPixelHeight: targetPixelHeight
@@ -858,24 +934,20 @@ async function retrySelectedLineRecognition(candidate, {
     candidateNeedsExtendedTimeout(candidate) &&
     Number(extendedTimeoutMs) > Number(timeoutMs)
   ) {
+    throwIfAborted(signal);
     const targetPixelHeight = [...seenHeights][0] || Number(retryRasterHeights?.[0]) || undefined;
     const image = rasterizeLineCandidate(candidate, {
       padding: rasterPadding,
       targetPixelHeight
     });
     const prediction = await Promise.resolve()
-      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs: Number(extendedTimeoutMs) }))
-      .catch((error) => ({
+      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs: Number(extendedTimeoutMs), signal }))
+      .catch((error) => recognitionFailureFromError(error, {
         model,
-        latex: '',
-        candidates: [],
-        confidence: 0,
-        failed: true,
-        error: error instanceof Error ? error.message : String(error),
-        elapsedSeconds: 0,
         retryTargetPixelHeight: targetPixelHeight,
         extendedTimeoutMs: Number(extendedTimeoutMs)
       }));
+    throwIfAborted(signal);
     attempts.push({
       ...prediction,
       retryTargetPixelHeight: targetPixelHeight,
@@ -893,6 +965,7 @@ async function retrySelectedLineRecognition(candidate, {
       minCssWidth: chunkFallbackMinCssWidth,
       maxChunkCssWidth: chunkFallbackMaxCssWidth,
       minGap: chunkFallbackMinGap,
+      signal,
       recognizeLine
     });
     if (chunked && !predictionNeedsRetry(chunked)) {
@@ -949,7 +1022,7 @@ function predictionLatex(prediction = {}) {
   return String(prediction?.latex || prediction?.top?.latex || candidates[0]?.latex || '').trim();
 }
 
-function skippedSingleStrokePrediction(model) {
+function skippedInitialRecognitionPrediction(model, skipReason) {
   return {
     model,
     latex: '',
@@ -959,7 +1032,7 @@ function skippedSingleStrokePrediction(model) {
     failed: false,
     timedOut: false,
     skippedRecognition: true,
-    skipReason: 'single-stroke-alternative',
+    skipReason,
     elapsedSeconds: 0
   };
 }
@@ -971,20 +1044,21 @@ async function recognizeSkippedSelectedEntry(entry, candidate, {
   problemLatex,
   previousLatex,
   pipelineStartedAt,
+  rasterPadding,
   recognizeLine,
+  signal,
   evidenceByCandidateId
 }) {
+  if (!entry.image) {
+    entry.image = rasterizeLineCandidate(candidate, {
+      padding: rasterPadding,
+      targetPixelHeight: entry.initialTargetPixelHeight
+    });
+  }
   const prediction = await Promise.resolve()
-    .then(() => recognizeLine(entry.image, { apiUrl, model, timeoutMs }))
-    .catch((error) => ({
-      model,
-      latex: '',
-      candidates: [],
-      confidence: 0,
-      failed: true,
-      error: error instanceof Error ? error.message : String(error),
-      elapsedSeconds: 0
-    }));
+    .then(() => recognizeLine(entry.image, { apiUrl, model, timeoutMs, signal }))
+    .catch((error) => recognitionFailureFromError(error, { model }));
+  throwIfAborted(signal);
 
   entry.prediction = prediction;
   entry.candidates = prediction?.candidates || [];
@@ -1003,8 +1077,17 @@ async function recognizeSkippedSelectedEntry(entry, candidate, {
   evidenceByCandidateId.set(entry.candidateId, entry.evidenceScore);
 }
 
+function initialRecognitionSkipReason(candidate, context = {}) {
+  if (!context.enabled || !candidate) return '';
+  if (shouldSkipSingleStrokeAlternative(candidate, context)) return 'single-stroke-alternative';
+  if (shouldDeferContainedNonstructuralAlternative(candidate, context)) {
+    return 'contained-nonstructural-alternative';
+  }
+  return '';
+}
+
 function shouldSkipSingleStrokeAlternative(candidate, context = {}) {
-  if (!context.enabled || !candidate) return false;
+  if (!context.skipSingleStrokeAlternatives || !candidate) return false;
   if (context.baselineCandidateIds?.has(candidate.candidateId)) return false;
   const strokeIds = uniqueStrings(candidate.strokeIds || []);
   if (strokeIds.length !== 1) return false;
@@ -1016,11 +1099,54 @@ function shouldSkipSingleStrokeAlternative(candidate, context = {}) {
   });
 }
 
+function shouldDeferContainedNonstructuralAlternative(candidate, context = {}) {
+  if (!context.stagedAlternativeRecognition || !candidate) return false;
+  if (context.baselineCandidateIds?.has(candidate.candidateId)) return false;
+  const strokeIds = uniqueStrings(candidate.strokeIds || []);
+  if (strokeIds.length <= 1) return false;
+  const profiles = candidate.profiles || [];
+  if (!profiles.some((profile) => profile === 'strict' || profile === 'loose')) return false;
+  if (isImmediateRecognitionStructuralCandidate(candidate)) return false;
+
+  return (context.candidates || []).some((other) => {
+    if (!other || other === candidate) return false;
+    if (!isImmediateRecognitionStructuralCandidate(other)) return false;
+    return strokeSetStrictlyContainsIds(other.strokeIds, strokeIds);
+  });
+}
+
+function isImmediateRecognitionStructuralCandidate(candidate) {
+  const profiles = candidate?.profiles || [];
+  return profiles.some((profile) => (
+    profile === 'parent' ||
+    profile === 'temporal' ||
+    profile === 'row-line' ||
+    profile === 'raw-row-line' ||
+    profile === 'fraction-stack-line' ||
+    profile === 'projection-line' ||
+    profile === 'dbnet-parent' ||
+    profile === 'dbnet-line'
+  ));
+}
+
+function strokeSetStrictlyContainsIds(containerIds, childIds) {
+  const container = new Set((containerIds || []).map(String));
+  const child = uniqueStrings(childIds || []);
+  return container.size > child.length && child.every((id) => container.has(id));
+}
+
 function isSemanticallyScorablePrediction(entry) {
   if (!entry || entry.skippedRecognition || entry.prediction?.skippedRecognition) return false;
   if (entry.prediction?.failed || entry.prediction?.timedOut) return false;
   if (entry.latex) return true;
   return (entry.candidates || []).some((candidate) => String(candidate?.latex || '').trim());
+}
+
+function semanticCandidateAlternatives(candidates = [], limit = 5) {
+  const items = Array.isArray(candidates) ? candidates : [];
+  const max = Number(limit);
+  if (!Number.isFinite(max) || max <= 0) return items;
+  return items.slice(0, Math.floor(max));
 }
 
 function applyFinalCandidateDebugState(candidatePredictions, recognizedLines, pipelineStartedAt) {
@@ -1394,6 +1520,7 @@ async function recognizeChunkedLine(candidate, {
   minCssWidth,
   maxChunkCssWidth,
   minGap,
+  signal,
   recognizeLine
 }) {
   const cssWidth = Math.ceil(candidate?.tightBbox?.xMax ?? 0) - Math.floor(candidate?.tightBbox?.xMin ?? 0) +
@@ -1412,6 +1539,7 @@ async function recognizeChunkedLine(candidate, {
   const parts = [];
   const attempts = [];
   for (const [index, chunk] of chunks.entries()) {
+    throwIfAborted(signal);
     if (chunk.literalLatex) {
       parts.push(chunk.literalLatex);
       attempts.push({ literalLatex: chunk.literalLatex, strokeIds: chunk.strokeIds });
@@ -1432,6 +1560,7 @@ async function recognizeChunkedLine(candidate, {
         timeoutMs,
         rasterPadding,
         initialRasterHeight,
+        signal,
         recognizeLine
       });
       if (fraction?.attempt) attempts.push(fraction.attempt);
@@ -1447,6 +1576,7 @@ async function recognizeChunkedLine(candidate, {
       timeoutMs,
       rasterPadding,
       initialRasterHeight,
+      signal,
       recognizeLine
     });
     attempts.push({
@@ -1463,6 +1593,7 @@ async function recognizeChunkedLine(candidate, {
         timeoutMs,
         rasterPadding,
         initialRasterHeight,
+        signal,
         recognizeLine
       });
       if (fraction?.latex) {
@@ -1508,26 +1639,21 @@ async function recognizeChunkPart(chunk, {
   timeoutMs,
   rasterPadding,
   initialRasterHeight,
+  signal,
   recognizeLine
 }) {
   const attempts = [];
   let bestPrediction = null;
   for (const targetPixelHeight of chunkRasterHeights(initialRasterHeight)) {
+    throwIfAborted(signal);
     const image = rasterizeLineCandidate(chunk, {
       padding: rasterPadding,
       targetPixelHeight
     });
     const prediction = await Promise.resolve()
-      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs }))
-      .catch((error) => ({
-        model,
-        latex: '',
-        candidates: [],
-        confidence: 0,
-        failed: true,
-        error: error instanceof Error ? error.message : String(error),
-        elapsedSeconds: 0
-      }));
+      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs, signal }))
+      .catch((error) => recognitionFailureFromError(error, { model }));
+    throwIfAborted(signal);
     const attempt = {
       targetPixelHeight,
       prediction,
@@ -1564,6 +1690,7 @@ async function applyChunkFallbackToEntry(entry, candidate, {
   recognizeLine,
   problemLatex,
   previousLatex,
+  signal,
   evidenceByCandidateId
 }) {
   const chunked = await recognizeChunkedLine(candidate, {
@@ -1576,6 +1703,7 @@ async function applyChunkFallbackToEntry(entry, candidate, {
     minCssWidth,
     maxChunkCssWidth,
     minGap,
+    signal,
     recognizeLine
   });
   if (!chunked || chunked.failed) return false;
@@ -1595,6 +1723,7 @@ async function recognizeFractionChunk(chunk, {
   timeoutMs,
   rasterPadding,
   initialRasterHeight,
+  signal,
   recognizeLine
 }) {
   const split = splitFractionChunk(chunk);
@@ -1608,6 +1737,7 @@ async function recognizeFractionChunk(chunk, {
   };
   const latexByRole = {};
   for (const role of ['numerator', 'denominator']) {
+    throwIfAborted(signal);
     const part = split[role];
     const { latex, attempts } = await recognizeFractionPartChunk(part, {
       role,
@@ -1616,6 +1746,7 @@ async function recognizeFractionChunk(chunk, {
       timeoutMs,
       rasterPadding,
       initialRasterHeight,
+      signal,
       recognizeLine
     });
     attempt.parts.push(...attempts);
@@ -1636,25 +1767,20 @@ async function recognizeFractionPartChunk(part, {
   timeoutMs,
   rasterPadding,
   initialRasterHeight,
+  signal,
   recognizeLine
 }) {
   const attempts = [];
   for (const targetPixelHeight of chunkRasterHeights(initialRasterHeight)) {
+    throwIfAborted(signal);
     const image = rasterizeLineCandidate(part, {
       padding: rasterPadding,
       targetPixelHeight
     });
     const prediction = await Promise.resolve()
-      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs }))
-      .catch((error) => ({
-        model,
-        latex: '',
-        candidates: [],
-        confidence: 0,
-        failed: true,
-        error: error instanceof Error ? error.message : String(error),
-        elapsedSeconds: 0
-      }));
+      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs, signal }))
+      .catch((error) => recognitionFailureFromError(error, { model }));
+    throwIfAborted(signal);
     const latex = chooseChunkLatex(prediction);
     attempts.push({
       role,
@@ -2192,6 +2318,73 @@ function repairQuadraticFormulaFromProblem(latex, problemLatex = '') {
   ].join(' ').replace(/\s+/g, ' ').trim();
 }
 
+function repairInitialRationalProblemLine(latex, problemLatex = '', lineIndex = 0) {
+  if (lineIndex !== 0) return null;
+  const current = String(latex || '').trim();
+  const problem = String(problemLatex || '').trim();
+  if (!current || !problem || !current.includes('=') || !problem.includes('=')) return null;
+  if (!/\\frac\b/.test(current) || !/\\frac\b/.test(problem)) return null;
+
+  const variables = contextualLatinVariables(problem);
+  if (variables.length !== 1) return null;
+  const variable = variables[0];
+  if (new RegExp(`\\b${escapeRegExp(variable)}\\b`).test(current)) return null;
+  if (contextualLatinVariables(current).length > 0) return null;
+
+  const currentParts = splitEquationSides(current);
+  const problemParts = splitEquationSides(problem);
+  if (!currentParts || !problemParts) return null;
+  if (normalizeLatexComparable(currentParts.right) !== normalizeLatexComparable(problemParts.right)) return null;
+
+  const currentConstants = latexConstants(currentParts.left).join('|');
+  const problemConstants = latexConstants(problemParts.left).join('|');
+  if (!currentConstants || currentConstants !== problemConstants) return null;
+
+  if (!latexOperatorMultisetContains(
+    latexOperators(currentParts.left),
+    latexOperators(problemParts.left)
+  )) {
+    return null;
+  }
+
+  return problem;
+}
+
+function splitEquationSides(latex) {
+  const parts = String(latex || '').split('=');
+  if (parts.length !== 2) return null;
+  return {
+    left: parts[0].trim(),
+    right: parts[1].trim()
+  };
+}
+
+function normalizeLatexComparable(latex) {
+  return String(latex || '')
+    .replace(/\\left|\\right/g, '')
+    .replace(/\s+/g, '')
+    .replace(/[{}]/g, '')
+    .trim();
+}
+
+function latexConstants(latex) {
+  return uniqueStrings([...String(latex || '').matchAll(/\d+/g)].map((match) => match[0])).sort();
+}
+
+function latexOperators(latex) {
+  return [...String(latex || '').matchAll(/\\frac|[+\-=^]/g)].map((match) => match[0]);
+}
+
+function latexOperatorMultisetContains(currentOperators, problemOperators) {
+  const remaining = [...(currentOperators || [])];
+  for (const operator of problemOperators || []) {
+    const index = remaining.indexOf(operator);
+    if (index < 0) return false;
+    remaining.splice(index, 1);
+  }
+  return true;
+}
+
 function simpleQuadraticCoefficients(problemLatex = '') {
   const compact = String(problemLatex || '')
     .replace(/\\left|\\right/g, '')
@@ -2351,6 +2544,34 @@ function verticalOverlapRatio(a, b) {
   const overlap = Math.max(0, Math.min(a.yMax, b.yMax) - Math.max(a.yMin, b.yMin));
   const smaller = Math.min(Math.max(1, a.yMax - a.yMin), Math.max(1, b.yMax - b.yMin));
   return overlap / smaller;
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  if (typeof signal.throwIfAborted === 'function') {
+    signal.throwIfAborted();
+  }
+  const error = new Error('Recognition aborted');
+  error.name = 'AbortError';
+  throw error;
+}
+
+function recognitionFailureFromError(error, extra = {}) {
+  if (isAbortError(error)) throw error;
+  return {
+    model: extra.model,
+    latex: '',
+    candidates: [],
+    confidence: 0,
+    failed: true,
+    error: error instanceof Error ? error.message : String(error),
+    elapsedSeconds: 0,
+    ...extra
+  };
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError';
 }
 
 function uniqueStrings(values) {

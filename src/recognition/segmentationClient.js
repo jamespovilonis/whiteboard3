@@ -8,6 +8,12 @@ export async function requestLineDetections(candidateImage, options = {}) {
   if (!dataUrl) throw new Error('requestLineDetections requires a data URL');
 
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const externalSignal = options.signal || null;
+  if (externalSignal?.aborted) controller?.abort();
+  const abortFromExternal = () => controller?.abort();
+  if (externalSignal && controller) {
+    externalSignal.addEventListener('abort', abortFromExternal, { once: true });
+  }
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   const startedAt = performanceNow();
 
@@ -51,6 +57,9 @@ export async function requestLineDetections(candidateImage, options = {}) {
     };
   } finally {
     if (timer) clearTimeout(timer);
+    if (externalSignal && controller) {
+      externalSignal.removeEventListener('abort', abortFromExternal);
+    }
   }
 }
 

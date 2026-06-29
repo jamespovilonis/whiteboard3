@@ -34,6 +34,7 @@ export class IncrementalRecognitionScheduler {
     this.components = new Map();
     this.ocrCache = new Map();
     this.ocrInflight = new Map();
+    this.activeRecognitionRuns = new Set();
     this.fullAnswerInFlightSignature = null;
     this.fullAnswerFinalSignature = '';
     this.fullAnswerFinalResult = null;
@@ -61,6 +62,7 @@ export class IncrementalRecognitionScheduler {
     if (!normalized.problemId || !normalized.answerBox || normalized.answerStrokes.length === 0) {
       if (nextSignature === this.inputSignature) return;
       this.cancelTimer();
+      this.abortActiveRecognitionRuns();
       this.input = normalized;
       this.inputSignature = nextSignature;
       this.previousStrokes = normalized.strokes;
@@ -73,9 +75,13 @@ export class IncrementalRecognitionScheduler {
     if (nextSignature === this.inputSignature) return;
 
     if (this.input?.problemId && this.input.problemId !== normalized.problemId) {
+      this.abortActiveRecognitionRuns();
       this.components.clear();
       this.ocrInflight.clear();
       this.clearFullAnswerState();
+    }
+    if (nextSignature !== this.inputSignature) {
+      this.abortStaleFullAnswerRecognition(nextSignature);
     }
 
     const changed = diffStrokes(this.previousStrokes, normalized.strokes);
@@ -91,6 +97,7 @@ export class IncrementalRecognitionScheduler {
 
   dispose() {
     this.cancelTimer();
+    this.abortActiveRecognitionRuns();
     this.components.clear();
     this.ocrInflight.clear();
     this.clearFullAnswerState();
@@ -179,6 +186,7 @@ export class IncrementalRecognitionScheduler {
         signature: component.signature,
         strokeIds: component.strokeIds
       });
+      this.abortRecognitionRunsForSignatures([component.signature]);
     }
   }
 
@@ -298,7 +306,8 @@ export class IncrementalRecognitionScheduler {
     this.runRecognition(candidate.strokes, {
       answerBox: candidate.tightBbox,
       detectLineBands: Boolean(options.detectLineBands),
-      phase
+      phase,
+      signatures: [component.signature]
     }).then((result) => {
       component[inFlightKey] = null;
       if (!this.isFresh(startedVersion)) return;
@@ -326,6 +335,17 @@ export class IncrementalRecognitionScheduler {
       this.emitState();
     }).catch((error) => {
       component[inFlightKey] = null;
+      if (isAbortError(error)) {
+        if (!this.isFresh(startedVersion)) return;
+        const current = this.components.get(startedSignature);
+        if (!current || current.status === 'superseded' || current.status === 'final') return;
+        current.status = current.result ? 'provisional' : 'pending';
+        current.error = null;
+        current.updatedAt = Date.now();
+        this.emitState();
+        this.scheduleFlush();
+        return;
+      }
       if (!this.isFresh(startedVersion)) return;
       const current = this.components.get(startedSignature);
       if (!current || current.status === 'superseded' || current.status === 'final') return;
@@ -358,7 +378,8 @@ export class IncrementalRecognitionScheduler {
     this.runRecognition(neighborhood.strokes, {
       answerBox: neighborhood.bbox,
       detectLineBands: true,
-      phase: 'dbnet'
+      phase: 'dbnet',
+      signatures: affectedSignatures
     }).then((result) => {
       component.dbnetInFlight = null;
       if (!this.isFresh(options.version)) return;
@@ -369,6 +390,17 @@ export class IncrementalRecognitionScheduler {
       });
     }).catch((error) => {
       component.dbnetInFlight = null;
+      if (isAbortError(error)) {
+        if (!this.isFresh(options.version)) return;
+        const current = this.components.get(component.signature);
+        if (!current || current.status === 'superseded' || current.status === 'final') return;
+        current.status = current.result ? 'provisional' : 'pending';
+        current.error = null;
+        current.updatedAt = Date.now();
+        this.emitState();
+        this.scheduleFlush();
+        return;
+      }
       if (!this.isFresh(options.version)) return;
       const current = this.components.get(component.signature);
       if (!current || current.status === 'superseded') return;
@@ -397,7 +429,8 @@ export class IncrementalRecognitionScheduler {
     this.runRecognition(input.answerStrokes, {
       answerBox: input.answerBox,
       detectLineBands: true,
-      phase: 'full-answer'
+      phase: 'full-answer',
+      fullAnswerSignature: signature
     }).then((result) => {
       if (this.fullAnswerInFlightSignature === signature) {
         this.fullAnswerInFlightSignature = null;
@@ -410,6 +443,12 @@ export class IncrementalRecognitionScheduler {
     }).catch((error) => {
       if (this.fullAnswerInFlightSignature === signature) {
         this.fullAnswerInFlightSignature = null;
+      }
+      if (isAbortError(error)) {
+        if (this.isFresh(options.version) && signature === this.inputSignature) {
+          this.scheduleFlush();
+        }
+        return;
       }
       if (!this.isFresh(options.version) || signature !== this.inputSignature) return;
       this.onEvent('recognition-final-pass-error', {
@@ -554,7 +593,16 @@ export class IncrementalRecognitionScheduler {
 
   runRecognition(strokes, options = {}) {
     const input = this.input;
-    return this.recognizeWriting({
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const run = {
+      controller,
+      phase: options.phase || '',
+      signatures: new Set(options.signatures || []),
+      fullAnswerSignature: options.fullAnswerSignature || null
+    };
+    this.activeRecognitionRuns.add(run);
+
+    return Promise.resolve().then(() => this.recognizeWriting({
       strokes,
       answerBox: options.answerBox,
       problemLatex: input.problemLatex,
@@ -567,9 +615,15 @@ export class IncrementalRecognitionScheduler {
       semanticTimeoutMs: this.semanticTimeoutMs,
       detectLineBands: Boolean(options.detectLineBands),
       semanticScoring: this.semanticScoring,
+      ...(options.phase === 'full-answer' ? {
+        semanticCandidateLimit: 0
+      } : {}),
+      signal: controller?.signal,
       recognizeLine: (image, recognizeOptions) => this.cachedRecognizeLine(image, recognizeOptions),
       ...(this.detectLines ? { detectLines: this.detectLines } : {}),
       ...(this.scoreSemantics ? { scoreSemantics: this.scoreSemantics } : {})
+    })).finally(() => {
+      this.activeRecognitionRuns.delete(run);
     });
   }
 
@@ -578,6 +632,9 @@ export class IncrementalRecognitionScheduler {
       apiUrl: options.apiUrl || this.input?.apiUrl || this.apiUrl,
       model: options.model || this.model
     });
+    if (options.signal?.aborted) {
+      return Promise.reject(abortError());
+    }
     const cached = this.ocrCache.get(key);
     if (cached) {
       return Promise.resolve({
@@ -585,28 +642,124 @@ export class IncrementalRecognitionScheduler {
         cached: true
       });
     }
-    const inflight = this.ocrInflight.get(key);
+    let inflight = this.ocrInflight.get(key);
     if (inflight) {
-      return inflight.then((result) => ({
-        ...result,
-        cached: true,
-        inFlightReused: true
-      }));
+      return this.joinOcrInflight(key, inflight, options.signal, true);
     }
 
-    const request = Promise.resolve()
-      .then(() => this.baseRecognizeLine(image, options))
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    inflight = {
+      controller,
+      waiters: new Set(),
+      abortedByWaiters: false,
+      promise: null
+    };
+    inflight.promise = Promise.resolve()
+      .then(() => this.baseRecognizeLine(image, {
+        ...options,
+        ...(controller ? { signal: controller.signal } : {})
+      }))
       .then((result) => {
-        this.ocrCache.set(key, result);
+        if (isAbortLikeRecognitionResult(result) && inflight.abortedByWaiters) {
+          throw abortError();
+        }
+        if (!result?.failed && !result?.timedOut) {
+          this.ocrCache.set(key, result);
+        }
         this.ocrInflight.delete(key);
         return result;
       })
       .catch((error) => {
         this.ocrInflight.delete(key);
         throw error;
+      })
+      .finally(() => {
+        if (this.ocrInflight.get(key) === inflight) this.ocrInflight.delete(key);
       });
-    this.ocrInflight.set(key, request);
-    return request;
+    this.ocrInflight.set(key, inflight);
+    return this.joinOcrInflight(key, inflight, options.signal, false);
+  }
+
+  joinOcrInflight(key, inflight, signal = null, reused = false) {
+    if (!signal) {
+      return inflight.promise.then((result) => (
+        reused
+          ? { ...result, cached: true, inFlightReused: true }
+          : result
+      ));
+    }
+    if (signal.aborted) {
+      return Promise.reject(abortError());
+    }
+
+    const waiter = {};
+    inflight.waiters.add(waiter);
+    let settled = false;
+    const releaseWaiter = () => {
+      inflight.waiters.delete(waiter);
+      if (
+        inflight.waiters.size === 0 &&
+        this.ocrInflight.get(key) === inflight &&
+        inflight.controller &&
+        !inflight.controller.signal.aborted
+      ) {
+        this.ocrInflight.delete(key);
+        inflight.abortedByWaiters = true;
+        inflight.controller.abort();
+      }
+    };
+
+    return new Promise((resolve, reject) => {
+      const settle = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        releaseWaiter();
+        callback(value);
+      };
+      const onAbort = () => settle(reject, abortError());
+
+      signal.addEventListener('abort', onAbort, { once: true });
+      inflight.promise.then(
+        (result) => settle(resolve, reused ? {
+          ...result,
+          cached: true,
+          inFlightReused: true
+        } : result),
+        (error) => settle(reject, error)
+      );
+    });
+  }
+
+  abortRecognitionRunsForSignatures(signatures = []) {
+    const touched = new Set(signatures.filter(Boolean));
+    if (!touched.size) return;
+    for (const run of this.activeRecognitionRuns) {
+      if (!run.controller || run.controller.signal.aborted) continue;
+      if ([...touched].some((signature) => run.signatures?.has(signature))) {
+        run.controller.abort();
+      }
+    }
+  }
+
+  abortStaleFullAnswerRecognition(nextSignature) {
+    if (!this.fullAnswerInFlightSignature || this.fullAnswerInFlightSignature === nextSignature) return;
+    for (const run of this.activeRecognitionRuns) {
+      if (!run.controller || run.controller.signal.aborted) continue;
+      if (run.fullAnswerSignature === this.fullAnswerInFlightSignature) {
+        run.controller.abort();
+      }
+    }
+    this.fullAnswerInFlightSignature = null;
+  }
+
+  abortActiveRecognitionRuns() {
+    for (const run of this.activeRecognitionRuns) {
+      if (run.controller && !run.controller.signal.aborted) {
+        run.controller.abort();
+      }
+    }
+    this.activeRecognitionRuns.clear();
   }
 
   isFresh(version) {
@@ -944,6 +1097,21 @@ function ocrCacheKey(image, options = {}) {
 function compareComponents(a, b) {
   return compareBboxes(a.tightBbox, b.tightBbox) ||
     String(a.signature).localeCompare(String(b.signature));
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError';
+}
+
+function isAbortLikeRecognitionResult(result) {
+  if (!result?.failed) return false;
+  return /abort/i.test(String(result.error || ''));
+}
+
+function abortError() {
+  const error = new Error('Recognition aborted');
+  error.name = 'AbortError';
+  return error;
 }
 
 function compareLines(a, b) {

@@ -11,6 +11,12 @@ export async function recognizeLineImage(lineImage, options = {}) {
   if (!dataUrl) throw new Error('recognizeLineImage requires a data URL');
 
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const externalSignal = options.signal || null;
+  if (externalSignal?.aborted) controller?.abort();
+  const abortFromExternal = () => controller?.abort();
+  if (externalSignal && controller) {
+    externalSignal.addEventListener('abort', abortFromExternal, { once: true });
+  }
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs + 750) : null;
   const startedAt = performanceNow();
 
@@ -61,6 +67,9 @@ export async function recognizeLineImage(lineImage, options = {}) {
     };
   } finally {
     if (timer) clearTimeout(timer);
+    if (externalSignal && controller) {
+      externalSignal.removeEventListener('abort', abortFromExternal);
+    }
   }
 }
 

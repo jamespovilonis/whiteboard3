@@ -5,6 +5,12 @@ export async function scoreLatexCandidates(request, options = {}) {
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 5000;
   const url = `${apiUrl}/score-latex-candidates`;
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const externalSignal = options.signal || null;
+  if (externalSignal?.aborted) controller?.abort();
+  const abortFromExternal = () => controller?.abort();
+  if (externalSignal && controller) {
+    externalSignal.addEventListener('abort', abortFromExternal, { once: true });
+  }
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   const startedAt = performanceNow();
 
@@ -41,6 +47,9 @@ export async function scoreLatexCandidates(request, options = {}) {
     };
   } finally {
     if (timer) clearTimeout(timer);
+    if (externalSignal && controller) {
+      externalSignal.removeEventListener('abort', abortFromExternal);
+    }
   }
 }
 
