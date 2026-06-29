@@ -66,7 +66,7 @@ for (const item of CASES) {
 
     expect(afterWriting.strokes.length).toBeGreaterThanOrEqual(rendered.lines.length);
     expect(afterWriting.answerBox).not.toBeNull();
-    await expect(page.getByTestId('submit-answer')).toBeDisabled();
+    await expect(page.getByTestId('submit-answer')).toBeEnabled();
 
     await page.waitForFunction(() => (
       window.__whiteboardE2E.snapshot().events.some((event) => (

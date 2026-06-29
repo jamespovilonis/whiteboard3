@@ -13,7 +13,8 @@ import {
   getActiveModelResponse,
   reconcileProblemFlowWithStrokes,
   requestNextProblem,
-  startCustomProblem
+  startCustomProblem,
+  submitActiveProblem
 } from '../state/problemFlow.js';
 
 export function useProblemFlowController({ moveHomeViewport, engineRef, onRecognitionEvent }) {
@@ -70,13 +71,15 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
           });
         }
 
-        setProblemFlow((currentFlow) => (
-          applyProblemRecognitionProgress(currentFlow, snapshot.problemId, {
+        setProblemFlow((currentFlow) => {
+          const targetProblem = currentFlow.problems.find((problem) => problem.id === snapshot.problemId);
+          if (!targetProblem || targetProblem.status !== 'solving') return currentFlow;
+          return applyProblemRecognitionProgress(currentFlow, snapshot.problemId, {
             status: snapshot.status,
             result: snapshot.result,
             realtime: snapshot.realtime
-          })
-        ));
+          });
+        });
 
         if (snapshot.status === 'complete' && inputSignature && !completedInputSignaturesRef.current.has(inputSignature)) {
           completedInputSignaturesRef.current.add(inputSignature);
@@ -144,11 +147,22 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
   const submitAnswer = useCallback(() => {
     const activeProblem = getActiveProblem(problemFlow);
     const strokes = engineRef?.current?.getStrokes?.() || [];
+    const result = submitActiveProblem(problemFlow, getViewportWidth());
+    setProblemFlow(result.flow);
+    schedulerRef.current?.update({
+      problemId: null,
+      strokes,
+      answerBox: null,
+      problemLatex: '',
+      problemMetadata: {},
+      previousLatex: [],
+      apiUrl: getRecognitionApiUrl()
+    });
     onRecognitionEvent?.('submit-active-problem', {
       problemId: activeProblem?.id || null,
       strokeCount: strokes.length,
       answerStrokeCount: activeProblem?.answerStrokeIds?.length || 0,
-      disabled: true
+      frozen: activeProblem?.status === 'solving'
     });
   }, [engineRef, onRecognitionEvent, problemFlow]);
 

@@ -40,7 +40,7 @@ test('real reader recognizes temporally spaced handwriting replay', async ({ pag
   const afterWriting = snapshots[snapshots.length - 1];
 
   assertTimedInkCapture(afterWriting, scenario);
-  await expect(page.getByTestId('submit-answer')).toBeDisabled();
+  await expect(page.getByTestId('submit-answer')).toBeEnabled();
 
   await page.waitForFunction(() => (
     window.__whiteboardE2E.snapshot().events.some((event) => (

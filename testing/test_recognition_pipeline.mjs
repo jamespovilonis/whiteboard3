@@ -440,6 +440,142 @@ test('student writing pipeline recognizes alternatives before final selection', 
   assert.ok(result.candidatePredictions.length > result.lines.length);
 });
 
+test('student writing pipeline skips CoMER for contained single-stroke alternatives', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('a', 0, 0, 20, 30),
+    stroke('b', 100, 0, 120, 30),
+    stroke('c', 200, 0, 220, 30),
+  ];
+  const calls = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 240, yMax: 60 },
+    problemLatex: 'x = 1',
+    semanticScoring: true,
+    recognizeLine: async (image) => {
+      calls.push(image.strokeIds.slice());
+      if (image.strokeIds.length === 1) {
+        throw new Error('single-stroke alternatives should not hit OCR');
+      }
+      return {
+        latex: 'x = 1',
+        top: { latex: 'x = 1', score: 2 },
+        candidates: [{ latex: 'x = 1', score: 2 }],
+        elapsedSeconds: 0.6
+      };
+    },
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 3,
+        bestLatex: group.latex,
+        sound: true,
+        equivalentToProblem: true,
+        equivalentToPrevious: false,
+        candidateScores: []
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.ok(calls.length > 0);
+  assert.ok(calls.every((strokeIds) => strokeIds.length > 1));
+  assert.ok(result.candidatePredictions.length > calls.length);
+  assert.ok(result.candidatePredictions.some((entry) => (
+    entry.strokeIds.length === 1 &&
+    entry.skippedRecognition &&
+    entry.prediction.skipReason === 'single-stroke-alternative'
+  )));
+  assert.equal(result.latex, 'x = 1');
+
+  const noSkipCalls = [];
+  await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 240, yMax: 60 },
+    problemLatex: 'x = 1',
+    semanticScoring: false,
+    skipSingleStrokeAlternatives: false,
+    recognizeLine: async (image) => {
+      noSkipCalls.push(image.strokeIds.slice());
+      return {
+        latex: 'x = 1',
+        top: { latex: 'x = 1', score: 2 },
+        candidates: [{ latex: 'x = 1', score: 2 }],
+        elapsedSeconds: 0.6
+      };
+    }
+  });
+
+  assert.ok(noSkipCalls.length > calls.length);
+});
+
+test('student writing pipeline still recognizes a single-stroke answer when it has no containing alternative', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('a', 0, 0, 80, 36)];
+  const calls = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 90, yMax: 46 },
+    problemLatex: 'x = 4',
+    recognizeLine: async (image) => {
+      calls.push(image.strokeIds.slice());
+      return {
+        latex: 'x = 4',
+        top: { latex: 'x = 4', score: 2 },
+        candidates: [{ latex: 'x = 4', score: 2 }],
+        elapsedSeconds: 0.03
+      };
+    }
+  });
+
+  assert.ok(calls.some((strokeIds) => strokeIds.join('|') === 'a'));
+  assert.equal(result.candidatePredictions.some((entry) => entry.skippedRecognition), false);
+  assert.equal(result.latex, 'x = 4');
+});
+
+test('student writing pipeline runs independent initial OCR alternatives concurrently', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('a', 0, 0, 20, 30),
+    stroke('b', 100, 0, 120, 30),
+    stroke('c', 200, 0, 220, 30),
+  ];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const calls = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 240, yMax: 60 },
+    problemLatex: 'x = 1',
+    semanticScoring: false,
+    skipSingleStrokeAlternatives: false,
+    initialRecognitionConcurrency: 3,
+    recognizeLine: async (image) => {
+      calls.push(image.candidateId);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await sleep(20);
+      inFlight -= 1;
+      const isParent = image.strokeIds.length > 1;
+      return {
+        latex: isParent ? 'x = 1' : 'x',
+        top: { latex: isParent ? 'x = 1' : 'x', score: isParent ? 2 : -1 },
+        candidates: [{ latex: isParent ? 'x = 1' : 'x', score: isParent ? 2 : -1 }],
+        elapsedSeconds: 0.02
+      };
+    }
+  });
+
+  assert.ok(calls.length >= 3);
+  assert.ok(maxInFlight >= 2);
+  assert.equal(result.latex, 'x = 1');
+});
+
 test('pipeline debug timing covers selected and discarded candidates', async () => {
   installFakeCanvas();
   const strokes = [
@@ -3353,7 +3489,7 @@ test('starting a custom problem stores user latex as problem context', () => {
   assert.equal(active.metadata.source, 'user-latex');
 });
 
-test('submitting a custom problem runs recognition without opening the next prompt', () => {
+test('submitting a custom problem freezes it without opening the next prompt', () => {
   const initial = createInitialProblemFlow(1200);
   const started = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
   const active = getActiveProblem(started);
@@ -3374,10 +3510,43 @@ test('submitting a custom problem runs recognition without opening the next prom
   const submittedProblem = submitted.problems.find((problem) => problem.id === active.id);
 
   assert.equal(submittedProblem.status, 'submitted');
-  assert.equal(submittedProblem.recognition.status, 'pending');
+  assert.equal(submittedProblem.answerBoxFrozen, true);
+  assert.equal(submittedProblem.recognition.status, 'idle');
   assert.equal(submitted.activeProblemId, active.id);
   assert.equal(submitted.awaitingEquation, false);
   assert.equal(submitted.completedCount, 1);
+});
+
+test('submitted problem answer box ignores later strokes underneath it', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
+  const active = getActiveProblem(started);
+  const firstStroke = stroke(
+    'a',
+    active.problemBox.xMin + 32,
+    active.problemBox.yMax + 40,
+    active.problemBox.xMin + 150,
+    active.problemBox.yMax + 56
+  );
+  const withAnswer = reconcileProblemFlowWithStrokes(started, [firstStroke]);
+  const frozen = submitActiveProblem(withAnswer, 1200).flow;
+  const frozenProblem = getActiveProblem(frozen);
+  const laterStroke = stroke(
+    'later',
+    frozenProblem.answerBox.xMin + 12,
+    frozenProblem.answerBox.yMax + 96,
+    frozenProblem.answerBox.xMin + 180,
+    frozenProblem.answerBox.yMax + 112
+  );
+
+  const reconciled = reconcileProblemFlowWithStrokes(frozen, [firstStroke, laterStroke]);
+  const afterLaterInk = getActiveProblem(reconciled);
+
+  assert.equal(afterLaterInk.status, 'submitted');
+  assert.equal(afterLaterInk.answerBoxFrozen, true);
+  assert.deepEqual(afterLaterInk.answerStrokeIds, frozenProblem.answerStrokeIds);
+  assert.deepEqual(afterLaterInk.answerBox, frozenProblem.answerBox);
+  assert.deepEqual(afterLaterInk.answerContentBox, frozenProblem.answerContentBox);
 });
 
 test('next problem request opens the latex prompt after a custom submission', () => {
@@ -3581,7 +3750,8 @@ test('submitted problem flow preserves recognition status and result', () => {
   const submitted = submitActiveProblem(withAnswer, 1200).flow;
   const submittedProblem = submitted.problems.find((problem) => problem.id === active.id);
   assert.equal(submittedProblem.status, 'submitted');
-  assert.equal(submittedProblem.recognition.status, 'pending');
+  assert.equal(submittedProblem.answerBoxFrozen, true);
+  assert.equal(submittedProblem.recognition.status, 'idle');
 
   const completed = applyProblemRecognitionResult(submitted, active.id, {
     latex: 'x = 4',
@@ -4080,6 +4250,10 @@ async function waitForSnapshot(snapshots, predicate) {
 async function nextMicrotask() {
   await Promise.resolve();
   await Promise.resolve();
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function bboxForPoints(points) {

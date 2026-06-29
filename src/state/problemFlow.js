@@ -112,7 +112,7 @@ export function submitActiveProblem(flow, viewportWidth) {
     answerBoxFrozen: true,
     recognition: {
       ...problem.recognition,
-      status: problem.answerStrokeIds.length > 0 ? 'pending' : 'empty',
+      status: problem.answerStrokeIds.length > 0 ? problem.recognition.status : 'empty',
       error: null
     }
   }));

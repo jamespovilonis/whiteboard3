@@ -45,7 +45,7 @@ test('solves multiple user-entered latex problems and can scroll the canvas for 
     expect(initial.activeProblem.latex).toBe(customProblem.latex);
     expect(initial.activeProblem.metadata.source).toBe('user-latex');
     await expect(page.locator(`.problem-print[data-problem-id="${problemId}"]`)).toBeVisible();
-    await expect(page.getByTestId('submit-answer')).toBeDisabled();
+    await expect(page.getByTestId('submit-answer')).toBeEnabled();
 
     let problemBox = initial.activeProblem.problemBox;
     if (customProblem.scrollBeforeWriting) {

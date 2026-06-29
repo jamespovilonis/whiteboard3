@@ -42,7 +42,7 @@ test('renders user latex and sends it as recognition semantic context', async ({
   await expect(page.locator('.problem-print[data-problem-id="problem-1"]')).toBeVisible();
 
   await drawAnswerStrokeInsideProblemBox(page, initial.activeProblem.problemBox);
-  await expect(page.getByTestId('submit-answer')).toBeDisabled();
+  await expect(page.getByTestId('submit-answer')).toBeEnabled();
   await waitForRecognitionComplete(page, initial.activeProblem.id);
 
   expect(mockRecognition.calls.some((call) => (

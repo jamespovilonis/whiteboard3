@@ -160,7 +160,7 @@ export default function App() {
         response={modelResponse}
         recognitionResults={recognitionResults}
         debugMode={debugBoxesEnabled || E2E_TEST_ENABLED}
-        submitDisabled={true}
+        submitDisabled={activeProblem?.status !== 'solving'}
         nextProblemDisabled={!isProblemReadyForNext(activeProblem)}
         onSubmitAnswer={handleSubmitAnswer}
         onNextProblem={goToNextProblem}

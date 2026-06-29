@@ -34,7 +34,7 @@ test('mocked recognition calls start after realtime debounce and return timing m
 
   expect(afterWriting.strokes).toHaveLength(scenario.strokes.length);
   expect(mockRecognition.calls).toHaveLength(0);
-  await expect(page.getByTestId('submit-answer')).toBeDisabled();
+  await expect(page.getByTestId('submit-answer')).toBeEnabled();
 
   await page.clock.fastForward(650);
   await page.waitForFunction(() => (
@@ -81,6 +81,30 @@ test('mocked recognition calls start after realtime debounce and return timing m
     expect(Number.isFinite(line.timing.submitToFinalPredictionSeconds)).toBe(true);
     expect(Number.isFinite(line.timing.ocrElapsedSeconds)).toBe(true);
   }
+
+  const answerBoxBeforeSubmit = afterRecognition.activeProblem.answerBox;
+  const recognitionStartsBeforeSubmit = afterRecognition.events.filter((event) => (
+    event.type === 'recognition-start'
+  )).length;
+  await page.getByTestId('submit-answer').click();
+  await expect(page.getByTestId('submit-answer')).toBeDisabled();
+
+  const afterSubmit = await getE2ESnapshot(page);
+  expect(afterSubmit.activeProblem.status).toBe('submitted');
+  expect(afterSubmit.activeProblem.answerBoxFrozen).toBe(true);
+
+  await page.mouse.move(answerBoxBeforeSubmit.xMin + 16, answerBoxBeforeSubmit.yMax + 80);
+  await page.mouse.down();
+  await page.mouse.move(answerBoxBeforeSubmit.xMin + 180, answerBoxBeforeSubmit.yMax + 96, { steps: 4 });
+  await page.mouse.up();
+  await page.clock.fastForward(750);
+
+  const afterLateInk = await getE2ESnapshot(page);
+  expect(afterLateInk.activeProblem.status).toBe('submitted');
+  expect(afterLateInk.activeProblem.answerBox).toEqual(answerBoxBeforeSubmit);
+  expect(afterLateInk.events.filter((event) => event.type === 'recognition-start')).toHaveLength(
+    recognitionStartsBeforeSubmit
+  );
 });
 
 function withShortLinePauses(scenario) {

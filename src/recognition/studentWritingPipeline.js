@@ -42,6 +42,8 @@ export async function recognizeStudentWriting(options = {}) {
     chunkFallbackMaxCssWidth = 340,
     chunkFallbackMinGap = 18,
     recognizeAlternatives = true,
+    skipSingleStrokeAlternatives = true,
+    initialRecognitionConcurrency = 1,
     recognizeLine = recognizeLineImage
   } = options;
 
@@ -74,61 +76,31 @@ export async function recognizeStudentWriting(options = {}) {
     deterministicSegmentation?.selected
   );
 
-  const candidatePredictions = [];
   const candidatesToRecognize = recognizeAlternatives
     ? candidatesForRecognition(segmentation)
     : segmentation.selected;
-
-  for (const candidate of candidatesToRecognize) {
-    const initialTargetPixelHeight = initialTargetPixelHeightForCandidate(candidate, {
+  const singleStrokeSkipContext = {
+    enabled: Boolean(skipSingleStrokeAlternatives && recognizeAlternatives),
+    candidates: candidatesToRecognize,
+    baselineCandidateIds: new Set((baselineCover || []).map((candidate) => candidate.candidateId))
+  };
+  const candidatePredictions = await mapWithConcurrency(
+    candidatesToRecognize,
+    initialRecognitionConcurrency,
+    (candidate) => recognizeInitialCandidate(candidate, {
+      apiUrl,
+      model,
+      timeoutMs,
+      problemLatex,
+      previousLatex,
       rasterPadding,
       initialRasterHeight,
-      initialRasterMinCssHeight
-    });
-    const image = rasterizeLineCandidate(candidate, {
-      padding: rasterPadding,
-      targetPixelHeight: initialTargetPixelHeight
-    });
-    const prediction = await Promise.resolve()
-      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs }))
-      .catch((error) => ({
-        model,
-        latex: '',
-        candidates: [],
-        confidence: 0,
-        failed: true,
-        error: error instanceof Error ? error.message : String(error),
-        elapsedSeconds: 0
-      }));
-    const initialPredictionElapsedSeconds = secondsSince(pipelineStartedAt);
-    const evidenceScore = scoreRecognitionEvidence(
-      candidate,
-      prediction,
-      { problemLatex, previousLatex }
-    );
-    candidatePredictions.push({
-      candidateId: candidate.candidateId,
-      profiles: image.profiles,
-      strokeIds: image.strokeIds,
-      tightBbox: image.tightBbox,
-      image,
-      prediction,
-      ocrLatex: predictionLatex(prediction),
-      latex: prediction?.latex || prediction?.top?.latex || '',
-      candidates: prediction?.candidates || [],
-      initialTargetPixelHeight,
-      evidenceScore,
-      timing: {
-        submitToInitialPredictionSeconds: initialPredictionElapsedSeconds,
-        submitToFinalPredictionSeconds: initialPredictionElapsedSeconds,
-        ocrElapsedSeconds: finiteSeconds(prediction?.elapsedSeconds),
-        semanticElapsedSeconds: null,
-        contextualSemanticElapsedSeconds: null,
-        sequentialSemanticElapsedSeconds: null,
-        retryElapsedSeconds: null
-      }
-    });
-  }
+      initialRasterMinCssHeight,
+      pipelineStartedAt,
+      singleStrokeSkipContext,
+      recognizeLine
+    })
+  );
 
   const evidenceByCandidateId = new Map(
     candidatePredictions.map((entry) => [entry.candidateId, entry.evidenceScore])
@@ -207,11 +179,26 @@ export async function recognizeStudentWriting(options = {}) {
     }
   }
 
+  for (const candidate of selected) {
+    const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
+    if (!entry?.skippedRecognition) continue;
+    await recognizeSkippedSelectedEntry(entry, candidate, {
+      apiUrl,
+      model,
+      timeoutMs,
+      problemLatex,
+      previousLatex,
+      pipelineStartedAt,
+      recognizeLine,
+      evidenceByCandidateId
+    });
+  }
+
   const selectedIds = new Set(selected.map((candidate) => candidate.candidateId));
   if (chunkFallback) {
     for (const candidate of selected) {
       const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
-      if (!entry || !predictionNeedsRetry(entry.prediction) || !candidateCanUseChunking(candidate, {
+      if (!entry || entry.skippedRecognition || !predictionNeedsRetry(entry.prediction) || !candidateCanUseChunking(candidate, {
         rasterPadding,
         minCssWidth: chunkFallbackMinCssWidth
       })) {
@@ -236,7 +223,7 @@ export async function recognizeStudentWriting(options = {}) {
   if (retryRasterHeights?.length) {
     for (const candidate of selected) {
       const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
-      if (!entry || !predictionNeedsRetry(entry.prediction)) continue;
+      if (!entry || entry.skippedRecognition || !predictionNeedsRetry(entry.prediction)) continue;
       const retry = await retrySelectedLineRecognition(candidate, {
         apiUrl,
         model,
@@ -265,7 +252,7 @@ export async function recognizeStudentWriting(options = {}) {
   if (chunkFallback) {
     for (const candidate of selected) {
       const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
-      if (!entry || !predictionNeedsRetry(entry.prediction)) continue;
+      if (!entry || entry.skippedRecognition || !predictionNeedsRetry(entry.prediction)) continue;
       await applyChunkFallbackToEntry(entry, candidate, {
         apiUrl,
         model,
@@ -382,6 +369,7 @@ export async function recognizeStudentWriting(options = {}) {
 
   const acceptedContextLatex = [...(previousLatex || [])].filter(Boolean);
   for (const line of recognizedLines) {
+    if (line.skippedRecognition) continue;
     const lineSemantic = selectedLineSemanticById.get(line.candidateId);
     if (!lineSemantic) continue;
     line.sequentialSemantic = lineSemantic;
@@ -430,6 +418,14 @@ export async function recognizeStudentWriting(options = {}) {
     if (line.latex) acceptedContextLatex.push(line.latex);
   }
   for (const line of recognizedLines) {
+    if (line.skippedRecognition) {
+      line.acceptedLatex = '';
+      line.timing = {
+        ...(line.timing || {}),
+        submitToFinalPredictionSeconds: secondsSince(pipelineStartedAt)
+      };
+      continue;
+    }
     const quadraticFormulaRepair = repairQuadraticFormulaFromProblem(line.latex, problemLatex);
     if (quadraticFormulaRepair && quadraticFormulaRepair !== line.latex) {
       line.ocrRepair = {
@@ -476,6 +472,74 @@ export async function recognizeStudentWriting(options = {}) {
   };
 }
 
+async function recognizeInitialCandidate(candidate, {
+  apiUrl,
+  model,
+  timeoutMs,
+  problemLatex,
+  previousLatex,
+  rasterPadding,
+  initialRasterHeight,
+  initialRasterMinCssHeight,
+  pipelineStartedAt,
+  singleStrokeSkipContext,
+  recognizeLine
+}) {
+  const initialTargetPixelHeight = initialTargetPixelHeightForCandidate(candidate, {
+    rasterPadding,
+    initialRasterHeight,
+    initialRasterMinCssHeight
+  });
+  const image = rasterizeLineCandidate(candidate, {
+    padding: rasterPadding,
+    targetPixelHeight: initialTargetPixelHeight
+  });
+  const prediction = shouldSkipSingleStrokeAlternative(candidate, singleStrokeSkipContext)
+    ? skippedSingleStrokePrediction(model)
+    : await Promise.resolve()
+      .then(() => recognizeLine(image, { apiUrl, model, timeoutMs }))
+      .catch((error) => ({
+        model,
+        latex: '',
+        candidates: [],
+        confidence: 0,
+        failed: true,
+        error: error instanceof Error ? error.message : String(error),
+        elapsedSeconds: 0
+      }));
+  const initialPredictionElapsedSeconds = secondsSince(pipelineStartedAt);
+  const evidenceScore = scoreRecognitionEvidence(
+    candidate,
+    prediction,
+    { problemLatex, previousLatex }
+  );
+
+  return {
+    candidateId: candidate.candidateId,
+    profiles: image.profiles,
+    strokeIds: image.strokeIds,
+    tightBbox: image.tightBbox,
+    image,
+    prediction,
+    ocrLatex: predictionLatex(prediction),
+    latex: prediction?.latex || prediction?.top?.latex || '',
+    candidates: prediction?.candidates || [],
+    skippedRecognition: Boolean(prediction?.skippedRecognition),
+    skipReason: prediction?.skipReason || null,
+    initialTargetPixelHeight,
+    evidenceScore,
+    timing: {
+      submitToInitialPredictionSeconds: initialPredictionElapsedSeconds,
+      submitToFinalPredictionSeconds: initialPredictionElapsedSeconds,
+      ocrElapsedSeconds: finiteSeconds(prediction?.elapsedSeconds),
+      semanticElapsedSeconds: null,
+      contextualSemanticElapsedSeconds: null,
+      sequentialSemanticElapsedSeconds: null,
+      retryElapsedSeconds: null
+    }
+  };
+}
+
 async function resolveContextualCandidateSemanticScores({
   candidatePredictions,
   problemLatex,
@@ -486,7 +550,8 @@ async function resolveContextualCandidateSemanticScores({
   apiUrl,
   timeoutMs
 }) {
-  if (!semanticScoring || candidatePredictions.length === 0) {
+  const scorablePredictions = (candidatePredictions || []).filter(isSemanticallyScorablePrediction);
+  if (!semanticScoring || scorablePredictions.length === 0) {
     return {
       source: semanticScoring ? 'empty' : 'disabled',
       failed: false,
@@ -498,8 +563,8 @@ async function resolveContextualCandidateSemanticScores({
   let elapsedSeconds = 0;
 
   try {
-    for (const entry of candidatePredictions) {
-      const sameAnswerContext = priorLineContextLatex(entry, candidatePredictions);
+    for (const entry of scorablePredictions) {
+      const sameAnswerContext = priorLineContextLatex(entry, scorablePredictions);
       if (sameAnswerContext.length === 0) continue;
 
       const payload = await scoreSemantics({
@@ -553,7 +618,8 @@ async function resolveSelectedLineSemanticScores({
   apiUrl,
   timeoutMs
 }) {
-  if (!semanticScoring || recognizedLines.length === 0) {
+  const scorableLines = (recognizedLines || []).filter(isSemanticallyScorablePrediction);
+  if (!semanticScoring || scorableLines.length === 0) {
     return {
       source: semanticScoring ? 'empty' : 'disabled',
       failed: false,
@@ -566,7 +632,7 @@ async function resolveSelectedLineSemanticScores({
   let elapsedSeconds = 0;
 
   try {
-    for (const line of recognizedLines) {
+    for (const line of scorableLines) {
       const payload = await scoreSemantics({
         problemLatex,
         problemMetadata,
@@ -626,7 +692,8 @@ async function resolveSemanticScores({
   apiUrl,
   timeoutMs
 }) {
-  if (!semanticScoring || candidatePredictions.length === 0) {
+  const scorablePredictions = (candidatePredictions || []).filter(isSemanticallyScorablePrediction);
+  if (!semanticScoring || scorablePredictions.length === 0) {
     return {
       source: semanticScoring ? 'empty' : 'disabled',
       failed: false,
@@ -639,7 +706,7 @@ async function resolveSemanticScores({
       problemLatex,
       problemMetadata,
       previousLatex,
-      candidateGroups: candidatePredictions.map((entry) => ({
+      candidateGroups: scorablePredictions.map((entry) => ({
         candidateId: entry.candidateId,
         latex: entry.latex,
         candidates: entry.candidates,
@@ -882,6 +949,80 @@ function predictionLatex(prediction = {}) {
   return String(prediction?.latex || prediction?.top?.latex || candidates[0]?.latex || '').trim();
 }
 
+function skippedSingleStrokePrediction(model) {
+  return {
+    model,
+    latex: '',
+    top: null,
+    candidates: [],
+    confidence: 0,
+    failed: false,
+    timedOut: false,
+    skippedRecognition: true,
+    skipReason: 'single-stroke-alternative',
+    elapsedSeconds: 0
+  };
+}
+
+async function recognizeSkippedSelectedEntry(entry, candidate, {
+  apiUrl,
+  model,
+  timeoutMs,
+  problemLatex,
+  previousLatex,
+  pipelineStartedAt,
+  recognizeLine,
+  evidenceByCandidateId
+}) {
+  const prediction = await Promise.resolve()
+    .then(() => recognizeLine(entry.image, { apiUrl, model, timeoutMs }))
+    .catch((error) => ({
+      model,
+      latex: '',
+      candidates: [],
+      confidence: 0,
+      failed: true,
+      error: error instanceof Error ? error.message : String(error),
+      elapsedSeconds: 0
+    }));
+
+  entry.prediction = prediction;
+  entry.candidates = prediction?.candidates || [];
+  entry.ocrLatex = predictionLatex(prediction);
+  entry.latex = prediction?.latex || prediction?.top?.latex || '';
+  entry.skippedRecognition = false;
+  entry.skipReason = null;
+  entry.deferredRecognition = true;
+  entry.evidenceScore = scoreRecognitionEvidence(candidate, prediction, { problemLatex, previousLatex });
+  entry.timing = {
+    ...(entry.timing || {}),
+    submitToInitialPredictionSeconds: secondsSince(pipelineStartedAt),
+    submitToFinalPredictionSeconds: secondsSince(pipelineStartedAt),
+    ocrElapsedSeconds: finiteSeconds(prediction?.elapsedSeconds)
+  };
+  evidenceByCandidateId.set(entry.candidateId, entry.evidenceScore);
+}
+
+function shouldSkipSingleStrokeAlternative(candidate, context = {}) {
+  if (!context.enabled || !candidate) return false;
+  if (context.baselineCandidateIds?.has(candidate.candidateId)) return false;
+  const strokeIds = uniqueStrings(candidate.strokeIds || []);
+  if (strokeIds.length !== 1) return false;
+  const strokeId = strokeIds[0];
+  return (context.candidates || []).some((other) => {
+    if (!other || other === candidate) return false;
+    const otherIds = uniqueStrings(other.strokeIds || []);
+    return otherIds.length > 1 && otherIds.includes(strokeId);
+  });
+}
+
+function isSemanticallyScorablePrediction(entry) {
+  if (!entry || entry.skippedRecognition || entry.prediction?.skippedRecognition) return false;
+  if (entry.prediction?.failed || entry.prediction?.timedOut) return false;
+  if (entry.latex) return true;
+  return (entry.candidates || []).some((candidate) => String(candidate?.latex || '').trim());
+}
+
 function applyFinalCandidateDebugState(candidatePredictions, recognizedLines, pipelineStartedAt) {
   const selectedById = new Map((recognizedLines || []).map((line) => [line.candidateId, line]));
   for (const [index, entry] of (candidatePredictions || []).entries()) {
@@ -926,6 +1067,29 @@ function sumPredictionElapsedSeconds(predictions = []) {
     return Number.isFinite(elapsed) ? sum + elapsed : sum;
   }, 0);
   return total > 0 ? finiteSeconds(total) : null;
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const values = Array.isArray(items) ? items : [];
+  if (values.length === 0) return [];
+
+  const limit = Math.max(1, Math.min(
+    values.length,
+    Number.isFinite(Number(concurrency)) ? Math.floor(Number(concurrency)) : 1
+  ));
+  const results = new Array(values.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(values[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, () => worker()));
+  return results;
 }
 
 function secondsSince(startedAt) {
