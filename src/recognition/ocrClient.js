@@ -1,3 +1,5 @@
+import { recognitionFetchErrorMessage } from './fetchErrors.js';
+
 export async function recognizeLineImage(lineImage, options = {}) {
   const apiUrl = String(options.apiUrl || '').replace(/\/$/, '');
   const model = options.model || 'comer';
@@ -63,8 +65,7 @@ export async function recognizeLineImage(lineImage, options = {}) {
 }
 
 function fetchErrorMessage(error, url) {
-  const message = error instanceof Error ? error.message : String(error);
-  return `${message} (${url})`;
+  return recognitionFetchErrorMessage(error, url);
 }
 
 async function dataUrlToBlob(dataUrl) {

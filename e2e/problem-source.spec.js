@@ -28,7 +28,7 @@ test('renders a logarithmic equation from the Playwright problem source', async 
   const snapshot = await getE2ESnapshot(page);
   expect(snapshot.activeProblem.id).toBe(fixture.problem.id);
   expect(snapshot.activeProblem.latex).toBe(fixture.problem.latex);
-  await expect(page.locator(`[data-problem-id="${fixture.problem.id}"]`)).toBeVisible();
+  await expect(page.locator(`.problem-print[data-problem-id="${fixture.problem.id}"]`)).toBeVisible();
 });
 
 test('does not render original hard-coded problems when the E2E problem source is invalid', async ({ page }) => {

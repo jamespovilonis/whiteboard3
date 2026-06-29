@@ -13,6 +13,8 @@ import {
   getCompletedRecognitionResults,
   getActiveModelResponse,
   reconcileProblemFlowWithStrokes,
+  requestNextProblem,
+  startCustomProblem,
   submitActiveProblem
 } from '../state/problemFlow.js';
 
@@ -27,7 +29,6 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
     let didCancel = false;
     loadE2EEquationSolvingProblems().then((problemDefinitions) => {
       if (didCancel) return;
-      if (!problemDefinitions.length) return;
       setProblemFlow(createInitialProblemFlow(getViewportWidth(), problemDefinitions));
       onRecognitionEvent?.('problem-source-loaded', {
         problemCount: problemDefinitions.length,
@@ -52,8 +53,37 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
     setProblemFlow((currentFlow) => reconcileProblemFlowWithStrokes(currentFlow, strokes));
   }, []);
 
+  const createCustomProblem = useCallback((latex) => {
+    const started = startCustomProblem(problemFlow, latex, getViewportWidth());
+    setProblemFlow(started.flow);
+
+    if (started?.targetViewport) {
+      moveHomeViewport(started.targetViewport, 420);
+    }
+
+    if (started?.problem) {
+      onRecognitionEvent?.('custom-problem-created', {
+        problemId: started.problem.id,
+        latex: started.problem.latex
+      });
+    }
+  }, [moveHomeViewport, onRecognitionEvent, problemFlow]);
+
   const submitAnswer = useCallback(() => {
     const activeProblem = getActiveProblem(problemFlow);
+    if (!activeProblem) {
+      onRecognitionEvent?.('submit-active-problem', {
+        problemId: null,
+        strokeCount: engineRef?.current?.getStrokes?.()?.length || 0,
+        answerStrokeCount: 0
+      });
+      onRecognitionEvent?.('recognition-skipped', {
+        problemId: null,
+        reason: 'no-active-problem'
+      });
+      return;
+    }
+
     const strokes = engineRef?.current?.getStrokes?.() || [];
     const result = submitActiveProblem(problemFlow, getViewportWidth());
     onRecognitionEvent?.('submit-active-problem', {
@@ -112,11 +142,27 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
     });
   }, [engineRef, moveHomeViewport, onRecognitionEvent, problemFlow]);
 
+  const goToNextProblem = useCallback(() => {
+    const result = requestNextProblem(problemFlow, getViewportWidth());
+    setProblemFlow(result.flow);
+
+    if (result.targetViewport) {
+      moveHomeViewport(result.targetViewport, 420);
+    }
+
+    onRecognitionEvent?.('next-problem', {
+      activeProblemId: result.flow.activeProblemId || null,
+      awaitingEquation: Boolean(result.flow.awaitingEquation)
+    });
+  }, [moveHomeViewport, onRecognitionEvent, problemFlow]);
+
   return {
     problemFlow,
     modelResponse,
     recognitionResults,
     reconcileStrokes,
+    createCustomProblem,
+    goToNextProblem,
     submitAnswer
   };
 }

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { getRecognitionApiUrl } from '../src/recognition/config.js';
+import { getRecognitionApiUrl, normalizeConfiguredApiUrl } from '../src/recognition/config.js';
 import { translateDetections } from '../src/recognition/segmentationClient.js';
 import { previousLatexForSubmission, summarizeRecognitionResult } from '../src/hooks/useProblemFlowController.js';
 import { recognizeStudentWriting, shouldUseSemanticLatex } from '../src/recognition/studentWritingPipeline.js';
@@ -18,6 +18,8 @@ import {
   applyProblemRecognitionResult,
   createInitialProblemFlow,
   getActiveProblem,
+  requestNextProblem,
+  startCustomProblem,
   submitActiveProblem
 } from '../src/state/problemFlow.js';
 
@@ -73,6 +75,28 @@ test('recognition API maps wildcard dev host to loopback gateway', () => {
   };
   try {
     assert.equal(getRecognitionApiUrl(), 'http://127.0.0.1:8010');
+  } finally {
+    if (previousWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = previousWindow;
+    }
+  }
+});
+
+test('recognition API rewrites loopback override for lan clients', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    location: {
+      protocol: 'http:',
+      hostname: '192.168.1.156'
+    }
+  };
+  try {
+    assert.equal(
+      normalizeConfiguredApiUrl('http://127.0.0.1:8010'),
+      'http://192.168.1.156:8010'
+    );
   } finally {
     if (previousWindow === undefined) {
       delete globalThis.window;
@@ -2706,6 +2730,105 @@ test('operation underlines do not make an algebra stack look like one fraction',
   assert.ok(!result.selected[2].strokeIds.includes('op_plus_right'));
 });
 
+test('custom problem flow starts by waiting for a latex equation', () => {
+  const initial = createInitialProblemFlow(1200);
+
+  assert.equal(initial.activeProblemId, null);
+  assert.equal(initial.awaitingEquation, true);
+  assert.equal(initial.customProblems, true);
+  assert.deepEqual(initial.problems, []);
+});
+
+test('starting a custom problem stores user latex as problem context', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, '  \\frac{x}{2} + 5 = 13  ', 1200);
+  const active = getActiveProblem(started.flow);
+
+  assert.equal(started.flow.awaitingEquation, false);
+  assert.equal(active.id, 'problem-1');
+  assert.equal(active.latex, '\\frac{x}{2} + 5 = 13');
+  assert.equal(active.modelResponse.latex, '\\frac{x}{2} + 5 = 13');
+  assert.equal(active.metadata.source, 'user-latex');
+});
+
+test('submitting a custom problem runs recognition without opening the next prompt', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
+  const active = getActiveProblem(started);
+  const withAnswer = {
+    ...started,
+    problems: started.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            answerStrokeIds: ['a'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 20, yMax: 20 }
+          }
+        : problem
+    ))
+  };
+
+  const submitted = submitActiveProblem(withAnswer, 1200).flow;
+  const submittedProblem = submitted.problems.find((problem) => problem.id === active.id);
+
+  assert.equal(submittedProblem.status, 'submitted');
+  assert.equal(submittedProblem.recognition.status, 'pending');
+  assert.equal(submitted.activeProblemId, active.id);
+  assert.equal(submitted.awaitingEquation, false);
+  assert.equal(submitted.completedCount, 1);
+});
+
+test('next problem request opens the latex prompt after a custom submission', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
+  const active = getActiveProblem(started);
+  const submitted = submitActiveProblem({
+    ...started,
+    problems: started.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            answerStrokeIds: ['a'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 20, yMax: 20 }
+          }
+        : problem
+    ))
+  }, 1200).flow;
+
+  const next = requestNextProblem(submitted, 1200).flow;
+
+  assert.equal(next.activeProblemId, null);
+  assert.equal(next.awaitingEquation, true);
+  assert.equal(next.completedCount, 1);
+});
+
+test('fixture-backed problem flow finishes after next problem request exhausts definitions', () => {
+  const initial = createInitialProblemFlow(1200, [FLOW_TEST_PROBLEMS[0]]);
+  const active = getActiveProblem(initial);
+  const withAnswer = {
+    ...initial,
+    problems: initial.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            answerStrokeIds: ['a'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 20, yMax: 20 }
+          }
+        : problem
+    ))
+  };
+
+  const submitted = submitActiveProblem(withAnswer, 1200).flow;
+  const finished = requestNextProblem(submitted, 1200).flow;
+
+  assert.equal(submitted.activeProblemId, active.id);
+  assert.equal(submitted.awaitingEquation, false);
+  assert.equal(finished.activeProblemId, null);
+  assert.equal(finished.awaitingEquation, false);
+  assert.equal(finished.customProblems, false);
+  assert.equal(finished.completedCount, 1);
+});
+
 test('submitted problem flow preserves recognition status and result', () => {
   const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
   const active = getActiveProblem(initial);
@@ -2888,9 +3011,10 @@ test('recognition context does not leak previous problem latex into new submissi
     latexLines: ['\\eta = 5'],
     lines: []
   });
-  const nextProblem = getActiveProblem(completedFirst);
+  const withNextProblem = requestNextProblem(completedFirst, 1200).flow;
+  const nextProblem = getActiveProblem(withNextProblem);
 
-  assert.deepEqual(previousLatexForSubmission(completedFirst, nextProblem.id), []);
+  assert.deepEqual(previousLatexForSubmission(withNextProblem, nextProblem.id), []);
 });
 
 function candidate(candidateId, profiles, strokeIds, xMin, yMin, xMax, yMax) {

@@ -413,6 +413,7 @@
 
 .model-shell-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 28px;
 }
@@ -430,6 +431,7 @@
 
 .model-shell-actions button {
   flex: 1;
+  min-width: 104px;
   min-height: 40px;
   padding: 9px 10px;
   border: 1px solid var(--toolbar-border);
@@ -451,6 +453,159 @@
 
 .model-shell-actions button:active {
   transform: scale(0.98);
+}
+
+.model-shell-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  transform: none;
+}
+
+.latex-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(238, 236, 225, 0.46);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.latex-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: min(520px, calc(100vw - 48px));
+  padding: 24px;
+  color: #303038;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(32, 34, 40, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 18px 54px rgba(30, 30, 50, 0.18);
+  animation: latex-dialog-open 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.latex-dialog-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.latex-dialog-copy h1,
+.latex-dialog-copy p {
+  margin: 0;
+}
+
+.latex-dialog-copy h1 {
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.latex-dialog-copy p {
+  color: rgba(48, 48, 56, 0.68);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.latex-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.latex-dialog-field span {
+  color: rgba(48, 48, 56, 0.72);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.latex-dialog-field textarea {
+  width: 100%;
+  min-height: 92px;
+  resize: vertical;
+  padding: 12px;
+  color: #303038;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(32, 34, 40, 0.16);
+  border-radius: 8px;
+  outline: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.latex-dialog-field textarea:focus {
+  border-color: rgba(94, 92, 230, 0.68);
+  box-shadow: 0 0 0 4px rgba(94, 92, 230, 0.14);
+}
+
+.latex-dialog-preview {
+  min-height: 78px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+  overflow-x: auto;
+  background: rgba(238, 236, 225, 0.66);
+  border: 1px solid rgba(32, 34, 40, 0.10);
+  border-radius: 8px;
+}
+
+.latex-dialog-preview .katex-display {
+  margin: 0;
+}
+
+.latex-dialog-preview .katex {
+  color: #303038;
+  font-size: 28px;
+}
+
+.latex-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.latex-dialog-actions button {
+  min-height: 42px;
+  padding: 10px 18px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.94);
+  background: var(--toolbar-bg);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 800;
+  transition: background 0.18s ease, transform 0.15s ease, opacity 0.18s ease;
+}
+
+.latex-dialog-actions button:hover {
+  background: rgba(28, 28, 30, 0.86);
+}
+
+.latex-dialog-actions button:active {
+  transform: scale(0.98);
+}
+
+.latex-dialog-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+  transform: none;
+}
+
+@keyframes latex-dialog-open {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 @keyframes model-shell-open {

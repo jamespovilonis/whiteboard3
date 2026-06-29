@@ -1,3 +1,5 @@
+import { recognitionFetchErrorMessage } from './fetchErrors.js';
+
 export async function scoreLatexCandidates(request, options = {}) {
   const apiUrl = String(options.apiUrl || '').replace(/\/$/, '');
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 5000;
@@ -43,8 +45,7 @@ export async function scoreLatexCandidates(request, options = {}) {
 }
 
 function fetchErrorMessage(error, url) {
-  const message = error instanceof Error ? error.message : String(error);
-  return `${message} (${url})`;
+  return recognitionFetchErrorMessage(error, url);
 }
 
 function performanceNow() {

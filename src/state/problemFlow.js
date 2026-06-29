@@ -6,16 +6,17 @@ import {
 } from '../whiteboard/constants.js';
 import { bboxOverlap, padBbox, unionBbox } from '../whiteboard/geometry.js';
 import { getInitialProblemPosition } from '../whiteboard/viewport.js';
-import { TEST_PROBLEMS } from './problemFixtures.js';
 
-export function createInitialProblemFlow(viewportWidth, problemDefinitions = TEST_PROBLEMS) {
+export function createInitialProblemFlow(viewportWidth, problemDefinitions = []) {
   const definitions = normalizeProblemDefinitions(problemDefinitions);
   if (!definitions.length) {
     return {
       activeProblemId: null,
       problemDefinitions: [],
       problems: [],
-      completedCount: 0
+      completedCount: 0,
+      awaitingEquation: true,
+      customProblems: true
     };
   }
 
@@ -31,7 +32,9 @@ export function createInitialProblemFlow(viewportWidth, problemDefinitions = TES
     activeProblemId: firstProblem.id,
     problemDefinitions: definitions,
     problems: [firstProblem],
-    completedCount: 0
+    completedCount: 0,
+    awaitingEquation: false,
+    customProblems: false
   };
 }
 
@@ -40,6 +43,14 @@ export function getActiveProblem(flow) {
 }
 
 export function getActiveModelResponse(flow) {
+  if (flow.awaitingEquation) {
+    return {
+      before: 'Enter an equation to solve.',
+      latex: '\\square',
+      after: 'The problem will appear on the whiteboard.'
+    };
+  }
+
   return getActiveProblem(flow)?.modelResponse || {
     before: 'All done.',
     latex: '\\checkmark',
@@ -88,11 +99,8 @@ export function reconcileProblemFlowWithStrokes(flow, strokes) {
 export function submitActiveProblem(flow, viewportWidth) {
   const activeProblem = getActiveProblem(flow);
   if (!activeProblem) return { flow, targetViewport: null };
+  if (activeProblem.status !== 'solving') return { flow, targetViewport: null };
 
-  const definitions = normalizeProblemDefinitions(
-    flow.problemDefinitions?.length ? flow.problemDefinitions : TEST_PROBLEMS
-  );
-  const frozenBottom = getFrozenBottom(activeProblem);
   const completedFlow = updateProblem(flow, activeProblem.id, (problem) => ({
     ...problem,
     status: 'submitted',
@@ -103,15 +111,43 @@ export function submitActiveProblem(flow, viewportWidth) {
       error: null
     }
   }));
+  const completedCount = completedFlow.problems.filter((problem) => (
+    problem.status === 'submitted'
+  )).length;
+
+  return {
+    flow: {
+      ...completedFlow,
+      completedCount,
+      awaitingEquation: false
+    },
+    targetViewport: null
+  };
+}
+
+export function requestNextProblem(flow, viewportWidth) {
+  const activeProblem = getActiveProblem(flow);
+  if (!activeProblem || activeProblem.status !== 'submitted') {
+    return { flow, targetViewport: null };
+  }
+
+  const definitions = normalizeProblemDefinitions(flow.problemDefinitions || []);
+  const frozenBottom = getFrozenBottom(activeProblem);
 
   const nextIndex = activeProblem.index + 1;
   if (nextIndex >= definitions.length) {
+    const completedCount = flow.problems.filter((problem) => (
+      problem.status === 'submitted'
+    )).length;
+
     return {
       flow: {
-        ...completedFlow,
+        ...flow,
         problemDefinitions: definitions,
         activeProblemId: null,
-        completedCount: definitions.length
+        completedCount,
+        awaitingEquation: Boolean(flow.customProblems),
+        customProblems: Boolean(flow.customProblems)
       },
       targetViewport: null
     };
@@ -133,13 +169,62 @@ export function submitActiveProblem(flow, viewportWidth) {
 
   return {
     flow: {
-      ...completedFlow,
+      ...flow,
       problemDefinitions: definitions,
       activeProblemId: nextProblem.id,
       completedCount: nextIndex,
-      problems: [...completedFlow.problems, nextProblem]
+      problems: [...flow.problems, nextProblem],
+      awaitingEquation: false,
+      customProblems: Boolean(flow.customProblems)
     },
     targetViewport
+  };
+}
+
+export function startCustomProblem(flow, latex, viewportWidth) {
+  const normalizedLatex = String(latex || '').trim();
+  if (!normalizedLatex) {
+    return { flow, targetViewport: null, problem: null };
+  }
+
+  const lastProblem = flow.problems[flow.problems.length - 1] || null;
+  const index = flow.problems.length;
+  const boardPosition = lastProblem
+    ? {
+        x: lastProblem.boardPosition.x,
+        y: getFrozenBottom(lastProblem) + NEXT_PROBLEM_GAP
+      }
+    : getInitialProblemPosition(INITIAL_VIEWPORT, viewportWidth);
+  const targetViewport = lastProblem
+    ? viewportForProblemPosition(boardPosition, viewportWidth)
+    : INITIAL_VIEWPORT;
+  const definition = {
+    id: `problem-${index + 1}`,
+    kind: 'equation-solving',
+    latex: normalizedLatex,
+    modelResponse: normalizeModelResponse(null, normalizedLatex, index),
+    metadata: {
+      source: 'user-latex'
+    }
+  };
+  const problem = createProblemSession({
+    definition,
+    index,
+    boardPosition,
+    viewportWidth,
+    viewport: targetViewport
+  });
+
+  return {
+    flow: {
+      ...flow,
+      activeProblemId: problem.id,
+      problems: [...flow.problems, problem],
+      awaitingEquation: false,
+      customProblems: true
+    },
+    targetViewport,
+    problem
   };
 }
 

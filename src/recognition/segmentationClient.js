@@ -1,3 +1,5 @@
+import { recognitionFetchErrorMessage } from './fetchErrors.js';
+
 export async function requestLineDetections(candidateImage, options = {}) {
   const apiUrl = String(options.apiUrl || '').replace(/\/$/, '');
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 10000;
@@ -53,8 +55,7 @@ export async function requestLineDetections(candidateImage, options = {}) {
 }
 
 function fetchErrorMessage(error, url) {
-  const message = error instanceof Error ? error.message : String(error);
-  return `${message} (${url})`;
+  return recognitionFetchErrorMessage(error, url);
 }
 
 export function translateDetections(detections, candidateImage = {}) {

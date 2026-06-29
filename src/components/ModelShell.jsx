@@ -3,7 +3,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 const SHELL_TRANSITION_MS = 450;
 
-export default function ModelShell({ response, recognitionResults = [], debugMode = false, onSubmitAnswer }) {
+export default function ModelShell({
+  response,
+  recognitionResults = [],
+  debugMode = false,
+  submitDisabled = false,
+  nextProblemDisabled = false,
+  onNextProblem,
+  onSubmitAnswer
+}) {
   const [mode, setMode] = useState('closed');
   const closeTimerRef = useRef(null);
   const equationHtml = useMemo(() => {
@@ -93,7 +101,22 @@ export default function ModelShell({ response, recognitionResults = [], debugMod
 
           <div className={`model-shell-actions ${debugMode ? 'is-debug' : ''}`}>
             <button type="button">Ask for help</button>
-            <button type="button" data-testid="submit-answer" onClick={onSubmitAnswer}>Submit</button>
+            <button
+              type="button"
+              data-testid="submit-answer"
+              disabled={submitDisabled}
+              onClick={onSubmitAnswer}
+            >
+              Submit
+            </button>
+            <button
+              type="button"
+              data-testid="next-problem"
+              disabled={nextProblemDisabled}
+              onClick={onNextProblem}
+            >
+              Next Problem
+            </button>
           </div>
         </aside>
       )}

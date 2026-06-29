@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+import LatexEquationDialog from './components/LatexEquationDialog.jsx';
 import ModelShell from './components/ModelShell.jsx';
 import Toolbar from './components/Toolbar.jsx';
 import WhiteboardStage from './components/WhiteboardStage.jsx';
@@ -50,6 +51,8 @@ export default function App() {
     modelResponse,
     recognitionResults,
     reconcileStrokes,
+    createCustomProblem,
+    goToNextProblem,
     submitAnswer
   } = useProblemFlowController({
     moveHomeViewport,
@@ -58,6 +61,9 @@ export default function App() {
   });
 
   const penWidth = sliderToWidth(sliderValue);
+  const activeProblem = problemFlow.problems.find((problem) => (
+    problem.id === problemFlow.activeProblemId
+  )) || null;
 
   const handleEngineReady = useCallback((engine) => {
     engineRef.current = engine;
@@ -149,8 +155,15 @@ export default function App() {
         response={modelResponse}
         recognitionResults={recognitionResults}
         debugMode={debugBoxesEnabled || E2E_TEST_ENABLED}
+        submitDisabled={activeProblem?.status !== 'solving'}
+        nextProblemDisabled={activeProblem?.status !== 'submitted'}
         onSubmitAnswer={handleSubmitAnswer}
+        onNextProblem={goToNextProblem}
       />
+
+      {problemFlow.awaitingEquation && (
+        <LatexEquationDialog onSubmit={createCustomProblem} />
+      )}
 
       <button
         className={`reset-window-btn ${showReset ? 'visible' : ''}`}
