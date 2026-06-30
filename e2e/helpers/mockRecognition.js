@@ -51,12 +51,60 @@ export async function installMockRecognitionRoutes(page, options = {}) {
 
     if (endpoint === '/score-latex-candidates') {
       const payload = JSON.parse(request.postData() || '{}');
-      const candidateScores = (payload.candidateGroups || []).map(scoreCandidateGroup);
+      const answerManifest = options.answerManifest || {
+        problem_raw: payload.problemLatex || '',
+        variable: payload.problemMetadata?.solveVariable || 'x',
+        cardinality: 'finite',
+        exact_set: ['4'],
+        decimal_set: [4],
+        tolerance: 0.005,
+        acceptable_strings: ['x=4', '4']
+      };
+      const candidateScores = (payload.candidateGroups || []).map((group) => (
+        scoreCandidateGroup(group, { answerManifest })
+      ));
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
+          answerManifest,
           candidateScores,
+          elapsedSeconds: 0.01,
+          failed: false
+        })
+      });
+      return;
+    }
+
+    if (endpoint === '/grade-equation-work') {
+      const payload = JSON.parse(request.postData() || '{}');
+      const lines = payload.lines || [];
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(options.gradingResponse || {
+          problem: {
+            latex: payload.problemLatex || '',
+            solveVariable: payload.problemMetadata?.solveVariable || 'x',
+            cardinality: 'finite',
+            solutionSet: [],
+            decimalSet: [],
+            tolerance: 0.005
+          },
+          steps: lines.map((line, index) => ({
+            lineIndex: line.lineIndex ?? index,
+            studentLatex: line.acceptedLatex || line.latex || '',
+            classification: 'valid_step',
+            selectedCandidateIndex: 0,
+            solutionCoverage: 'none',
+            matchedSolutions: []
+          })),
+          result: {
+            problemStatus: options.problemStatus || 'correct',
+            breakdownLineIndex: null,
+            foundSolutions: [],
+            missingSolutions: []
+          },
           elapsedSeconds: 0.01,
           failed: false
         })
@@ -88,7 +136,7 @@ function parsePostData(postData) {
   }
 }
 
-function scoreCandidateGroup(group) {
+function scoreCandidateGroup(group, { answerManifest }) {
   const bestLatex = firstLatex(group);
   const candidateScores = (group.candidates?.length ? group.candidates : [{ latex: bestLatex }])
     .map((candidate) => ({
@@ -98,6 +146,9 @@ function scoreCandidateGroup(group) {
       equivalentToProblem: false,
       equivalentToPrevious: false
     }));
+  const selectedCandidateIndex = 0;
+  const selectedLatex = candidateScores[selectedCandidateIndex]?.latex || bestLatex;
+  const matchedSolutions = String(selectedLatex).includes('4') ? ['4'] : [];
 
   return {
     candidateId: group.candidateId,
@@ -107,6 +158,23 @@ function scoreCandidateGroup(group) {
     semanticScore: 3,
     equivalentToProblem: false,
     equivalentToPrevious: false,
+    grading: {
+      studentLatex: selectedLatex,
+      classification: 'valid_step',
+      selectedCandidateIndex,
+      solutionCoverage: matchedSolutions.length ? 'full' : 'none',
+      matchedSolutions,
+      candidateVerdicts: candidateScores.map((candidate, index) => ({
+        candidateIndex: index,
+        latex: candidate.latex,
+        studentLatex: candidate.latex,
+        classification: index === selectedCandidateIndex ? 'valid_step' : 'invalid_step',
+        selectedCandidateIndex: 0,
+        solutionCoverage: index === selectedCandidateIndex && matchedSolutions.length ? 'full' : 'none',
+        matchedSolutions: index === selectedCandidateIndex ? matchedSolutions : []
+      }))
+    },
+    answerManifest,
     candidateScores
   };
 }

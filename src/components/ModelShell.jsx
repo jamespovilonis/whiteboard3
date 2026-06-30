@@ -3,7 +3,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 const SHELL_TRANSITION_MS = 450;
 
-export default function ModelShell({ response, recognitionResults = [], debugMode = false, onSubmitAnswer }) {
+export default function ModelShell({
+  response,
+  recognitionResults = [],
+  debugMode = false,
+  submitDisabled = false,
+  nextProblemDisabled = false,
+  onNextProblem,
+  onSubmitAnswer
+}) {
   const [mode, setMode] = useState('closed');
   const closeTimerRef = useRef(null);
   const equationHtml = useMemo(() => {
@@ -93,7 +101,22 @@ export default function ModelShell({ response, recognitionResults = [], debugMod
 
           <div className={`model-shell-actions ${debugMode ? 'is-debug' : ''}`}>
             <button type="button">Ask for help</button>
-            <button type="button" data-testid="submit-answer" onClick={onSubmitAnswer}>Submit</button>
+            <button
+              type="button"
+              data-testid="submit-answer"
+              disabled={submitDisabled}
+              onClick={onSubmitAnswer}
+            >
+              Submit
+            </button>
+            <button
+              type="button"
+              data-testid="next-problem"
+              disabled={nextProblemDisabled}
+              onClick={onNextProblem}
+            >
+              Next Problem
+            </button>
           </div>
         </aside>
       )}
@@ -108,11 +131,11 @@ function RecognitionDebugInspector({ results = [] }) {
     <div className="recognition-debug">
       <div className="recognition-debug-heading">
         <span>Recognition Debug</span>
-        <span>{submitted.length ? `${submitted.length} submitted` : 'No submissions'}</span>
+        <span>{submitted.length ? `${submitted.length} tracked` : 'No reads'}</span>
       </div>
 
       {submitted.length === 0 && (
-        <p className="recognition-message">Submit an answer to inspect line candidates.</p>
+        <p className="recognition-message">Write an answer to inspect line candidates.</p>
       )}
 
       {submitted.map((entry) => (
@@ -135,7 +158,7 @@ function DebugRecognitionResult({ entry }) {
   return (
     <section className="recognition-debug-result" data-status={status}>
       <div className="recognition-result-top">
-        <span>Submission {entry.problemId.replace('problem-', '')}</span>
+        <span>Problem {entry.problemId.replace('problem-', '')}</span>
         <span>{debugStatusLabel(status, result)}</span>
       </div>
 
@@ -154,6 +177,7 @@ function DebugRecognitionResult({ entry }) {
       {result && (
         <>
           <DebugMetrics result={result} />
+          <GradingDebugPanel grading={result.grading} />
           {candidates.length > 0 && (
             <div className="recognition-debug-candidates">
               {candidates.map((candidate, index) => (
@@ -169,6 +193,67 @@ function DebugRecognitionResult({ entry }) {
         </>
       )}
     </section>
+  );
+}
+
+function GradingDebugPanel({ grading = null }) {
+  if (!grading) return null;
+
+  const status = grading.status || (grading.failed ? 'failed' : 'complete');
+  const problemStatus = grading.result?.problemStatus || (status === 'pending' ? 'pending' : 'n/a');
+  const steps = grading.steps || [];
+  const problem = grading.problem || {};
+  const solutionSet = problem.solutionSet || [];
+
+  return (
+    <div className="grading-debug" data-status={problemStatus}>
+      <div className="grading-debug-top">
+        <span>Grading</span>
+        <span>{gradingDecisionLabel(problemStatus, status)}</span>
+      </div>
+
+      {grading.failed && (
+        <p className="recognition-message">{grading.error || 'Grading failed.'}</p>
+      )}
+
+      {!grading.failed && (
+        <>
+          <dl className="recognition-metrics grading-debug-metrics">
+            <div>
+              <dt>Status</dt>
+              <dd>{gradingDecisionLabel(problemStatus, status)}</dd>
+            </div>
+            <div>
+              <dt>Variable</dt>
+              <dd>{problem.solveVariable || 'n/a'}</dd>
+            </div>
+            <div>
+              <dt>Solutions</dt>
+              <dd>{solutionSet.length ? solutionSet.join(', ') : problem.cardinality || 'n/a'}</dd>
+            </div>
+          </dl>
+
+          {steps.length > 0 ? (
+            <ol className="grading-debug-lines">
+              {steps.map((step, index) => (
+                <li key={`${step.lineIndex ?? index}-${step.studentLatex || ''}`}>
+                  <div>
+                    <span>Line {(step.lineIndex ?? index) + 1}</span>
+                    <span>{lineClassificationLabel(step.classification)}</span>
+                  </div>
+                  <p>{step.studentLatex || 'No LaTeX'}</p>
+                  <small>{gradingLineDetail(step)}</small>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            status === 'pending'
+              ? <p className="recognition-message">Grading is running.</p>
+              : <p className="recognition-message">No graded lines returned.</p>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -300,7 +385,7 @@ function RecognitionResult({ entry }) {
   return (
     <div className="recognition-result" data-status={status}>
       <div className="recognition-result-top">
-        <span>Submission {entry.problemId.replace('problem-', '')}</span>
+        <span>Problem {entry.problemId.replace('problem-', '')}</span>
         <span>{statusLabel(status)}</span>
       </div>
 
@@ -426,6 +511,9 @@ function RecognizedLatexLineText({ latex }) {
 
 function candidateDebugStatus(candidate) {
   if (candidate.prediction?.failed || candidate.prediction?.timedOut) return 'failed';
+  if (candidate.realtimeStatus === 'contested') return 'contested';
+  if (candidate.realtimeStatus === 'provisional' || candidate.provisional) return 'provisional';
+  if (candidate.realtimeStatus === 'pending' || candidate.realtimeStatus === 'running') return 'unread';
   if (candidate.selected) return 'selected';
   if (!candidate.latex) return 'unread';
   return 'discarded';
@@ -433,8 +521,13 @@ function candidateDebugStatus(candidate) {
 
 function candidateStatusLabel(candidate, status) {
   if (status === 'selected') return `selected L${Number(candidate.selectedLineIndex) + 1}`;
+  if (status === 'contested') return 'contested';
+  if (status === 'provisional') return candidate.prediction?.cached ? 'cached partial' : 'partial';
   if (status === 'failed') return 'failed';
+  if (candidate.realtimeStatus === 'pending') return 'pending';
+  if (candidate.realtimeStatus === 'running') return 'reading';
   if (status === 'unread') return 'not OCRed';
+  if (candidate.prediction?.cached) return 'cached';
   return 'discarded';
 }
 
@@ -453,7 +546,39 @@ function semanticScoreLabel(semantic, timing) {
     timing?.contextualSemanticElapsedSeconds ??
     timing?.semanticElapsedSeconds;
   if (score === 'n/a') return formatSeconds(elapsed);
-  return `${score} · ${formatSeconds(elapsed)}`;
+  return `${score} | ${formatSeconds(elapsed)}`;
+}
+
+function gradingDecisionLabel(problemStatus, status = '') {
+  if (status === 'pending') return 'Pending';
+  if (status === 'failed') return 'Failed';
+  if (!problemStatus || problemStatus === 'n/a') return 'n/a';
+  return problemStatus
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function lineClassificationLabel(classification = '') {
+  if (!classification) return 'n/a';
+  return classification
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function gradingLineDetail(step = {}) {
+  const parts = [];
+  if (step.solutionCoverage && step.solutionCoverage !== 'none') {
+    parts.push(`coverage ${step.solutionCoverage}`);
+  }
+  if (step.matchedSolutions?.length) {
+    parts.push(`matched ${step.matchedSolutions.join(', ')}`);
+  }
+  if (Number.isFinite(Number(step.selectedCandidateIndex))) {
+    parts.push(`candidate ${Number(step.selectedCandidateIndex) + 1}`);
+  }
+  return parts.join(' | ') || 'no solution match';
 }
 
 function bboxLabel(bbox) {
@@ -472,6 +597,12 @@ function formatSeconds(value) {
 }
 
 function debugStatusLabel(status, result) {
+  if (status === 'pending' && result?.realtime?.components?.some((component) => component.contested)) {
+    return 'Reviewing overlap';
+  }
+  if (status === 'pending' && result?.realtime?.components?.some((component) => component.hasResult)) {
+    return 'Reading partial';
+  }
   if (status !== 'complete') return statusLabel(status);
   const total = formatSeconds(result?.timing?.totalElapsedSeconds);
   return total === 'n/a' ? 'Complete' : total;
@@ -479,7 +610,7 @@ function debugStatusLabel(status, result) {
 
 function lineLabel(line) {
   const score = Number(line.evidenceScore);
-  const scoreText = Number.isFinite(score) ? ` · ${score.toFixed(2)}` : '';
+  const scoreText = Number.isFinite(score) ? ` | ${score.toFixed(2)}` : '';
   return `Line ${(line.lineIndex ?? 0) + 1}${scoreText}`;
 }
 

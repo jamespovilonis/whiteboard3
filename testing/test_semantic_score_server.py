@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Tests for the local recognition gateway server."""
+"""Tests for the FastAPI recognition gateway server."""
 
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import threading
 import time
@@ -13,17 +14,16 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-TESTING_DIR = Path(__file__).resolve().parent
-if str(TESTING_DIR) not in sys.path:
-    sys.path.insert(0, str(TESTING_DIR))
+import uvicorn
 
-from semantic_score_server import (
-    SemanticScoringTimeout,
-    SemanticScoreHandler,
-    proxy_request_headers,
-    proxy_target_url,
-    score_semantic_payload_with_timeout,
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.server.app import create_app
+from src.server.config import ServerSettings
+from src.server.services.proxy import proxy_request_headers, proxy_target_url
+from src.server.services.scoring import SemanticScoringTimeout, score_payload_with_timeout
 
 
 def slow_semantic_payload(_payload):
@@ -54,7 +54,7 @@ class GatewayPureTests(unittest.TestCase):
     def test_semantic_scoring_timeout_stops_slow_worker(self):
         started = time.monotonic()
         with self.assertRaises(SemanticScoringTimeout):
-            score_semantic_payload_with_timeout({}, timeout_seconds=0.05, scorer=slow_semantic_payload)
+            score_payload_with_timeout({}, timeout_seconds=0.05, scorer=slow_semantic_payload)
         self.assertLess(time.monotonic() - started, 1.0)
 
 
@@ -93,11 +93,13 @@ class FakeUpstreamHandler(BaseHTTPRequestHandler):
 class GatewayServerTests(unittest.TestCase):
     def setUp(self):
         try:
-            self.upstream = start_server(FakeUpstreamHandler)
-            self.gateway = start_server(
-                SemanticScoreHandler,
-                upstream_api_url=server_url(self.upstream),
-                upstream_timeout=5.0,
+            self.upstream = start_http_server(FakeUpstreamHandler)
+            self.gateway = start_gateway(
+                ServerSettings(
+                    port=free_port(),
+                    upstream_api_url=server_url(self.upstream),
+                    upstream_timeout=5.0,
+                )
             )
         except PermissionError as exc:
             if getattr(exc, "errno", None) == 1:
@@ -106,19 +108,19 @@ class GatewayServerTests(unittest.TestCase):
 
     def tearDown(self):
         if hasattr(self, "gateway"):
-            stop_server(self.gateway)
+            stop_gateway(self.gateway)
         if hasattr(self, "upstream"):
-            stop_server(self.upstream)
+            stop_http_server(self.upstream)
 
     def test_gateway_health_reports_semantic_and_upstream(self):
-        payload = get_json(f"{server_url(self.gateway)}/gateway/health")
+        payload = get_json(f"{self.gateway.url}/gateway/health")
         self.assertEqual(payload["status"], "ok")
         self.assertTrue(payload["semantic"])
         self.assertEqual(payload["upstreamApiUrl"], server_url(self.upstream))
 
     def test_scores_latex_candidates_locally(self):
         request = urllib.request.Request(
-            f"{server_url(self.gateway)}/score-latex-candidates",
+            f"{self.gateway.url}/score-latex-candidates",
             data=json.dumps({
                 "problemLatex": r"2 x + 3 = 11",
                 "candidateGroups": [{
@@ -134,16 +136,18 @@ class GatewayServerTests(unittest.TestCase):
         self.assertEqual(payload["candidateScores"][0]["bestLatex"], r"2 x = 8")
 
     def test_semantic_timeout_returns_gateway_error(self):
-        stop_server(self.gateway)
-        self.gateway = start_server(
-            SemanticScoreHandler,
-            upstream_api_url=server_url(self.upstream),
-            upstream_timeout=5.0,
-            semantic_timeout=0.05,
+        stop_gateway(self.gateway)
+        self.gateway = start_gateway(
+            ServerSettings(
+                port=free_port(),
+                upstream_api_url=server_url(self.upstream),
+                upstream_timeout=5.0,
+                semantic_timeout=0.05,
+            ),
             semantic_scorer=slow_semantic_payload,
         )
         request = urllib.request.Request(
-            f"{server_url(self.gateway)}/score-latex-candidates",
+            f"{self.gateway.url}/score-latex-candidates",
             data=json.dumps({"candidateGroups": []}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -156,7 +160,7 @@ class GatewayServerTests(unittest.TestCase):
 
     def test_proxies_recognition_requests_to_upstream(self):
         request = urllib.request.Request(
-            f"{server_url(self.gateway)}/recognize?model=comer&timeout_seconds=1",
+            f"{self.gateway.url}/recognize?model=comer&timeout_seconds=1",
             data=b"fake-image-bytes",
             headers={"Content-Type": "image/png"},
             method="POST",
@@ -168,22 +172,63 @@ class GatewayServerTests(unittest.TestCase):
         self.assertEqual(payload["top"]["latex"], "x = 4")
 
     def test_proxies_health_requests_to_upstream(self):
-        payload = get_json(f"{server_url(self.gateway)}/health?model=comer")
+        payload = get_json(f"{self.gateway.url}/health?model=comer")
         self.assertEqual(payload["path"], "/health?model=comer")
         self.assertEqual(payload["status"], "ok")
 
 
-def start_server(handler, **attrs):
+class GatewayHandle:
+    def __init__(self, server: uvicorn.Server, thread: threading.Thread, url: str):
+        self.server = server
+        self.thread = thread
+        self.url = url
+
+
+def start_gateway(settings: ServerSettings, **app_kwargs) -> GatewayHandle:
+    app = create_app(settings, **app_kwargs)
+    config = uvicorn.Config(
+        app,
+        host=settings.host,
+        port=settings.port,
+        log_level="warning",
+        access_log=False,
+        lifespan="off",
+    )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    handle = GatewayHandle(server, thread, f"http://{settings.host}:{settings.port}")
+    wait_for_gateway(handle)
+    return handle
+
+
+def stop_gateway(handle: GatewayHandle):
+    handle.server.should_exit = True
+    handle.thread.join(timeout=5)
+
+
+def wait_for_gateway(handle: GatewayHandle):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not handle.thread.is_alive():
+            raise RuntimeError("gateway thread exited before startup")
+        try:
+            get_json(f"{handle.url}/gateway/health")
+            return
+        except Exception:
+            time.sleep(0.05)
+    raise RuntimeError("gateway did not start")
+
+
+def start_http_server(handler):
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    for key, value in attrs.items():
-        setattr(server, key, value)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     server._thread = thread
     return server
 
 
-def stop_server(server):
+def stop_http_server(server):
     server.shutdown()
     server.server_close()
     server._thread.join(timeout=2)
@@ -192,6 +237,12 @@ def stop_server(server):
 def server_url(server):
     host, port = server.server_address
     return f"http://{host}:{port}"
+
+
+def free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def get_json(url):

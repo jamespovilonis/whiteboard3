@@ -5,11 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5500",
+    "dev:all": "bash scripts/start-dev.sh",
+    "dev:stop": "bash scripts/stop-dev.sh",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0 --port 5500",
     "test:e2e": "playwright test",
+    "test:e2e:real": "REAL_OCR_E2E=1 VITE_API_URL=http://127.0.0.1:8010 playwright test e2e/real-reader-smoke.spec.js e2e/real-reader-matrix.spec.js --project=chromium --workers=1",
+    "test:e2e:real:smoke": "REAL_OCR_E2E=1 VITE_API_URL=http://127.0.0.1:8010 playwright test e2e/real-reader-smoke.spec.js --project=chromium --workers=1",
+    "test:e2e:real:matrix": "REAL_OCR_E2E=1 VITE_API_URL=http://127.0.0.1:8010 playwright test e2e/real-reader-matrix.spec.js --project=chromium --workers=1",
     "test:e2e:headed": "playwright test --headed",
-    "test:segmentation": "python3 -m unittest testing.test_line_segmentation_pipeline testing.test_latex_semantics && node --test testing/test_recognition_pipeline.mjs",
+    "test:segmentation": "python3 -m unittest testing.test_line_segmentation_pipeline testing.test_latex_semantics testing.test_equation_grader && node --test testing/test_recognition_pipeline.mjs",
     "test:segmentation:matrix": "python3 testing/run_segmentation_matrix.py"
   },
   "dependencies": {

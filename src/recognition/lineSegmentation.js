@@ -485,17 +485,30 @@ function fragmentsBaselineCover(proposed, baseline, options = {}) {
     if (pieces.length <= 1) continue;
     if (!childLinesCoverParent(base, pieces)) continue;
     if (pieces.length > maxSplitPieces) return true;
-    if (isStructuralMathCandidate(base)) return true;
-    if (!pieces.every(isEvidenceLineCandidate)) return true;
 
     const baseScore = evidenceAdjustedCandidateScore(base, evidenceScores, allCandidates);
     const pieceScore = pieces.reduce((sum, piece) => (
       sum + evidenceAdjustedCandidateScore(piece, evidenceScores, allCandidates)
     ), 0);
+    if (baselineUnreadWithStrongRecognizedPiece(base, pieces, evidenceScores)) {
+      continue;
+    }
+    if (isStructuralMathCandidate(base)) return true;
+    if (!pieces.every(isEvidenceLineCandidate)) return true;
+
     const requiredGain = minSplitImprovement + (pieces.length - 1) * 2;
     if (pieceScore - baseScore < requiredGain) return true;
   }
   return false;
+}
+
+function baselineUnreadWithStrongRecognizedPiece(base, pieces, evidenceScores) {
+  const baseEvidence = Number(evidenceScores.get(base.candidateId) || 0);
+  if (baseEvidence > -20) return false;
+  return (pieces || []).some((piece) => {
+    const evidence = Number(evidenceScores.get(piece.candidateId) || 0);
+    return evidence >= 4 && isEvidenceLineCandidate(piece);
+  });
 }
 
 function coalescesBaselineCover(proposed, baseline, options = {}) {
