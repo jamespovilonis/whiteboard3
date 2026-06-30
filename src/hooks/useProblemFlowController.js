@@ -230,6 +230,10 @@ function shouldKeepRecognitionAttached(problem) {
   return !['complete', 'error', 'empty'].includes(problem.recognition?.status);
 }
 
+export function shouldRunRecognitionForProblem(problem) {
+  return shouldKeepRecognitionAttached(problem);
+}
+
 function maybeEnqueueRecognitionAudit({
   snapshot,
   inputSignature,

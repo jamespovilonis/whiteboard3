@@ -24,9 +24,6 @@ export default function ModelShell({
     });
   }, [response.latex]);
   const problemStatus = problemStatusDisplay(activeProblem, response);
-  const submittedRecognitionResults = useMemo(() => (
-    recognitionResults.filter((entry) => entry.problemStatus === 'submitted')
-  ), [recognitionResults]);
 
   useEffect(() => {
     return () => {
@@ -101,15 +98,13 @@ export default function ModelShell({
                 >
                   {problemStatus.text}
                 </p>
-                <div
-                  className="model-shell-equation"
-                  dangerouslySetInnerHTML={{ __html: equationHtml }}
-                />
+                {activeProblem?.status !== 'submitted' && (
+                  <div
+                    className="model-shell-equation"
+                    dangerouslySetInnerHTML={{ __html: equationHtml }}
+                  />
+                )}
               </div>
-
-              {submittedRecognitionResults.length > 0 && (
-                <RecognitionResults results={submittedRecognitionResults} />
-              )}
             </>
           )}
 
@@ -459,6 +454,10 @@ function RecognitionResult({ entry }) {
         </ol>
       )}
 
+      {status === 'complete' && result?.grading && (
+        <GradingVerdict grading={result.grading} />
+      )}
+
       {status === 'complete' && result && (
         <RecognitionEvidence result={result} />
       )}
@@ -473,6 +472,30 @@ function RecognitionResult({ entry }) {
 
       {status === 'empty' && (
         <p className="recognition-message">No answer strokes.</p>
+      )}
+    </div>
+  );
+}
+
+function GradingVerdict({ grading }) {
+  const gradingStatus = grading.status || (grading.failed ? 'failed' : 'complete');
+  const problemStatus = grading.result?.problemStatus || (gradingStatus === 'pending' ? 'pending' : '');
+  const foundSolutions = grading.result?.foundSolutions || [];
+  const missingSolutions = grading.result?.missingSolutions || [];
+
+  if (!problemStatus && gradingStatus !== 'failed') return null;
+
+  return (
+    <div className="recognition-grading" data-status={problemStatus || gradingStatus}>
+      <span>Work</span>
+      <span>{gradingDecisionLabel(problemStatus, gradingStatus)}</span>
+      {(foundSolutions.length > 0 || missingSolutions.length > 0) && (
+        <small>
+          {gradingSolutionSummary(foundSolutions, missingSolutions)}
+        </small>
+      )}
+      {grading.failed && (
+        <small>{grading.error || 'Grading failed.'}</small>
       )}
     </div>
   );
@@ -656,6 +679,13 @@ function gradingLineDetail(step = {}) {
     parts.push(`candidate ${Number(step.selectedCandidateIndex) + 1}`);
   }
   return parts.join(' | ') || 'no solution match';
+}
+
+function gradingSolutionSummary(foundSolutions = [], missingSolutions = []) {
+  const parts = [];
+  if (foundSolutions.length) parts.push(`found ${foundSolutions.join(', ')}`);
+  if (missingSolutions.length) parts.push(`missing ${missingSolutions.join(', ')}`);
+  return parts.join(' | ');
 }
 
 function bboxLabel(bbox) {

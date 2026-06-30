@@ -51,7 +51,17 @@ export function getActiveModelResponse(flow) {
     };
   }
 
-  return getActiveProblem(flow)?.modelResponse || {
+  const activeProblem = getActiveProblem(flow);
+  if (activeProblem?.status === 'submitted') {
+    return {
+      before: submittedProblemStatusLabel(activeProblem),
+      latex: '',
+      after: '',
+      statusOnly: true
+    };
+  }
+
+  return activeProblem?.modelResponse || {
     before: 'All done.',
     latex: '\\checkmark',
     after: 'You have submitted every equation.'
@@ -134,14 +144,6 @@ export function submitActiveProblem(flow, viewportWidth) {
 export function requestNextProblem(flow, viewportWidth) {
   let workingFlow = flow;
   let activeProblem = getActiveProblem(workingFlow);
-  if (activeProblem?.status === 'solving' && isProblemReadyForNext(activeProblem)) {
-    workingFlow = updateProblem(workingFlow, activeProblem.id, (problem) => ({
-      ...problem,
-      status: 'submitted',
-      answerBoxFrozen: true
-    }));
-    activeProblem = getActiveProblem(workingFlow);
-  }
   if (!activeProblem || activeProblem.status !== 'submitted') {
     return { flow: workingFlow, targetViewport: null };
   }
@@ -326,6 +328,26 @@ export function isProblemReadyForNext(problem) {
   if (!problem) return false;
   if (problem.status === 'submitted' && ['complete', 'empty', 'error'].includes(problem.recognition?.status)) return true;
   return false;
+}
+
+export function submittedProblemStatusLabel(problem) {
+  const recognition = problem?.recognition || {};
+  const grading = recognition.result?.grading || null;
+  const problemStatus = grading?.result?.problemStatus || '';
+  if (problemStatus === 'correct') return 'Correct';
+
+  if (recognition.status === 'empty') return 'No answer submitted.';
+  if (recognition.status === 'error') return 'Unable to analyze.';
+  if (recognition.status !== 'complete') return 'Analyzing';
+
+  if (!grading || grading.status === 'pending') return 'Analyzing';
+  if (grading.failed || grading.status === 'failed') return 'Unable to grade.';
+
+  if (!problemStatus) return 'Analyzing';
+  return problemStatus
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 export function viewportForProblemPosition(boardPosition, viewportWidth) {

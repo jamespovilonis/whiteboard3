@@ -27,6 +27,15 @@ export function problemStatusDisplay(problem, response = {}) {
     };
   }
 
+  const grading = problem.recognition?.result?.grading || null;
+  const status = grading?.result?.problemStatus || '';
+  if (status === 'correct') {
+    return {
+      status,
+      text: decisionLabel(status)
+    };
+  }
+
   if (!recognitionIsFinal(problem.recognition)) {
     return {
       status: 'analyzing',
@@ -34,8 +43,6 @@ export function problemStatusDisplay(problem, response = {}) {
     };
   }
 
-  const grading = problem.recognition?.result?.grading || null;
-  const status = grading?.result?.problemStatus || '';
   if (status === 'correct' || status === 'incorrect' || status === 'incomplete') {
     return {
       status,

@@ -13,7 +13,11 @@ import { getRecognitionApiUrl, normalizeConfiguredApiUrl } from '../src/recognit
 import { problemStatusDisplay } from '../src/components/problemStatusDisplay.js';
 import { IncrementalRecognitionScheduler } from '../src/recognition/incrementalRecognitionScheduler.js';
 import { translateDetections } from '../src/recognition/segmentationClient.js';
-import { previousLatexForSubmission, summarizeRecognitionResult } from '../src/hooks/useProblemFlowController.js';
+import {
+  previousLatexForSubmission,
+  shouldRunRecognitionForProblem,
+  summarizeRecognitionResult
+} from '../src/hooks/useProblemFlowController.js';
 import { recognizeStudentWriting, shouldUseSemanticLatex } from '../src/recognition/studentWritingPipeline.js';
 import {
   scoreRecognitionEvidence,
@@ -27,6 +31,7 @@ import {
   applyProblemRecognitionResult,
   createInitialProblemFlow,
   getActiveProblem,
+  getActiveModelResponse,
   isProblemReadyForNext,
   reconcileProblemFlowWithStrokes,
   requestNextProblem,
@@ -4284,6 +4289,12 @@ test('next problem request waits for explicit submit after realtime read', () =>
   });
 
   assert.equal(isProblemReadyForNext(getActiveProblem(read)), false);
+  const beforeSubmitNext = requestNextProblem(read, 1200).flow;
+  assert.equal(beforeSubmitNext.problems[0].status, 'solving');
+  assert.equal(beforeSubmitNext.activeProblemId, active.id);
+  assert.equal(beforeSubmitNext.awaitingEquation, false);
+  assert.equal(beforeSubmitNext.completedCount, 0);
+
   const submitted = submitActiveProblem(read, 1200).flow;
   assert.equal(isProblemReadyForNext(getActiveProblem(submitted)), true);
   const next = requestNextProblem(submitted, 1200).flow;
@@ -4468,6 +4479,193 @@ test('problem status display waits for final OCR before showing incomplete gradi
     status: 'incomplete',
     text: 'Incomplete'
   });
+});
+
+test('submitted work keeps recognition alive until grading is complete', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const withAnswer = {
+    ...initial,
+    problems: initial.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            answerStrokeIds: ['a'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 20, yMax: 20 },
+            recognition: {
+              ...problem.recognition,
+              status: 'pending'
+            }
+          }
+        : problem
+    ))
+  };
+
+  const submitted = submitActiveProblem(withAnswer, 1200).flow;
+  const submittedProblem = submitted.problems.find((problem) => problem.id === active.id);
+
+  assert.equal(shouldRunRecognitionForProblem(submittedProblem), true);
+
+  const completed = applyProblemRecognitionProgress(submitted, active.id, {
+    status: 'complete',
+    result: {
+      latex: 'x = 4',
+      latexLines: ['x = 4'],
+      lines: [],
+      candidatePredictions: [],
+      grading: {
+        status: 'complete',
+        failed: false,
+        result: {
+          problemStatus: 'correct'
+        }
+      },
+      realtime: {
+        allFinal: true,
+        components: []
+      }
+    }
+  });
+  const completedProblem = completed.problems.find((problem) => problem.id === active.id);
+
+  assert.equal(completedProblem.recognition.result.grading.result.problemStatus, 'correct');
+  assert.equal(shouldRunRecognitionForProblem(completedProblem), false);
+});
+
+test('model response reveals grading status only after submit', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const withAnswer = {
+    ...initial,
+    problems: initial.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            answerStrokeIds: ['a'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 20, yMax: 20 }
+          }
+        : problem
+    ))
+  };
+  const readWhileSolving = applyProblemRecognitionProgress(withAnswer, active.id, {
+    status: 'complete',
+    result: {
+      latex: 'x = 4',
+      latexLines: ['x = 4'],
+      lines: [],
+      candidatePredictions: [],
+      grading: {
+        status: 'complete',
+        failed: false,
+        result: {
+          problemStatus: 'correct'
+        }
+      },
+      realtime: {
+        allFinal: true,
+        components: []
+      }
+    }
+  });
+
+  assert.equal(getActiveModelResponse(readWhileSolving).before, 'Solve the equation.');
+
+  const submittedAfterRead = submitActiveProblem(readWhileSolving, 1200).flow;
+  const submittedAfterReadResponse = getActiveModelResponse(submittedAfterRead);
+  assert.equal(submittedAfterReadResponse.before, 'Correct');
+  assert.equal(submittedAfterReadResponse.latex, '');
+  assert.equal(submittedAfterReadResponse.after, '');
+  assert.equal(submittedAfterReadResponse.statusOnly, true);
+
+  const pendingBeforeSubmit = applyProblemRecognitionProgress(withAnswer, active.id, {
+    status: 'pending',
+    result: null
+  });
+  const submittedBeforeRead = submitActiveProblem(pendingBeforeSubmit, 1200).flow;
+  const submittedBeforeReadResponse = getActiveModelResponse(submittedBeforeRead);
+  assert.equal(submittedBeforeReadResponse.before, 'Analyzing');
+  assert.equal(submittedBeforeReadResponse.statusOnly, true);
+
+  const completedAfterSubmit = applyProblemRecognitionProgress(submittedBeforeRead, active.id, {
+    status: 'complete',
+    result: {
+      latex: 'x = 3',
+      latexLines: ['x = 3'],
+      lines: [],
+      candidatePredictions: [],
+      grading: {
+        status: 'complete',
+        failed: false,
+        result: {
+          problemStatus: 'incorrect'
+        }
+      },
+      realtime: {
+        allFinal: true,
+        components: []
+      }
+    }
+  });
+
+  assert.equal(getActiveModelResponse(completedAfterSubmit).before, 'Incorrect');
+});
+
+test('submitted model response shows correct before all recognition is complete', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const withAnswer = {
+    ...initial,
+    problems: initial.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            answerStrokeIds: ['a', 'b'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 20, yMax: 60 }
+          }
+        : problem
+    ))
+  };
+  const submitted = submitActiveProblem(withAnswer, 1200).flow;
+  const partiallyCorrect = applyProblemRecognitionProgress(submitted, active.id, {
+    status: 'pending',
+    result: {
+      latex: 'x = 4',
+      latexLines: ['x = 4'],
+      lines: [],
+      candidatePredictions: [],
+      grading: {
+        status: 'complete',
+        failed: false,
+        result: {
+          problemStatus: 'correct',
+          foundSolutions: ['4'],
+          missingSolutions: []
+        }
+      },
+      realtime: {
+        allFinal: false,
+        components: [{
+          signature: 'a@0,0,20,20',
+          status: 'final',
+          contested: false
+        }, {
+          signature: 'b@0,40,20,60',
+          status: 'running',
+          contested: false
+        }]
+      }
+    }
+  });
+
+  assert.equal(getActiveModelResponse(partiallyCorrect).before, 'Correct');
+  assert.equal(getActiveModelResponse(partiallyCorrect).statusOnly, true);
+  assert.deepEqual(
+    problemStatusDisplay(getActiveProblem(partiallyCorrect), getActiveModelResponse(partiallyCorrect)),
+    {
+      status: 'correct',
+      text: 'Correct'
+    }
+  );
 });
 
 test('recognition summary preserves debug crop state and final line order', () => {
