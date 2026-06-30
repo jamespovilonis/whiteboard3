@@ -50,9 +50,11 @@ test('renders user latex and sends it as recognition semantic context', async ({
     call.postDataJson?.context?.problemLatex === CUSTOM_LATEX
   ))).toBe(true);
 
+  await expect(page.getByTestId('next-problem')).toBeDisabled();
+  await page.getByTestId('submit-answer').click();
   const afterSubmit = await getE2ESnapshot(page);
   expect(afterSubmit.activeProblem.id).toBe('problem-1');
-  expect(afterSubmit.activeProblem.status).toBe('solving');
+  expect(afterSubmit.activeProblem.status).toBe('submitted');
   expect(afterSubmit.problemFlow.awaitingEquation).toBe(false);
   await expect(page.getByTestId('latex-equation-input')).toHaveCount(0);
 

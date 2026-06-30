@@ -3,7 +3,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
+import {
+  buildRecognitionAuditPayload,
+  deterministicSample,
+  getRecognitionAuditDecision,
+  hasCorrectAnswerWithInvalidStep
+} from '../src/recognition/auditClient.js';
 import { getRecognitionApiUrl, normalizeConfiguredApiUrl } from '../src/recognition/config.js';
+import { problemStatusDisplay } from '../src/components/problemStatusDisplay.js';
 import { IncrementalRecognitionScheduler } from '../src/recognition/incrementalRecognitionScheduler.js';
 import { translateDetections } from '../src/recognition/segmentationClient.js';
 import { previousLatexForSubmission, summarizeRecognitionResult } from '../src/hooks/useProblemFlowController.js';
@@ -513,6 +520,115 @@ test('student writing pipeline skips CoMER for contained single-stroke alternati
   assert.ok(noSkipCalls.length > calls.length);
 });
 
+test('student writing pipeline defers larger boxes covered by valid deterministic lines', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('a', 0, 0, 50, 30),
+    stroke('b', 0, 80, 50, 110),
+  ];
+  const calls = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 60, yMax: 120 },
+    problemLatex: 'x = 1',
+    semanticScoring: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async (image) => {
+      calls.push(image.candidateId);
+      if (image.candidateId === 'parent_a|b') {
+        throw new Error('covered parent should not hit initial OCR');
+      }
+      return {
+        latex: 'x = 1',
+        top: { latex: 'x = 1', score: 2 },
+        candidates: [{ latex: 'x = 1', score: 2 }],
+        elapsedSeconds: 0.04
+      };
+    }
+  });
+
+  assert.deepEqual(calls, ['loose_a', 'loose_b']);
+  const parentEntry = result.candidatePredictions.find((entry) => entry.candidateId === 'parent_a|b');
+  assert.ok(parentEntry);
+  assert.equal(parentEntry.skippedRecognition, true);
+  assert.equal(parentEntry.image, null);
+  assert.equal(parentEntry.prediction.skipReason, 'covered-by-valid-deterministic-line');
+  assert.ok(result.candidatePredictions.length > calls.length);
+});
+
+test('student writing pipeline OCRs larger box when deterministic children are weak', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('a', 0, 0, 50, 30),
+    stroke('b', 0, 80, 50, 110),
+  ];
+  const calls = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 60, yMax: 120 },
+    problemLatex: 'x = 1',
+    semanticScoring: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async (image) => {
+      calls.push(image.candidateId);
+      if (image.candidateId === 'parent_a|b') {
+        return {
+          latex: 'x = 1',
+          top: { latex: 'x = 1', score: 2 },
+          candidates: [{ latex: 'x = 1', score: 2 }],
+          elapsedSeconds: 0.04
+        };
+      }
+      return {
+        latex: '',
+        top: null,
+        candidates: [],
+        failed: true,
+        elapsedSeconds: 0.02
+      };
+    }
+  });
+
+  assert.deepEqual(calls, ['loose_a', 'loose_b', 'parent_a|b']);
+  assert.equal(result.lines.length, 1);
+  assert.equal(result.lines[0].candidateId, 'parent_a|b');
+  assert.equal(result.latex, 'x = 1');
+});
+
+test('covered parent deferral can be disabled for eager alternative OCR', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('a', 0, 0, 50, 30),
+    stroke('b', 0, 80, 50, 110),
+  ];
+  const calls = [];
+
+  await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 60, yMax: 120 },
+    problemLatex: 'x = 1',
+    semanticScoring: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    deferCoveredParentRecognition: false,
+    recognizeLine: async (image) => {
+      calls.push(image.candidateId);
+      return {
+        latex: 'x = 1',
+        top: { latex: 'x = 1', score: 2 },
+        candidates: [{ latex: 'x = 1', score: 2 }],
+        elapsedSeconds: 0.04
+      };
+    }
+  });
+
+  assert.ok(calls.includes('parent_a|b'));
+});
+
 test('student writing pipeline defers contained nonstructural alternatives', async () => {
   installFakeCanvas();
   const strokes = [
@@ -755,6 +871,7 @@ test('pipeline debug timing covers selected and discarded candidates', async () 
     answerBox: { xMin: -5, yMin: -5, xMax: 60, yMax: 120 },
     problemLatex: 'x = 1',
     semanticScoring: true,
+    deferCoveredParentRecognition: false,
     retryRasterHeights: [],
     semanticRetryRasterHeights: [],
     recognizeLine: async (image) => {
@@ -4018,10 +4135,22 @@ test('submitting a custom problem freezes it without opening the next prompt', (
 
   assert.equal(submittedProblem.status, 'submitted');
   assert.equal(submittedProblem.answerBoxFrozen, true);
-  assert.equal(submittedProblem.recognition.status, 'idle');
+  assert.equal(submittedProblem.recognition.status, 'pending');
   assert.equal(submitted.activeProblemId, active.id);
   assert.equal(submitted.awaitingEquation, false);
   assert.equal(submitted.completedCount, 1);
+});
+
+test('submitting a blank custom problem marks it incomplete-ready', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
+
+  const submitted = submitActiveProblem(started, 1200).flow;
+  const submittedProblem = getActiveProblem(submitted);
+
+  assert.equal(submittedProblem.status, 'submitted');
+  assert.equal(submittedProblem.recognition.status, 'empty');
+  assert.equal(isProblemReadyForNext(submittedProblem), true);
 });
 
 test('submitted problem answer box ignores later strokes underneath it', () => {
@@ -4120,7 +4249,7 @@ test('answer box keeps horizontally aligned continuation rows with larger vertic
   assert.ok(problem.answerBox.yMax >= rows[3].canvasBbox.yMax);
 });
 
-test('next problem request finalizes a realtime-read solving problem', () => {
+test('next problem request waits for explicit submit after realtime read', () => {
   const initial = createInitialProblemFlow(1200);
   const started = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
   const active = getActiveProblem(started);
@@ -4154,8 +4283,10 @@ test('next problem request finalizes a realtime-read solving problem', () => {
     }
   });
 
-  assert.equal(isProblemReadyForNext(getActiveProblem(read)), true);
-  const next = requestNextProblem(read, 1200).flow;
+  assert.equal(isProblemReadyForNext(getActiveProblem(read)), false);
+  const submitted = submitActiveProblem(read, 1200).flow;
+  assert.equal(isProblemReadyForNext(getActiveProblem(submitted)), true);
+  const next = requestNextProblem(submitted, 1200).flow;
 
   assert.equal(next.problems[0].status, 'submitted');
   assert.equal(next.activeProblemId, null);
@@ -4196,7 +4327,8 @@ test('custom problem flow can render another user latex problem after realtime n
       }
     }
   });
-  const awaitingNextLatex = requestNextProblem(read, 1200).flow;
+  const submitted = submitActiveProblem(read, 1200).flow;
+  const awaitingNextLatex = requestNextProblem(submitted, 1200).flow;
   const secondStarted = startCustomProblem(awaitingNextLatex, '\\sqrt{x + 9} = 7', 1200);
   const secondProblem = getActiveProblem(secondStarted.flow);
 
@@ -4258,7 +4390,7 @@ test('submitted problem flow preserves recognition status and result', () => {
   const submittedProblem = submitted.problems.find((problem) => problem.id === active.id);
   assert.equal(submittedProblem.status, 'submitted');
   assert.equal(submittedProblem.answerBoxFrozen, true);
-  assert.equal(submittedProblem.recognition.status, 'idle');
+  assert.equal(submittedProblem.recognition.status, 'pending');
 
   const completed = applyProblemRecognitionResult(submitted, active.id, {
     latex: 'x = 4',
@@ -4275,6 +4407,67 @@ test('submitted problem flow preserves recognition status and result', () => {
     failed.problems.find((problem) => problem.id === active.id).recognition.error,
     'offline'
   );
+});
+
+test('problem status display waits for final OCR before showing incomplete grading', () => {
+  const provisionalIncomplete = {
+    status: 'submitted',
+    recognition: {
+      status: 'pending',
+      result: {
+        grading: {
+          result: {
+            problemStatus: 'incomplete'
+          }
+        },
+        realtime: {
+          allFinal: false,
+          components: [{
+            status: 'running',
+            contested: false
+          }]
+        }
+      }
+    }
+  };
+
+  assert.deepEqual(problemStatusDisplay(provisionalIncomplete), {
+    status: 'analyzing',
+    text: 'Analyzing'
+  });
+
+  const completeButNotFinal = {
+    ...provisionalIncomplete,
+    recognition: {
+      ...provisionalIncomplete.recognition,
+      status: 'complete'
+    }
+  };
+  assert.deepEqual(problemStatusDisplay(completeButNotFinal), {
+    status: 'analyzing',
+    text: 'Analyzing'
+  });
+
+  const finalIncomplete = {
+    ...completeButNotFinal,
+    recognition: {
+      ...completeButNotFinal.recognition,
+      result: {
+        ...completeButNotFinal.recognition.result,
+        realtime: {
+          allFinal: true,
+          components: [{
+            status: 'final',
+            contested: false
+          }]
+        }
+      }
+    }
+  };
+  assert.deepEqual(problemStatusDisplay(finalIncomplete), {
+    status: 'incomplete',
+    text: 'Incomplete'
+  });
 });
 
 test('recognition summary preserves debug crop state and final line order', () => {
@@ -4519,6 +4712,189 @@ test('JS buildLiveGradingResult and Python grade_equation_work agree on problem 
     );
   }
 });
+
+test('VLM audit decision catches non-correct grading statuses and unread OCR', () => {
+  const result = auditResult({
+    problemStatus: 'incomplete',
+    latexLines: [''],
+    lines: [auditLine({ latex: '', acceptedLatex: '', evidenceScore: 3 })]
+  });
+
+  const decision = getRecognitionAuditDecision(result, { inputSignature: 'sig-a' });
+
+  assert.equal(decision.shouldAudit, true);
+  assert.ok(decision.triggerReasons.includes('problem_status_incomplete'));
+  assert.ok(decision.triggerReasons.includes('unread_or_empty_line'));
+});
+
+test('VLM audit decision catches OCR failure, timeout, and low confidence', () => {
+  const result = auditResult({
+    problemStatus: 'correct',
+    lines: [
+      auditLine({ prediction: { failed: true, timedOut: false, top: { latex: 'x = 4', confidence: 0.9 } } }),
+      auditLine({ prediction: { failed: false, timedOut: true, top: { latex: 'x = 4', confidence: 0.9 } } }),
+      auditLine({ prediction: { failed: false, timedOut: false, top: { latex: 'x = 4', confidence: 0.3 } } }),
+      auditLine({ prediction: { failed: false, timedOut: false, top: { latex: 'x = 4', score: -0.5 } } }),
+      auditLine({ evidenceScore: -1.5 })
+    ]
+  });
+
+  const decision = getRecognitionAuditDecision(result, { inputSignature: 'sig-b' });
+
+  assert.equal(decision.shouldAudit, true);
+  assert.ok(decision.triggerReasons.includes('ocr_failure_or_timeout'));
+  assert.ok(decision.triggerReasons.includes('low_confidence'));
+});
+
+test('VLM audit decision catches correct answer set with invalid intermediate step', () => {
+  const grading = {
+    status: 'complete',
+    failed: false,
+    steps: [
+      { lineIndex: 0, studentLatex: '2x + 3 = 11', classification: 'valid_step', solutionCoverage: 'none', matchedSolutions: [] },
+      { lineIndex: 1, studentLatex: '2x = 9', classification: 'invalid_step', solutionCoverage: 'none', matchedSolutions: [] },
+      { lineIndex: 2, studentLatex: 'x = 4', classification: 'valid_step', solutionCoverage: 'full', matchedSolutions: ['4'] }
+    ],
+    result: {
+      problemStatus: 'correct',
+      foundSolutions: ['4'],
+      missingSolutions: []
+    }
+  };
+
+  assert.equal(hasCorrectAnswerWithInvalidStep(grading), true);
+
+  const decision = getRecognitionAuditDecision(auditResult({ grading }), { inputSignature: 'sig-c' });
+
+  assert.equal(decision.shouldAudit, true);
+  assert.ok(decision.triggerReasons.includes('correct_answer_with_invalid_step'));
+});
+
+test('VLM audit decision samples normal correct cases deterministically', () => {
+  const result = auditResult({ problemStatus: 'correct' });
+
+  assert.equal(
+    getRecognitionAuditDecision(result, { inputSignature: 'sample-key', sampleKey: 'sample-key', normalSampleRate: 1 }).shouldAudit,
+    true
+  );
+  assert.equal(
+    getRecognitionAuditDecision(result, { inputSignature: 'sample-key', sampleKey: 'sample-key', normalSampleRate: 0 }).shouldAudit,
+    false
+  );
+  assert.equal(
+    deterministicSample('fixed-key', 0.1),
+    deterministicSample('fixed-key', 0.1)
+  );
+});
+
+test('VLM audit payload removes embedded crop data URLs', () => {
+  const payload = buildRecognitionAuditPayload({
+    problem: {
+      id: 'problem-a',
+      latex: 'x + 1 = 5',
+      metadata: { source: 'test' },
+      problemBox: { xMin: 0, yMin: 0, xMax: 100, yMax: 100 },
+      answerBox: { xMin: 0, yMin: 100, xMax: 100, yMax: 200 }
+    },
+    result: auditResult({
+      lines: [{
+        ...auditLine(),
+        image: { dataUrl: 'data:image/png;base64,abc' },
+        contextualSemantic: { nested: { dataUrl: 'data:image/png;base64,hidden' } }
+      }],
+      candidatePredictions: [{
+        ...auditLine(),
+        image: { dataUrl: 'data:image/png;base64,abc' }
+      }]
+    }),
+    strokes: [{
+      id: 'stroke-a',
+      rawPoints: [{ x: 1, y: 2, pressure: 0.5 }],
+      outlinePoints: [{ x: 1, y: 2 }, { x: 4, y: 2 }, { x: 4, y: 6 }],
+      canvasBbox: { xMin: 1, yMin: 2, xMax: 4, yMax: 6 }
+    }],
+    inputSignature: 'sig-d',
+    triggerReasons: ['normal_sample']
+  });
+
+  assert.equal(payload.problemId, 'problem-a');
+  assert.equal(payload.strokes.length, 1);
+  assert.equal(payload.fastResult.lines[0].image, undefined);
+  assert.equal(JSON.stringify(payload).includes('data:image/png'), false);
+});
+
+function auditResult(options = {}) {
+  const grading = options.grading || {
+    status: 'complete',
+    failed: false,
+    steps: [
+      { lineIndex: 0, studentLatex: 'x = 4', classification: 'valid_step', solutionCoverage: 'full', matchedSolutions: ['4'] }
+    ],
+    result: {
+      problemStatus: options.problemStatus || 'correct',
+      foundSolutions: ['4'],
+      missingSolutions: []
+    },
+    problem: {
+      manifest: {
+        cardinality: 'finite',
+        exact_set: ['4'],
+        variable: 'x',
+        problem_raw: 'x + 1 = 5'
+      }
+    }
+  };
+  const lines = options.lines || [auditLine()];
+  return {
+    latex: options.latex || lines.map((line) => line.acceptedLatex || line.latex || '').join(' \\\\ '),
+    latexLines: options.latexLines || lines.map((line) => line.acceptedLatex || line.latex || ''),
+    lines,
+    candidatePredictions: options.candidatePredictions || lines,
+    grading,
+    segmentation: {
+      selected: lines.map((line) => ({
+        candidateId: line.candidateId,
+        profiles: line.profiles,
+        strokeIds: line.strokeIds,
+        tightBbox: line.tightBbox
+      })),
+      candidates: [],
+      partitions: {},
+      parentCandidateId: null,
+      ocrSelectedCandidateIds: lines.map((line) => line.candidateId)
+    },
+    realtime: {
+      allFinal: true,
+      inputSignature: 'audit-test-signature'
+    }
+  };
+}
+
+function auditLine(options = {}) {
+  const latex = options.latex ?? 'x = 4';
+  const acceptedLatex = options.acceptedLatex ?? latex;
+  return {
+    lineIndex: options.lineIndex ?? 0,
+    candidateId: options.candidateId || 'audit-line',
+    selected: true,
+    profiles: ['row-line'],
+    strokeIds: ['stroke-a'],
+    tightBbox: { xMin: 0, yMin: 0, xMax: 100, yMax: 40 },
+    latex,
+    acceptedLatex,
+    ocrLatex: latex,
+    candidates: options.candidates || [{ latex, score: 2, confidence: 0.9 }],
+    prediction: options.prediction || {
+      latex,
+      top: { latex, score: 2, confidence: 0.9 },
+      candidates: [{ latex, score: 2, confidence: 0.9 }],
+      failed: false,
+      timedOut: false
+    },
+    evidenceScore: options.evidenceScore ?? 3,
+    timing: { submitToFinalPredictionSeconds: 0.1 }
+  };
+}
 
 function candidate(candidateId, profiles, strokeIds, xMin, yMin, xMax, yMax) {
   return {

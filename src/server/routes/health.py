@@ -15,5 +15,9 @@ def gateway_health(request: Request) -> dict[str, object]:
         "status": "ok",
         "semantic": True,
         "grading": True,
+        "audit": bool(settings.audit_enabled),
+        "auditLogDir": settings.audit_log_dir,
+        "vlmAuditBaseUrl": settings.vlm_audit_base_url,
+        "vlmAuditModel": settings.vlm_audit_model,
         "upstreamApiUrl": settings.upstream_api_url,
     }

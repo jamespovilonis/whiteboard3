@@ -9,7 +9,7 @@ import {
   waitForE2EBridge
 } from './helpers/playback.js';
 
-test('mocked recognition grades live after realtime debounce and keeps submit disabled', async ({ page }) => {
+test('mocked recognition grades live and reveals the result after submit', async ({ page }) => {
   const fixture = getEquationProblemFixture('algebra_prompt_context');
   await installProblemSourceRoute(page, [fixture.name]);
   await page.clock.install({ time: new Date('2026-06-28T12:00:00.000Z') });
@@ -34,7 +34,8 @@ test('mocked recognition grades live after realtime debounce and keeps submit di
 
   expect(afterWriting.strokes).toHaveLength(scenario.strokes.length);
   expect(mockRecognition.calls).toHaveLength(0);
-  await expect(page.getByTestId('submit-answer')).toBeDisabled();
+  await expect(page.getByTestId('submit-answer')).toBeEnabled();
+  await expect(page.getByTestId('next-problem')).toBeDisabled();
 
   await page.clock.fastForward(650);
   await page.waitForFunction(() => (
@@ -67,7 +68,7 @@ test('mocked recognition grades live after realtime debounce and keeps submit di
   const completed = afterRecognition.events.findIndex((event) => event.type === 'recognition-complete');
   expect(started).toBeGreaterThanOrEqual(0);
   expect(completed).toBeGreaterThan(started);
-  await expect(page.getByTestId('next-problem')).toBeEnabled();
+  await expect(page.getByTestId('next-problem')).toBeDisabled();
 
   const completedResult = afterRecognition.recognitionResults.find((entry) => (
     entry.recognition?.status === 'complete'
@@ -87,8 +88,13 @@ test('mocked recognition grades live after realtime debounce and keeps submit di
     expect(line.grading?.classification).toBe('valid_step');
   }
 
+  await expect(page.getByTestId('submit-answer')).toBeEnabled();
+  await page.getByTestId('submit-answer').click();
   await expect(page.getByTestId('submit-answer')).toBeDisabled();
-  expect(mockRecognition.endpoints()).not.toContain('/grade-equation-work');
+  await expect(page.getByTestId('next-problem')).toBeEnabled();
+  const afterSubmit = await getE2ESnapshot(page);
+  expect(afterSubmit.activeProblem.status).toBe('submitted');
+  expect(mockRecognition.endpoints()).toContain('/grade-equation-work');
   expect(afterRecognition.activeProblem.status).toBe('solving');
 });
 

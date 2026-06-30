@@ -23,7 +23,8 @@ export default function App() {
   const [penColor, setPenColor] = useState(DEFAULT_PEN_COLOR);
   const [sliderValue, setSliderValue] = useState(4);
   const [isPanning, setIsPanning] = useState(false);
-  const [debugBoxesEnabled, setDebugBoxesEnabled] = useState(true);
+  const [debugBoxesEnabled, setDebugBoxesEnabled] = useState(false);
+  const [auditByProblemId, setAuditByProblemId] = useState({});
   const engineRef = useRef(null);
   const e2eEventsRef = useRef([]);
 
@@ -45,6 +46,9 @@ export default function App() {
 
   const handleRecognitionEvent = useCallback((type, detail) => {
     recordE2EEvent(e2eEventsRef, type, detail);
+    if (type.startsWith('recognition-audit-')) {
+      setAuditByProblemId((current) => updateAuditTracker(current, type, detail));
+    }
   }, []);
 
   const {
@@ -158,9 +162,11 @@ export default function App() {
 
       <ModelShell
         response={modelResponse}
+        activeProblem={activeProblem}
         recognitionResults={recognitionResults}
+        auditByProblemId={auditByProblemId}
         debugMode={debugBoxesEnabled || E2E_TEST_ENABLED}
-        submitDisabled={true}
+        submitDisabled={!isProblemSubmittable(activeProblem)}
         nextProblemDisabled={!isProblemReadyForNext(activeProblem)}
         onSubmitAnswer={handleSubmitAnswer}
         onNextProblem={goToNextProblem}
@@ -180,5 +186,55 @@ export default function App() {
         Reset window
       </button>
     </main>
+  );
+}
+
+function updateAuditTracker(current, type, detail = {}) {
+  const problemId = detail.problemId || null;
+  if (!problemId) return current;
+  const previous = current[problemId] || {};
+  const next = {
+    ...previous,
+    ...detail,
+    lastEvent: type,
+    updatedAt: Date.now()
+  };
+
+  if (type === 'recognition-audit-skipped') {
+    next.status = 'skipped';
+    next.label = 'Audit not selected';
+  } else if (type === 'recognition-audit-queued') {
+    next.status = detail.queued === false ? 'disabled' : 'queued';
+    next.label = detail.queued === false ? 'Audit disabled' : 'Audit queued';
+  } else if (type === 'recognition-audit-disabled') {
+    next.status = 'disabled';
+    next.label = 'Audit disabled';
+  } else if (type === 'recognition-audit-status') {
+    next.status = detail.status || previous.status || 'processing';
+    next.label = detail.status === 'logged' ? 'Log entered' : auditStatusLabel(detail.status);
+  } else if (type === 'recognition-audit-error') {
+    next.status = 'error';
+    next.label = 'Audit error';
+  }
+
+  return {
+    ...current,
+    [problemId]: next
+  };
+}
+
+function auditStatusLabel(status) {
+  if (status === 'queued') return 'Audit queued';
+  if (status === 'processing') return 'Audit processing';
+  if (status === 'logged') return 'Log entered';
+  if (status === 'disabled') return 'Audit disabled';
+  if (status === 'unknown') return 'Audit status unknown';
+  return 'Audit processing';
+}
+
+function isProblemSubmittable(problem) {
+  return Boolean(
+    problem &&
+    problem.status === 'solving'
   );
 }

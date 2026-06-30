@@ -46,6 +46,7 @@ export async function recognizeStudentWriting(options = {}) {
     recognizeAlternatives = true,
     skipSingleStrokeAlternatives = true,
     stagedAlternativeRecognition = true,
+    deferCoveredParentRecognition = true,
     initialRecognitionConcurrency = 1,
     signal = null,
     recognizeLine = recognizeLineImage,
@@ -93,26 +94,26 @@ export async function recognizeStudentWriting(options = {}) {
     skipSingleStrokeAlternatives: Boolean(skipSingleStrokeAlternatives),
     stagedAlternativeRecognition: Boolean(stagedAlternativeRecognition),
     candidates: candidatesToRecognize,
-    baselineCandidateIds: new Set((baselineCover || []).map((candidate) => candidate.candidateId))
+    baselineCandidateIds: new Set((baselineCover || []).map((candidate) => candidate.candidateId)),
+    coveredByValidDeterministicLineCandidateIds: new Set()
   };
-  const candidatePredictions = await mapWithConcurrency(
-    candidatesToRecognize,
+  const candidatePredictions = await recognizeInitialCandidates(candidatesToRecognize, {
+    baselineCover,
+    apiUrl,
+    model,
+    timeoutMs,
+    problemLatex,
+    previousLatex,
+    rasterPadding,
+    initialRasterHeight,
+    initialRasterMinCssHeight,
+    pipelineStartedAt,
+    initialRecognitionSkipContext,
+    deferCoveredParentRecognition: Boolean(deferCoveredParentRecognition),
     initialRecognitionConcurrency,
-    (candidate) => recognizeInitialCandidate(candidate, {
-      apiUrl,
-      model,
-      timeoutMs,
-      problemLatex,
-      previousLatex,
-      rasterPadding,
-      initialRasterHeight,
-      initialRasterMinCssHeight,
-      pipelineStartedAt,
-      initialRecognitionSkipContext,
-      signal,
-      recognizeLine
-    })
-  );
+    signal,
+    recognizeLine
+  });
   throwIfAborted(signal);
 
   const evidenceByCandidateId = new Map(
@@ -587,6 +588,87 @@ export async function recognizeStudentWriting(options = {}) {
       totalElapsedSeconds: secondsSince(pipelineStartedAt)
     }
   };
+}
+
+async function recognizeInitialCandidates(candidates, {
+  baselineCover,
+  apiUrl,
+  model,
+  timeoutMs,
+  problemLatex,
+  previousLatex,
+  rasterPadding,
+  initialRasterHeight,
+  initialRasterMinCssHeight,
+  pipelineStartedAt,
+  initialRecognitionSkipContext,
+  deferCoveredParentRecognition,
+  initialRecognitionConcurrency,
+  signal,
+  recognizeLine
+}) {
+  const candidateList = Array.isArray(candidates) ? candidates : [];
+  const recognizeCandidate = (candidate) => recognizeInitialCandidate(candidate, {
+    apiUrl,
+    model,
+    timeoutMs,
+    problemLatex,
+    previousLatex,
+    rasterPadding,
+    initialRasterHeight,
+    initialRasterMinCssHeight,
+    pipelineStartedAt,
+    initialRecognitionSkipContext,
+    signal,
+    recognizeLine
+  });
+
+  if (!deferCoveredParentRecognition || candidateList.length === 0) {
+    return mapWithConcurrency(
+      candidateList,
+      initialRecognitionConcurrency,
+      recognizeCandidate
+    );
+  }
+
+  const predictionByCandidateId = new Map();
+  const baselineIds = new Set((baselineCover || []).map((candidate) => candidate.candidateId));
+  const baselineCandidates = orderInitialRecognitionCandidates(
+    candidateList.filter((candidate) => baselineIds.has(candidate.candidateId)),
+    baselineIds
+  );
+
+  const baselinePredictions = await mapWithConcurrency(
+    baselineCandidates,
+    initialRecognitionConcurrency,
+    recognizeCandidate
+  );
+  for (const prediction of baselinePredictions) {
+    predictionByCandidateId.set(prediction.candidateId, prediction);
+  }
+
+  const validBaselineCandidates = baselineCandidates.filter((candidate) => (
+    deterministicPredictionIsValid(
+      predictionByCandidateId.get(candidate.candidateId)
+    )
+  ));
+  initialRecognitionSkipContext.coveredByValidDeterministicLineCandidateIds =
+    coveredLargerCandidateIds(candidateList, validBaselineCandidates);
+
+  const remainingCandidates = orderInitialRecognitionCandidates(
+    candidateList.filter((candidate) => !predictionByCandidateId.has(candidate.candidateId)),
+    baselineIds
+  );
+  const remainingPredictions = await mapWithConcurrency(
+    remainingCandidates,
+    initialRecognitionConcurrency,
+    recognizeCandidate
+  );
+  for (const prediction of remainingPredictions) {
+    predictionByCandidateId.set(prediction.candidateId, prediction);
+  }
+
+  return candidateList.map((candidate) => predictionByCandidateId.get(candidate.candidateId));
 }
 
 async function recognizeInitialCandidate(candidate, {
@@ -1220,11 +1302,102 @@ function selectedEntryNeedsDeferredAlternatives(entry) {
 
 function initialRecognitionSkipReason(candidate, context = {}) {
   if (!context.enabled || !candidate) return '';
+  if (context.coveredByValidDeterministicLineCandidateIds?.has(candidate.candidateId)) {
+    return 'covered-by-valid-deterministic-line';
+  }
   if (shouldSkipSingleStrokeAlternative(candidate, context)) return 'single-stroke-alternative';
   if (shouldDeferContainedNonstructuralAlternative(candidate, context)) {
     return 'contained-nonstructural-alternative';
   }
   return '';
+}
+
+function deterministicPredictionIsValid(entry) {
+  if (!entry || entry.skippedRecognition || entry.prediction?.skippedRecognition) return false;
+  if (predictionNeedsRetry(entry.prediction)) return false;
+  if (!predictionLatex(entry.prediction)) return false;
+  return Number(entry.evidenceScore) > -20;
+}
+
+function coveredLargerCandidateIds(candidates, validLines) {
+  const covered = new Set();
+  const lines = (validLines || []).filter((candidate) => candidate?.strokeIds?.length);
+  if (lines.length === 0) return covered;
+
+  for (const candidate of candidates || []) {
+    const candidateIds = uniqueStrings(candidate?.strokeIds || []);
+    if (candidateIds.length <= 1) continue;
+    if (!isCoveredRecognitionDeferrableCandidate(candidate)) continue;
+
+    const coveringLines = lines.filter((line) => (
+      line.candidateId !== candidate.candidateId &&
+      strokeSetStrictlyContainsIds(candidateIds, line.strokeIds)
+    ));
+    if (coveringLines.length === 0) continue;
+
+    const coveredIds = new Set(coveringLines.flatMap((line) => line.strokeIds || []).map(String));
+    if (candidateIds.every((id) => coveredIds.has(id))) {
+      covered.add(candidate.candidateId);
+    }
+  }
+
+  return covered;
+}
+
+function orderInitialRecognitionCandidates(candidates, baselineIds = new Set()) {
+  return (candidates || []).slice().sort((a, b) => (
+    initialRecognitionPriority(a, baselineIds) - initialRecognitionPriority(b, baselineIds) ||
+    (a.tightBbox?.yMin ?? 0) - (b.tightBbox?.yMin ?? 0) ||
+    (a.tightBbox?.xMin ?? 0) - (b.tightBbox?.xMin ?? 0) ||
+    String(a.candidateId).localeCompare(String(b.candidateId))
+  ));
+}
+
+function initialRecognitionPriority(candidate, baselineIds = new Set()) {
+  if (baselineIds.has(candidate?.candidateId)) return 0;
+  const profiles = candidate?.profiles || [];
+  if (profiles.includes('fraction-stack-line')) return 1;
+  if (
+    profiles.includes('row-line') ||
+    profiles.includes('raw-row-line') ||
+    profiles.includes('dbnet-line') ||
+    profiles.includes('strict')
+  ) {
+    return 2;
+  }
+  if (profiles.includes('temporal') || profiles.includes('loose') || profiles.includes('projection-line')) {
+    return 3;
+  }
+  if (isParentLikeRecognitionCandidate(candidate)) return 4;
+  return 5;
+}
+
+function isParentLikeRecognitionCandidate(candidate) {
+  const profiles = candidate?.profiles || [];
+  return profiles.includes('parent') ||
+    profiles.includes('row-parent') ||
+    profiles.includes('dbnet-parent') ||
+    profiles.includes('projection-line') ||
+    profiles.includes('temporal') ||
+    profiles.includes('loose');
+}
+
+function isCoveredRecognitionDeferrableCandidate(candidate) {
+  const profiles = candidate?.profiles || [];
+  if (profiles.includes('fallback-stroke')) return false;
+  if (profiles.includes('fraction-stack-line')) return false;
+  return profiles.some((profile) => (
+    profile === 'parent' ||
+    profile === 'row-parent' ||
+    profile === 'dbnet-parent' ||
+    profile === 'projection-line' ||
+    profile === 'temporal' ||
+    profile === 'loose' ||
+    profile === 'strict' ||
+    profile === 'row-line' ||
+    profile === 'raw-row-line' ||
+    profile === 'dbnet-line'
+  ));
 }
 
 function shouldSkipSingleStrokeAlternative(candidate, context = {}) {

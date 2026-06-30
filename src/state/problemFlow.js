@@ -105,6 +105,7 @@ export function submitActiveProblem(flow, viewportWidth) {
   const activeProblem = getActiveProblem(flow);
   if (!activeProblem) return { flow, targetViewport: null };
   if (activeProblem.status !== 'solving') return { flow, targetViewport: null };
+  const recognitionStatus = submissionRecognitionStatus(activeProblem);
 
   const completedFlow = updateProblem(flow, activeProblem.id, (problem) => ({
     ...problem,
@@ -112,7 +113,7 @@ export function submitActiveProblem(flow, viewportWidth) {
     answerBoxFrozen: true,
     recognition: {
       ...problem.recognition,
-      status: problem.answerStrokeIds.length > 0 ? problem.recognition.status : 'empty',
+      status: recognitionStatus,
       error: null
     }
   }));
@@ -322,18 +323,9 @@ export function applyProblemGradingProgress(flow, problemId, grading) {
 }
 
 export function isProblemReadyForNext(problem) {
-  if (!problem || problem.answerStrokeIds.length === 0) return false;
-  if (problem.status === 'submitted' && problem.recognition?.status === 'complete') return true;
-  if (problem.status !== 'solving') return false;
-  if (problem.recognition?.status !== 'complete') return false;
-  const realtime = problem.recognition?.result?.realtime || problem.recognition?.realtime || null;
-  if (realtime && realtime.allFinal === false) return false;
-  if (realtime?.components?.some((component) => (
-    component.status !== 'final' || component.contested
-  ))) {
-    return false;
-  }
-  return true;
+  if (!problem) return false;
+  if (problem.status === 'submitted' && ['complete', 'empty', 'error'].includes(problem.recognition?.status)) return true;
+  return false;
 }
 
 export function viewportForProblemPosition(boardPosition, viewportWidth) {
@@ -381,6 +373,13 @@ function normalizeProblemMetadata(definition) {
     ...(metadata && typeof metadata === 'object' ? metadata : {}),
     ...rest
   };
+}
+
+function submissionRecognitionStatus(problem) {
+  if (!problem.answerStrokeIds.length) return 'empty';
+  const status = problem.recognition?.status || 'idle';
+  if (status === 'complete' || status === 'error') return status;
+  return 'pending';
 }
 
 function normalizeModelResponse(modelResponse, latex, index) {
