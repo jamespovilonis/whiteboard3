@@ -10,6 +10,7 @@ import {
   hasCorrectAnswerWithInvalidStep
 } from '../src/recognition/auditClient.js';
 import { getRecognitionApiUrl, normalizeConfiguredApiUrl } from '../src/recognition/config.js';
+import { problemStatusDisplay } from '../src/components/problemStatusDisplay.js';
 import { IncrementalRecognitionScheduler } from '../src/recognition/incrementalRecognitionScheduler.js';
 import { translateDetections } from '../src/recognition/segmentationClient.js';
 import { previousLatexForSubmission, summarizeRecognitionResult } from '../src/hooks/useProblemFlowController.js';
@@ -4296,6 +4297,67 @@ test('submitted problem flow preserves recognition status and result', () => {
     failed.problems.find((problem) => problem.id === active.id).recognition.error,
     'offline'
   );
+});
+
+test('problem status display waits for final OCR before showing incomplete grading', () => {
+  const provisionalIncomplete = {
+    status: 'submitted',
+    recognition: {
+      status: 'pending',
+      result: {
+        grading: {
+          result: {
+            problemStatus: 'incomplete'
+          }
+        },
+        realtime: {
+          allFinal: false,
+          components: [{
+            status: 'running',
+            contested: false
+          }]
+        }
+      }
+    }
+  };
+
+  assert.deepEqual(problemStatusDisplay(provisionalIncomplete), {
+    status: 'analyzing',
+    text: 'Analyzing'
+  });
+
+  const completeButNotFinal = {
+    ...provisionalIncomplete,
+    recognition: {
+      ...provisionalIncomplete.recognition,
+      status: 'complete'
+    }
+  };
+  assert.deepEqual(problemStatusDisplay(completeButNotFinal), {
+    status: 'analyzing',
+    text: 'Analyzing'
+  });
+
+  const finalIncomplete = {
+    ...completeButNotFinal,
+    recognition: {
+      ...completeButNotFinal.recognition,
+      result: {
+        ...completeButNotFinal.recognition.result,
+        realtime: {
+          allFinal: true,
+          components: [{
+            status: 'final',
+            contested: false
+          }]
+        }
+      }
+    }
+  };
+  assert.deepEqual(problemStatusDisplay(finalIncomplete), {
+    status: 'incomplete',
+    text: 'Incomplete'
+  });
 });
 
 test('recognition summary preserves debug crop state and final line order', () => {

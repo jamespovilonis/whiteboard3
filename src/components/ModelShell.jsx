@@ -1,5 +1,6 @@
 import katex from 'katex';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { problemStatusDisplay } from './problemStatusDisplay.js';
 
 const SHELL_TRANSITION_MS = 450;
 
@@ -160,57 +161,6 @@ function RecognitionDebugInspector({ results = [], auditByProblemId = {} }) {
       ))}
     </div>
   );
-}
-
-function problemStatusDisplay(problem, response = {}) {
-  if (!problem) {
-    return {
-      status: 'idle',
-      text: response.before || 'All done.'
-    };
-  }
-
-  if (problem.status !== 'submitted') {
-    return {
-      status: 'solving',
-      text: 'Try your best and press Submit when you are ready.'
-    };
-  }
-
-  if (problem.recognition?.status === 'empty') {
-    return {
-      status: 'incomplete',
-      text: 'Incomplete'
-    };
-  }
-
-  if (problem.recognition?.status === 'error') {
-    return {
-      status: 'incomplete',
-      text: 'Incomplete'
-    };
-  }
-
-  const grading = problem.recognition?.result?.grading || null;
-  const status = grading?.result?.problemStatus || '';
-  if (status === 'correct' || status === 'incorrect' || status === 'incomplete') {
-    return {
-      status,
-      text: gradingDecisionLabel(status)
-    };
-  }
-
-  if (status === 'not_started') {
-    return {
-      status: 'incomplete',
-      text: 'Incomplete'
-    };
-  }
-
-  return {
-    status: 'analyzing',
-    text: 'analyzing'
-  };
 }
 
 function DebugRecognitionResult({ entry, audit = null }) {
