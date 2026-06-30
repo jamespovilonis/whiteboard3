@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getRecognitionApiUrl } from '../recognition/config.js';
+import {
+  buildRecognitionAuditPayload,
+  enqueueRecognitionAudit,
+  getRecognitionAuditStatus,
+  getRecognitionAuditDecision
+} from '../recognition/auditClient.js';
 import { IncrementalRecognitionScheduler } from '../recognition/incrementalRecognitionScheduler.js';
 import {
   E2E_PROBLEM_SOURCE_ENABLED,
@@ -25,6 +31,12 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
   const schedulerRef = useRef(null);
   const startedInputSignaturesRef = useRef(new Set());
   const completedInputSignaturesRef = useRef(new Set());
+  const auditInputSignaturesRef = useRef(new Set());
+  const problemFlowRef = useRef(problemFlow);
+
+  useEffect(() => {
+    problemFlowRef.current = problemFlow;
+  }, [problemFlow]);
 
   useEffect(() => {
     if (!E2E_PROBLEM_SOURCE_ENABLED) return undefined;
@@ -90,6 +102,14 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
             candidateCount: result.candidatePredictions?.length || 0,
             latex: result.latex || '',
             realtime: true
+          });
+          maybeEnqueueRecognitionAudit({
+            snapshot,
+            inputSignature,
+            problemFlow: problemFlowRef.current,
+            strokes: latestStrokesRef.current,
+            auditInputSignaturesRef,
+            onRecognitionEvent
           });
         }
       }
@@ -201,6 +221,132 @@ function getViewportWidth() {
 
 export function previousLatexForSubmission(_flow, _problemId) {
   return [];
+}
+
+function maybeEnqueueRecognitionAudit({
+  snapshot,
+  inputSignature,
+  problemFlow,
+  strokes,
+  auditInputSignaturesRef,
+  onRecognitionEvent
+}) {
+  const result = snapshot?.result || null;
+  if (!result || result.realtime?.allFinal === false || snapshot?.realtime?.allFinal === false) return;
+  const problem = (problemFlow?.problems || []).find((item) => item.id === snapshot.problemId);
+  if (!problem) return;
+
+  const auditKey = `${snapshot.problemId || ''}::${inputSignature || ''}`;
+  if (!auditKey.trim() || auditInputSignaturesRef.current.has(auditKey)) return;
+
+  const decision = getRecognitionAuditDecision(result, {
+    inputSignature,
+    sampleKey: auditKey
+  });
+  if (!decision.shouldAudit) {
+    onRecognitionEvent?.('recognition-audit-skipped', {
+      problemId: snapshot.problemId,
+      inputSignature,
+      triggerReasons: [],
+      sampled: false
+    });
+    return;
+  }
+
+  auditInputSignaturesRef.current.add(auditKey);
+  const payload = buildRecognitionAuditPayload({
+    problem,
+    result,
+    strokes,
+    inputSignature,
+    triggerReasons: decision.triggerReasons
+  });
+
+  enqueueRecognitionAudit(payload, { apiUrl: getRecognitionApiUrl() })
+    .then((response) => {
+      onRecognitionEvent?.('recognition-audit-queued', {
+        problemId: snapshot.problemId,
+        inputSignature,
+        auditId: response.auditId || null,
+        triggerReasons: decision.triggerReasons,
+        sampled: decision.sampled,
+        queued: response.queued !== false
+      });
+      if (response.queued === false) {
+        onRecognitionEvent?.('recognition-audit-disabled', {
+          problemId: snapshot.problemId,
+          inputSignature,
+          auditId: response.auditId || null,
+          triggerReasons: decision.triggerReasons
+        });
+        return null;
+      }
+      if (response.auditId) {
+        return pollRecognitionAuditStatus({
+          auditId: response.auditId,
+          problemId: snapshot.problemId,
+          inputSignature,
+          triggerReasons: decision.triggerReasons,
+          onRecognitionEvent
+        });
+      }
+      return null;
+    })
+    .catch((error) => {
+      onRecognitionEvent?.('recognition-audit-error', {
+        problemId: snapshot.problemId,
+        inputSignature,
+        triggerReasons: decision.triggerReasons,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+}
+
+function pollRecognitionAuditStatus({
+  auditId,
+  problemId,
+  inputSignature,
+  triggerReasons,
+  onRecognitionEvent
+}) {
+  const maxPolls = 90;
+  const pollIntervalMs = 2000;
+  let pollCount = 0;
+  let lastStatus = 'queued';
+
+  const poll = () => {
+    pollCount += 1;
+    return getRecognitionAuditStatus(auditId, { apiUrl: getRecognitionApiUrl() })
+      .then((statusPayload) => {
+        const status = statusPayload.status || 'unknown';
+        if (status !== lastStatus || statusPayload.done) {
+          lastStatus = status;
+          onRecognitionEvent?.('recognition-audit-status', {
+            problemId,
+            inputSignature,
+            auditId,
+            triggerReasons,
+            ...statusPayload
+          });
+        }
+        if (statusPayload.done || pollCount >= maxPolls) return statusPayload;
+        window.setTimeout(poll, pollIntervalMs);
+        return statusPayload;
+      })
+      .catch((error) => {
+        onRecognitionEvent?.('recognition-audit-error', {
+          problemId,
+          inputSignature,
+          auditId,
+          triggerReasons,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        return null;
+      });
+  };
+
+  window.setTimeout(poll, 400);
+  return null;
 }
 
 export function summarizeRecognitionResult(result) {

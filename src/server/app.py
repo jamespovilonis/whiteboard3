@@ -10,7 +10,8 @@ import uvicorn
 
 from src.grading import grade_equation_payload
 from src.server.config import ServerSettings, settings_from_env
-from src.server.routes import grading, health, recognition
+from src.server.routes import audit, grading, health, recognition
+from src.server.services.audit import RecognitionAuditService
 from testing.latex_semantics import score_semantic_payload
 
 
@@ -24,6 +25,7 @@ def create_app(
     app.state.settings = settings or settings_from_env()
     app.state.semantic_scorer = semantic_scorer
     app.state.grading_scorer = grading_scorer
+    app.state.audit_service = RecognitionAuditService(app.state.settings)
 
     app.add_middleware(
         CORSMiddleware,
@@ -34,6 +36,7 @@ def create_app(
 
     app.include_router(health.router)
     app.include_router(grading.router)
+    app.include_router(audit.router)
     app.include_router(recognition.router)
     return app
 
@@ -57,20 +60,41 @@ def main() -> int:
         default=None,
         help="Maximum seconds to spend scoring one semantic or grading request.",
     )
+    parser.add_argument("--audit-enabled", action="store_true", default=None)
+    parser.add_argument("--audit-disabled", action="store_true", default=None)
+    parser.add_argument("--audit-log-dir", default=None)
+    parser.add_argument("--vlm-audit-base-url", default=None)
+    parser.add_argument("--vlm-audit-model", default=None)
+    parser.add_argument("--vlm-audit-timeout", type=float, default=None)
+    parser.add_argument("--vlm-audit-normal-sample-rate", type=float, default=None)
     args = parser.parse_args()
 
     env_settings = settings_from_env()
+    audit_enabled = env_settings.audit_enabled
+    if args.audit_enabled:
+        audit_enabled = True
+    if args.audit_disabled:
+        audit_enabled = False
+
     settings = ServerSettings(
         host=args.host or env_settings.host,
         port=args.port if args.port is not None else env_settings.port,
         upstream_api_url=args.upstream_api_url if args.upstream_api_url is not None else env_settings.upstream_api_url,
         upstream_timeout=args.upstream_timeout if args.upstream_timeout is not None else env_settings.upstream_timeout,
         semantic_timeout=args.semantic_timeout if args.semantic_timeout is not None else env_settings.semantic_timeout,
+        audit_enabled=audit_enabled,
+        audit_log_dir=args.audit_log_dir if args.audit_log_dir is not None else env_settings.audit_log_dir,
+        vlm_audit_base_url=args.vlm_audit_base_url if args.vlm_audit_base_url is not None else env_settings.vlm_audit_base_url,
+        vlm_audit_model=args.vlm_audit_model if args.vlm_audit_model is not None else env_settings.vlm_audit_model,
+        vlm_audit_timeout_seconds=args.vlm_audit_timeout if args.vlm_audit_timeout is not None else env_settings.vlm_audit_timeout_seconds,
+        vlm_audit_normal_sample_rate=args.vlm_audit_normal_sample_rate if args.vlm_audit_normal_sample_rate is not None else env_settings.vlm_audit_normal_sample_rate,
     )
 
     print(f"Recognition API listening on http://{settings.host}:{settings.port}")
     if settings.upstream_api_url:
         print(f"Proxying CoMER/DBNet endpoints to {settings.upstream_api_url}")
+    if settings.audit_enabled:
+        print(f"Writing VLM audit logs to {settings.audit_log_dir}")
     uvicorn.run(
         create_app(settings),
         host=settings.host,

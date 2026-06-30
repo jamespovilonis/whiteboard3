@@ -3,6 +3,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
+import {
+  buildRecognitionAuditPayload,
+  deterministicSample,
+  getRecognitionAuditDecision,
+  hasCorrectAnswerWithInvalidStep
+} from '../src/recognition/auditClient.js';
 import { getRecognitionApiUrl, normalizeConfiguredApiUrl } from '../src/recognition/config.js';
 import { IncrementalRecognitionScheduler } from '../src/recognition/incrementalRecognitionScheduler.js';
 import { translateDetections } from '../src/recognition/segmentationClient.js';
@@ -4519,6 +4525,189 @@ test('JS buildLiveGradingResult and Python grade_equation_work agree on problem 
     );
   }
 });
+
+test('VLM audit decision catches non-correct grading statuses and unread OCR', () => {
+  const result = auditResult({
+    problemStatus: 'incomplete',
+    latexLines: [''],
+    lines: [auditLine({ latex: '', acceptedLatex: '', evidenceScore: 3 })]
+  });
+
+  const decision = getRecognitionAuditDecision(result, { inputSignature: 'sig-a' });
+
+  assert.equal(decision.shouldAudit, true);
+  assert.ok(decision.triggerReasons.includes('problem_status_incomplete'));
+  assert.ok(decision.triggerReasons.includes('unread_or_empty_line'));
+});
+
+test('VLM audit decision catches OCR failure, timeout, and low confidence', () => {
+  const result = auditResult({
+    problemStatus: 'correct',
+    lines: [
+      auditLine({ prediction: { failed: true, timedOut: false, top: { latex: 'x = 4', confidence: 0.9 } } }),
+      auditLine({ prediction: { failed: false, timedOut: true, top: { latex: 'x = 4', confidence: 0.9 } } }),
+      auditLine({ prediction: { failed: false, timedOut: false, top: { latex: 'x = 4', confidence: 0.3 } } }),
+      auditLine({ prediction: { failed: false, timedOut: false, top: { latex: 'x = 4', score: -0.5 } } }),
+      auditLine({ evidenceScore: -1.5 })
+    ]
+  });
+
+  const decision = getRecognitionAuditDecision(result, { inputSignature: 'sig-b' });
+
+  assert.equal(decision.shouldAudit, true);
+  assert.ok(decision.triggerReasons.includes('ocr_failure_or_timeout'));
+  assert.ok(decision.triggerReasons.includes('low_confidence'));
+});
+
+test('VLM audit decision catches correct answer set with invalid intermediate step', () => {
+  const grading = {
+    status: 'complete',
+    failed: false,
+    steps: [
+      { lineIndex: 0, studentLatex: '2x + 3 = 11', classification: 'valid_step', solutionCoverage: 'none', matchedSolutions: [] },
+      { lineIndex: 1, studentLatex: '2x = 9', classification: 'invalid_step', solutionCoverage: 'none', matchedSolutions: [] },
+      { lineIndex: 2, studentLatex: 'x = 4', classification: 'valid_step', solutionCoverage: 'full', matchedSolutions: ['4'] }
+    ],
+    result: {
+      problemStatus: 'correct',
+      foundSolutions: ['4'],
+      missingSolutions: []
+    }
+  };
+
+  assert.equal(hasCorrectAnswerWithInvalidStep(grading), true);
+
+  const decision = getRecognitionAuditDecision(auditResult({ grading }), { inputSignature: 'sig-c' });
+
+  assert.equal(decision.shouldAudit, true);
+  assert.ok(decision.triggerReasons.includes('correct_answer_with_invalid_step'));
+});
+
+test('VLM audit decision samples normal correct cases deterministically', () => {
+  const result = auditResult({ problemStatus: 'correct' });
+
+  assert.equal(
+    getRecognitionAuditDecision(result, { inputSignature: 'sample-key', sampleKey: 'sample-key', normalSampleRate: 1 }).shouldAudit,
+    true
+  );
+  assert.equal(
+    getRecognitionAuditDecision(result, { inputSignature: 'sample-key', sampleKey: 'sample-key', normalSampleRate: 0 }).shouldAudit,
+    false
+  );
+  assert.equal(
+    deterministicSample('fixed-key', 0.1),
+    deterministicSample('fixed-key', 0.1)
+  );
+});
+
+test('VLM audit payload removes embedded crop data URLs', () => {
+  const payload = buildRecognitionAuditPayload({
+    problem: {
+      id: 'problem-a',
+      latex: 'x + 1 = 5',
+      metadata: { source: 'test' },
+      problemBox: { xMin: 0, yMin: 0, xMax: 100, yMax: 100 },
+      answerBox: { xMin: 0, yMin: 100, xMax: 100, yMax: 200 }
+    },
+    result: auditResult({
+      lines: [{
+        ...auditLine(),
+        image: { dataUrl: 'data:image/png;base64,abc' },
+        contextualSemantic: { nested: { dataUrl: 'data:image/png;base64,hidden' } }
+      }],
+      candidatePredictions: [{
+        ...auditLine(),
+        image: { dataUrl: 'data:image/png;base64,abc' }
+      }]
+    }),
+    strokes: [{
+      id: 'stroke-a',
+      rawPoints: [{ x: 1, y: 2, pressure: 0.5 }],
+      outlinePoints: [{ x: 1, y: 2 }, { x: 4, y: 2 }, { x: 4, y: 6 }],
+      canvasBbox: { xMin: 1, yMin: 2, xMax: 4, yMax: 6 }
+    }],
+    inputSignature: 'sig-d',
+    triggerReasons: ['normal_sample']
+  });
+
+  assert.equal(payload.problemId, 'problem-a');
+  assert.equal(payload.strokes.length, 1);
+  assert.equal(payload.fastResult.lines[0].image, undefined);
+  assert.equal(JSON.stringify(payload).includes('data:image/png'), false);
+});
+
+function auditResult(options = {}) {
+  const grading = options.grading || {
+    status: 'complete',
+    failed: false,
+    steps: [
+      { lineIndex: 0, studentLatex: 'x = 4', classification: 'valid_step', solutionCoverage: 'full', matchedSolutions: ['4'] }
+    ],
+    result: {
+      problemStatus: options.problemStatus || 'correct',
+      foundSolutions: ['4'],
+      missingSolutions: []
+    },
+    problem: {
+      manifest: {
+        cardinality: 'finite',
+        exact_set: ['4'],
+        variable: 'x',
+        problem_raw: 'x + 1 = 5'
+      }
+    }
+  };
+  const lines = options.lines || [auditLine()];
+  return {
+    latex: options.latex || lines.map((line) => line.acceptedLatex || line.latex || '').join(' \\\\ '),
+    latexLines: options.latexLines || lines.map((line) => line.acceptedLatex || line.latex || ''),
+    lines,
+    candidatePredictions: options.candidatePredictions || lines,
+    grading,
+    segmentation: {
+      selected: lines.map((line) => ({
+        candidateId: line.candidateId,
+        profiles: line.profiles,
+        strokeIds: line.strokeIds,
+        tightBbox: line.tightBbox
+      })),
+      candidates: [],
+      partitions: {},
+      parentCandidateId: null,
+      ocrSelectedCandidateIds: lines.map((line) => line.candidateId)
+    },
+    realtime: {
+      allFinal: true,
+      inputSignature: 'audit-test-signature'
+    }
+  };
+}
+
+function auditLine(options = {}) {
+  const latex = options.latex ?? 'x = 4';
+  const acceptedLatex = options.acceptedLatex ?? latex;
+  return {
+    lineIndex: options.lineIndex ?? 0,
+    candidateId: options.candidateId || 'audit-line',
+    selected: true,
+    profiles: ['row-line'],
+    strokeIds: ['stroke-a'],
+    tightBbox: { xMin: 0, yMin: 0, xMax: 100, yMax: 40 },
+    latex,
+    acceptedLatex,
+    ocrLatex: latex,
+    candidates: options.candidates || [{ latex, score: 2, confidence: 0.9 }],
+    prediction: options.prediction || {
+      latex,
+      top: { latex, score: 2, confidence: 0.9 },
+      candidates: [{ latex, score: 2, confidence: 0.9 }],
+      failed: false,
+      timedOut: false
+    },
+    evidenceScore: options.evidenceScore ?? 3,
+    timing: { submitToFinalPredictionSeconds: 0.1 }
+  };
+}
 
 function candidate(candidateId, profiles, strokeIds, xMin, yMin, xMax, yMax) {
   return {

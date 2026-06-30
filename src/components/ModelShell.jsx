@@ -6,6 +6,7 @@ const SHELL_TRANSITION_MS = 450;
 export default function ModelShell({
   response,
   recognitionResults = [],
+  auditByProblemId = {},
   debugMode = false,
   submitDisabled = false,
   nextProblemDisabled = false,
@@ -81,7 +82,10 @@ export default function ModelShell({
           )}
 
           {debugMode ? (
-            <RecognitionDebugInspector results={recognitionResults} />
+            <RecognitionDebugInspector
+              results={recognitionResults}
+              auditByProblemId={auditByProblemId}
+            />
           ) : (
             <>
               <div className="model-shell-copy">
@@ -124,7 +128,7 @@ export default function ModelShell({
   );
 }
 
-function RecognitionDebugInspector({ results = [] }) {
+function RecognitionDebugInspector({ results = [], auditByProblemId = {} }) {
   const submitted = results.slice().reverse();
 
   return (
@@ -142,13 +146,14 @@ function RecognitionDebugInspector({ results = [] }) {
         <DebugRecognitionResult
           key={entry.problemId}
           entry={entry}
+          audit={auditByProblemId[entry.problemId] || null}
         />
       ))}
     </div>
   );
 }
 
-function DebugRecognitionResult({ entry }) {
+function DebugRecognitionResult({ entry, audit = null }) {
   const recognition = entry.recognition || {};
   const status = recognition.status || 'idle';
   const result = recognition.result || null;
@@ -177,6 +182,7 @@ function DebugRecognitionResult({ entry }) {
       {result && (
         <>
           <DebugMetrics result={result} />
+          <AuditDebugPanel audit={audit} />
           <GradingDebugPanel grading={result.grading} />
           {candidates.length > 0 && (
             <div className="recognition-debug-candidates">
@@ -193,6 +199,49 @@ function DebugRecognitionResult({ entry }) {
         </>
       )}
     </section>
+  );
+}
+
+function AuditDebugPanel({ audit = null }) {
+  const status = audit?.status || 'waiting';
+  const triggerReasons = audit?.triggerReasons || [];
+  const discrepancyCount = Number(audit?.discrepancyCount);
+  const label = audit?.label || (status === 'waiting' ? 'Audit waiting' : auditStatusDebugLabel(status));
+
+  return (
+    <div className="audit-debug" data-status={status}>
+      <div className="audit-debug-top">
+        <span>VLM Audit</span>
+        <span>{label}</span>
+      </div>
+      <dl className="recognition-metrics audit-debug-metrics">
+        <div>
+          <dt>Taking place</dt>
+          <dd>{auditTakingPlaceLabel(status)}</dd>
+        </div>
+        <div>
+          <dt>Audit ID</dt>
+          <dd>{audit?.auditId || 'n/a'}</dd>
+        </div>
+        <div>
+          <dt>Log</dt>
+          <dd>{status === 'logged' ? 'Entered' : 'Pending'}</dd>
+        </div>
+      </dl>
+      {status === 'logged' && Number.isFinite(discrepancyCount) && (
+        <p className="recognition-message">
+          {discrepancyCount === 0
+            ? 'Audit logged with no discrepancies.'
+            : `Audit logged with ${discrepancyCount} discrepancy${discrepancyCount === 1 ? '' : 'ies'}.`}
+        </p>
+      )}
+      {status === 'error' && (
+        <p className="recognition-message">{audit?.error || 'Audit failed.'}</p>
+      )}
+      {triggerReasons.length > 0 && (
+        <p className="audit-debug-reasons">{triggerReasons.join(', ')}</p>
+      )}
+    </div>
   );
 }
 
@@ -557,6 +606,24 @@ function gradingDecisionLabel(problemStatus, status = '') {
     .split('_')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+}
+
+function auditStatusDebugLabel(status = '') {
+  if (status === 'skipped') return 'Audit not selected';
+  if (status === 'queued') return 'Audit queued';
+  if (status === 'processing') return 'Audit processing';
+  if (status === 'logged') return 'Log entered';
+  if (status === 'disabled') return 'Audit disabled';
+  if (status === 'error') return 'Audit error';
+  return 'Audit waiting';
+}
+
+function auditTakingPlaceLabel(status = '') {
+  if (['queued', 'processing', 'logged'].includes(status)) return 'Yes';
+  if (status === 'skipped') return 'No';
+  if (status === 'disabled') return 'Disabled';
+  if (status === 'error') return 'Attempted';
+  return 'Pending';
 }
 
 function lineClassificationLabel(classification = '') {

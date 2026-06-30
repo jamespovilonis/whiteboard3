@@ -1,0 +1,296 @@
+export const DEFAULT_AUDIT_NORMAL_SAMPLE_RATE = 0.10;
+
+export function getRecognitionAuditDecision(result = {}, options = {}) {
+  const triggerReasons = [];
+  const grading = result?.grading || null;
+  const problemStatus = grading?.result?.problemStatus || '';
+  const lines = Array.isArray(result?.lines) ? result.lines : [];
+
+  if (!grading || grading.failed) {
+    triggerReasons.push('missing_grading');
+  }
+  if (['incorrect', 'incomplete', 'not_started'].includes(problemStatus)) {
+    triggerReasons.push(`problem_status_${problemStatus}`);
+  }
+  if (hasUnreadLine(result)) {
+    triggerReasons.push('unread_or_empty_line');
+  }
+  if (hasOcrFailure(result)) {
+    triggerReasons.push('ocr_failure_or_timeout');
+  }
+  if (hasLowConfidenceLine(result)) {
+    triggerReasons.push('low_confidence');
+  }
+  if (hasCorrectAnswerWithInvalidStep(grading)) {
+    triggerReasons.push('correct_answer_with_invalid_step');
+  }
+
+  if (triggerReasons.length > 0) {
+    return {
+      shouldAudit: true,
+      sampled: false,
+      triggerReasons: unique(triggerReasons)
+    };
+  }
+
+  const sampleRate = normalizedSampleRate(
+    options.normalSampleRate ?? configuredNormalSampleRate()
+  );
+  const sampleKey = String(options.sampleKey || options.inputSignature || result?.realtime?.inputSignature || result?.latex || '');
+  const sampled = problemStatus === 'correct' && deterministicSample(sampleKey, sampleRate);
+  return {
+    shouldAudit: sampled,
+    sampled,
+    triggerReasons: sampled ? ['normal_sample'] : []
+  };
+}
+
+export async function enqueueRecognitionAudit(payload, options = {}) {
+  const apiUrl = String(options.apiUrl || '').replace(/\/$/, '');
+  const url = `${apiUrl}/audit-recognition`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(body?.detail || `HTTP ${response.status} from ${url}`);
+  }
+  return body || {};
+}
+
+export async function getRecognitionAuditStatus(auditId, options = {}) {
+  const apiUrl = String(options.apiUrl || '').replace(/\/$/, '');
+  const encodedAuditId = encodeURIComponent(String(auditId || ''));
+  const url = `${apiUrl}/audit-recognition/${encodedAuditId}`;
+  const response = await fetch(url);
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(body?.detail || `HTTP ${response.status} from ${url}`);
+  }
+  return body || {};
+}
+
+export function buildRecognitionAuditPayload({
+  problem = {},
+  result = {},
+  strokes = [],
+  inputSignature = '',
+  triggerReasons = []
+} = {}) {
+  return {
+    problemId: problem.id || null,
+    problemLatex: problem.latex || '',
+    problemMetadata: problem.metadata || {},
+    problemBox: clonePlain(problem.problemBox),
+    answerBox: clonePlain(problem.answerBox),
+    inputSignature,
+    triggerReasons: triggerReasons.slice(),
+    strokes: compactStrokes(strokes),
+    fastResult: compactRecognitionResult(result)
+  };
+}
+
+export function compactRecognitionResult(result = {}) {
+  return {
+    latex: result.latex || '',
+    latexLines: Array.isArray(result.latexLines) ? result.latexLines.slice() : [],
+    grading: clonePlain(result.grading || null),
+    timing: clonePlain(result.timing || null),
+    detection: clonePlain(result.detection || null),
+    semantic: clonePlain(stripCandidateImages(result.semantic || null)),
+    realtime: clonePlain(result.realtime || null),
+    lines: (result.lines || []).map(compactLine),
+    candidatePredictions: (result.candidatePredictions || []).map(compactLine),
+    segmentation: {
+      selected: (result.segmentation?.selected || []).map(compactCandidate),
+      candidates: (result.segmentation?.candidates || []).map(compactCandidate),
+      partitions: clonePlain(result.segmentation?.partitions || {}),
+      parentCandidateId: result.segmentation?.parentCandidateId || null,
+      ocrSelectedCandidateIds: (result.segmentation?.ocrSelectedCandidateIds || []).slice()
+    }
+  };
+}
+
+export function hasCorrectAnswerWithInvalidStep(grading = null) {
+  const steps = Array.isArray(grading?.steps) ? grading.steps : [];
+  if (steps.length === 0) return false;
+  const invalidIndexes = steps
+    .filter((step) => step?.classification === 'invalid_step')
+    .map((step, index) => Number.isFinite(Number(step.lineIndex)) ? Number(step.lineIndex) : index);
+  if (invalidIndexes.length === 0) return false;
+
+  const solutionIndexes = steps
+    .filter((step) => (
+      step?.solutionCoverage === 'full' ||
+      (Array.isArray(step?.matchedSolutions) && step.matchedSolutions.length > 0)
+    ))
+    .map((step, index) => Number.isFinite(Number(step.lineIndex)) ? Number(step.lineIndex) : index);
+  const hasCorrectAnswerSet = grading?.result?.problemStatus === 'correct' ||
+    solutionIndexes.length > 0 ||
+    (
+      Array.isArray(grading?.result?.foundSolutions) &&
+      grading.result.foundSolutions.length > 0 &&
+      Array.isArray(grading?.result?.missingSolutions) &&
+      grading.result.missingSolutions.length === 0
+    );
+  if (!hasCorrectAnswerSet) return false;
+  const lastSolutionIndex = solutionIndexes.length ? Math.max(...solutionIndexes) : Math.max(...steps.map((_, index) => index));
+  return invalidIndexes.some((index) => index < lastSolutionIndex || steps.length > 1);
+}
+
+export function deterministicSample(key, sampleRate) {
+  const rate = normalizedSampleRate(sampleRate);
+  if (rate <= 0) return false;
+  if (rate >= 1) return true;
+  const hash = stableHash32(String(key || ''));
+  return hash / 0xffffffff < rate;
+}
+
+function compactLine(line = {}) {
+  return {
+    lineIndex: line.lineIndex ?? null,
+    candidateId: line.candidateId || null,
+    debugLabel: line.debugLabel || null,
+    selected: Boolean(line.selected),
+    profiles: Array.isArray(line.profiles) ? line.profiles.slice() : [],
+    strokeIds: Array.isArray(line.strokeIds) ? line.strokeIds.map(String) : [],
+    tightBbox: clonePlain(line.tightBbox || null),
+    latex: line.latex || '',
+    acceptedLatex: line.acceptedLatex || '',
+    ocrLatex: line.ocrLatex || '',
+    candidates: (line.candidates || []).slice(0, 5).map(compactOcrCandidate),
+    prediction: compactPrediction(line.prediction || null),
+    grading: clonePlain(line.grading || null),
+    contextualSemantic: clonePlain(line.contextualSemantic || null),
+    sequentialSemantic: clonePlain(line.sequentialSemantic || null),
+    ocrRepair: clonePlain(line.ocrRepair || null),
+    evidenceScore: Number.isFinite(Number(line.evidenceScore)) ? Number(line.evidenceScore) : null,
+    timing: clonePlain(line.timing || null),
+    realtimeStatus: line.realtimeStatus || null,
+    provisional: Boolean(line.provisional)
+  };
+}
+
+function compactCandidate(candidate = {}) {
+  return {
+    candidateId: candidate.candidateId || null,
+    profiles: Array.isArray(candidate.profiles) ? candidate.profiles.slice() : [],
+    strokeIds: Array.isArray(candidate.strokeIds) ? candidate.strokeIds.map(String) : [],
+    tightBbox: clonePlain(candidate.tightBbox || null),
+    conflicts: clonePlain(candidate.conflicts || [])
+  };
+}
+
+function compactPrediction(prediction = null) {
+  if (!prediction) return null;
+  return {
+    latex: prediction.latex || '',
+    top: compactOcrCandidate(prediction.top || null),
+    candidates: (prediction.candidates || []).slice(0, 5).map(compactOcrCandidate),
+    confidence: Number.isFinite(Number(prediction.confidence)) ? Number(prediction.confidence) : null,
+    failed: Boolean(prediction.failed),
+    timedOut: Boolean(prediction.timedOut),
+    error: prediction.error || null,
+    elapsedSeconds: Number.isFinite(Number(prediction.elapsedSeconds)) ? Number(prediction.elapsedSeconds) : null
+  };
+}
+
+function compactOcrCandidate(candidate = null) {
+  if (!candidate) return null;
+  return {
+    latex: candidate.latex || '',
+    score: Number.isFinite(Number(candidate.score)) ? Number(candidate.score) : null,
+    confidence: Number.isFinite(Number(candidate.confidence)) ? Number(candidate.confidence) : null
+  };
+}
+
+function compactStrokes(strokes = []) {
+  return (strokes || []).filter(Boolean).map((stroke) => ({
+    id: String(stroke.id || ''),
+    startTime: stroke.startTime ?? null,
+    endTime: stroke.endTime ?? null,
+    rawPoints: compactPoints(stroke.rawPoints),
+    outlinePoints: compactPoints(stroke.outlinePoints),
+    color: stroke.color || '#000000',
+    canvasBbox: clonePlain(stroke.canvasBbox || null),
+    bbox: clonePlain(stroke.bbox || null)
+  }));
+}
+
+function compactPoints(points = []) {
+  if (!Array.isArray(points)) return [];
+  return points.map((point) => ({
+    x: Number(point?.x) || 0,
+    y: Number(point?.y) || 0,
+    pressure: Number.isFinite(Number(point?.pressure)) ? Number(point.pressure) : null
+  }));
+}
+
+function hasUnreadLine(result = {}) {
+  const lines = Array.isArray(result.lines) ? result.lines : [];
+  if ((Array.isArray(result.latexLines) && result.latexLines.length === 0) && lines.length > 0) return true;
+  return lines.some((line) => (
+    !String(line?.acceptedLatex || line?.latex || '').trim() ||
+    line?.realtimeStatus === 'unread'
+  ));
+}
+
+function hasOcrFailure(result = {}) {
+  const lines = Array.isArray(result.lines) ? result.lines : [];
+  return lines.some((line) => Boolean(line?.prediction?.failed || line?.prediction?.timedOut));
+}
+
+function hasLowConfidenceLine(result = {}) {
+  const lines = Array.isArray(result.lines) ? result.lines : [];
+  return lines.some((line) => {
+    const top = line?.prediction?.top || (Array.isArray(line?.candidates) ? line.candidates[0] : null) || {};
+    const confidence = Number(top.confidence ?? line?.prediction?.confidence);
+    if (Number.isFinite(confidence) && confidence < 0.55) return true;
+    const score = Number(top.score);
+    if (Number.isFinite(score) && score <= -0.25) return true;
+    const evidenceScore = Number(line?.evidenceScore);
+    return Number.isFinite(evidenceScore) && evidenceScore <= -1;
+  });
+}
+
+function configuredNormalSampleRate() {
+  const envRate = import.meta.env?.VITE_VLM_AUDIT_NORMAL_SAMPLE_RATE;
+  return envRate ?? DEFAULT_AUDIT_NORMAL_SAMPLE_RATE;
+}
+
+function normalizedSampleRate(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return DEFAULT_AUDIT_NORMAL_SAMPLE_RATE;
+  return Math.max(0, Math.min(1, number));
+}
+
+function stableHash32(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function unique(items) {
+  return [...new Set(items)];
+}
+
+function stripCandidateImages(value) {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(stripCandidateImages);
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'image' || key === 'dataUrl' || key === 'canvas') continue;
+    result[key] = stripCandidateImages(item);
+  }
+  return result;
+}
+
+function clonePlain(value) {
+  if (value === null || value === undefined) return value ?? null;
+  return JSON.parse(JSON.stringify(stripCandidateImages(value)));
+}
