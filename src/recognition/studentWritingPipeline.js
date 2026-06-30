@@ -10,6 +10,7 @@ import { rasterizeLineCandidate } from './lineRasterizer.js';
 import { recognizeLineImage } from './ocrClient.js';
 import { requestLineDetections } from './segmentationClient.js';
 import { scoreLatexCandidates } from './semanticClient.js';
+import { gradeEquationWork } from '../grading/gradingClient.js';
 
 const FRACTION_CHUNK_RASTER_HEIGHTS = [72, 88, 104];
 
@@ -47,7 +48,9 @@ export async function recognizeStudentWriting(options = {}) {
     stagedAlternativeRecognition = true,
     initialRecognitionConcurrency = 1,
     signal = null,
-    recognizeLine = recognizeLineImage
+    recognizeLine = recognizeLineImage,
+    gradeWork = gradeEquationWork,
+    gradingTimeoutMs = 5000
   } = options;
 
   throwIfAborted(signal);
@@ -115,6 +118,27 @@ export async function recognizeStudentWriting(options = {}) {
   const evidenceByCandidateId = new Map(
     candidatePredictions.map((entry) => [entry.candidateId, entry.evidenceScore])
   );
+  if (recognizeAlternatives) {
+    const preSemanticSelected = selectCandidateCover(candidatesToRecognize, {
+      scoreByCandidateId: evidenceByCandidateId,
+      baselineCandidates: baselineCover
+    });
+    await recognizeDeferredAlternativesInsideWeakSelection(preSemanticSelected, {
+      candidates: candidatesToRecognize,
+      candidatePredictions,
+      evidenceByCandidateId,
+      apiUrl,
+      model,
+      timeoutMs,
+      problemLatex,
+      previousLatex,
+      pipelineStartedAt,
+      rasterPadding,
+      recognizeLine,
+      signal
+    });
+    throwIfAborted(signal);
+  }
   let semantic = await resolveSemanticScores({
     candidatePredictions,
     problemLatex,
@@ -509,14 +533,42 @@ export async function recognizeStudentWriting(options = {}) {
     sequential: selectedLineSemantic,
     sequentialBeforeRetry: semanticRetryUsed ? selectedLineSemanticBeforeRetry : null
   };
-  const grading = buildLiveGradingResult({
+  const answerManifest = semantic.answerManifest ||
+    contextualCandidateSemantic.answerManifest ||
+    selectedLineSemantic.answerManifest ||
+    null;
+  let grading = buildLiveGradingResult({
     problemLatex,
-    answerManifest: semantic.answerManifest ||
-      contextualCandidateSemantic.answerManifest ||
-      selectedLineSemantic.answerManifest ||
-      null,
+    answerManifest,
     lines: recognizedLines
   });
+
+  // Defer to the Python grader for the authoritative problem-level verdict
+  // when the gateway is available. The JS aggregation is a fast fallback.
+  if (apiUrl && typeof gradeWork === 'function') {
+    try {
+      const pythonGrading = await gradeWork({
+        problemLatex,
+        problemMetadata,
+        manifest: answerManifest,
+        lines: recognizedLines.map((line) => ({
+          lineIndex: line.lineIndex,
+          latex: line.acceptedLatex || line.latex || '',
+          candidates: (line.candidates || []).slice(0, 5)
+        }))
+      }, { apiUrl, timeoutMs: gradingTimeoutMs, signal });
+      if (!pythonGrading.failed) {
+        grading = {
+          ...grading,
+          ...pythonGrading,
+          source: 'python-grader',
+          failed: false
+        };
+      }
+    } catch (_error) {
+      // Keep the JS-aggregated grading result on failure.
+    }
+  }
 
   return {
     segmentation: {
@@ -725,6 +777,7 @@ async function resolveSelectedLineSemanticScores({
   const contextLatex = [...(previousLatex || [])].filter(Boolean);
   const lineScores = [];
   let elapsedSeconds = 0;
+  let cachedManifest = null;
 
   try {
     for (const line of scorableLines) {
@@ -732,6 +785,7 @@ async function resolveSelectedLineSemanticScores({
         problemLatex,
         problemMetadata,
         previousLatex: contextLatex.slice(),
+        answerManifest: cachedManifest,
         candidateGroups: [{
           candidateId: line.candidateId,
           lineIndex: line.lineIndex,
@@ -743,11 +797,14 @@ async function resolveSelectedLineSemanticScores({
       throwIfAborted(signal);
 
       elapsedSeconds += Number(payload?.elapsedSeconds) || 0;
+      if (!cachedManifest && payload?.answerManifest) {
+        cachedManifest = payload.answerManifest;
+      }
       const score = (payload?.candidateScores || [])[0];
       if (score) {
         const lineScore = {
           ...score,
-          answerManifest: payload?.answerManifest || score.answerManifest || null,
+          answerManifest: payload?.answerManifest || score.answerManifest || cachedManifest,
           lineIndex: line.lineIndex,
           candidateId: line.candidateId
         };
@@ -1102,6 +1159,63 @@ async function recognizeSkippedSelectedEntry(entry, candidate, {
     ocrElapsedSeconds: finiteSeconds(prediction?.elapsedSeconds)
   };
   evidenceByCandidateId.set(entry.candidateId, entry.evidenceScore);
+}
+
+async function recognizeDeferredAlternativesInsideWeakSelection(selected, {
+  candidates,
+  candidatePredictions,
+  evidenceByCandidateId,
+  apiUrl,
+  model,
+  timeoutMs,
+  problemLatex,
+  previousLatex,
+  pipelineStartedAt,
+  rasterPadding,
+  recognizeLine,
+  signal
+}) {
+  const selectedEntries = (selected || [])
+    .map((candidate) => ({
+      candidate,
+      entry: candidatePredictions.find((item) => item.candidateId === candidate.candidateId)
+    }))
+    .filter(({ entry }) => selectedEntryNeedsDeferredAlternatives(entry));
+  if (selectedEntries.length === 0) return;
+
+  for (const deferredEntry of candidatePredictions) {
+    throwIfAborted(signal);
+    if (!deferredEntry?.skippedRecognition) continue;
+    if (deferredEntry.skipReason !== 'contained-nonstructural-alternative') continue;
+    const deferredCandidate = (candidates || []).find((candidate) => (
+      candidate.candidateId === deferredEntry.candidateId
+    ));
+    if (!deferredCandidate || !deferredCandidate.strokeIds?.length) continue;
+    const containedByWeakSelection = selectedEntries.some(({ candidate }) => (
+      candidate.candidateId !== deferredCandidate.candidateId &&
+      strokeSetStrictlyContainsIds(candidate.strokeIds, deferredCandidate.strokeIds)
+    ));
+    if (!containedByWeakSelection) continue;
+
+    await recognizeSkippedSelectedEntry(deferredEntry, deferredCandidate, {
+      apiUrl,
+      model,
+      timeoutMs,
+      problemLatex,
+      previousLatex,
+      pipelineStartedAt,
+      rasterPadding,
+      recognizeLine,
+      signal,
+      evidenceByCandidateId
+    });
+  }
+}
+
+function selectedEntryNeedsDeferredAlternatives(entry) {
+  if (!entry || entry.skippedRecognition) return false;
+  if (predictionNeedsRetry(entry.prediction)) return true;
+  return Number(entry.evidenceScore) <= -20;
 }
 
 function initialRecognitionSkipReason(candidate, context = {}) {

@@ -13,9 +13,12 @@ handles finite, empty, and all-real solution sets directly, and returns an
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 import math
 import re
+import signal
+import threading
 from typing import Any, Iterable, Optional, Sequence
 
 import sympy
@@ -29,6 +32,7 @@ from sympy.parsing.sympy_parser import (
 
 DEFAULT_TOLERANCE = 0.005
 MAX_OCR_CANDIDATES = 5
+SYMPY_GRADER_BUDGET_SECONDS = 0.5
 TRANSFORMATIONS = standard_transformations + (
     implicit_multiplication_application,
     convert_xor,
@@ -98,6 +102,59 @@ INFINITE_SOLUTION_STRINGS = {
 
 class GradingParseFailure(ValueError):
     """Raised when a math string is outside the V1 parser's support."""
+
+
+class SympyGraderBudgetExceeded(TimeoutError):
+    """Raised when a symbolic grading check exceeds the per-operation budget."""
+
+
+@contextlib.contextmanager
+def sympy_grader_budget(seconds: float = SYMPY_GRADER_BUDGET_SECONDS):
+    """Context manager that raises SympyGraderBudgetExceeded after *seconds*.
+
+    On the main thread this uses SIGALRM / setitimer. In any other thread
+    it is a no-op (signal-based timers only work on the main thread).
+    """
+    if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "setitimer"):
+        yield
+        return
+
+    def raise_timeout(_signum, _frame):
+        raise SympyGraderBudgetExceeded("symbolic grading check exceeded budget")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    signal.signal(signal.SIGALRM, raise_timeout)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
+
+
+def _simplify_with_budget(expr: sympy.Expr, budget: float = SYMPY_GRADER_BUDGET_SECONDS) -> Optional[sympy.Expr]:
+    """Return sympy.simplify(expr) or None if timeout / exception."""
+    try:
+        with sympy_grader_budget(budget):
+            return sympy.simplify(expr)
+    except (Exception, SympyGraderBudgetExceeded):
+        return None
+
+
+def _solveset_with_budget(
+    residual: sympy.Expr,
+    symbol: sympy.Symbol,
+    budget: float = SYMPY_GRADER_BUDGET_SECONDS,
+) -> Optional[sympy.Set]:
+    """Return sympy.solveset(...) or None if timeout / exception."""
+    try:
+        with sympy_grader_budget(budget):
+            return sympy.solveset(residual, symbol, domain=sympy.S.Reals)
+    except (Exception, SympyGraderBudgetExceeded):
+        return None
 
 
 @dataclass(frozen=True)
@@ -336,38 +393,85 @@ def grade_candidate_group(
     previous_latex: Sequence[str] = (),
     problem_latex: str = "",
 ) -> dict[str, Any]:
-    """Grade one OCR candidate group and choose the semantically supported item."""
+    """Grade one OCR candidate group and choose the semantically supported item.
+
+    Caches equivalence results so each candidate's relation to the reference
+    and solution set is computed only once, then reused for the group-level
+    verdict and per-candidate verdicts.
+    """
 
     variable = str(manifest.get("variable") or "x")
     exact_values = manifest_exact_values(manifest)
     candidates = line_candidate_latex(group)
     reference_latex = last_reference_latex(previous_latex, problem_latex, manifest)
-    selected = public_line_selection(
-        classify_line_candidates(
-            candidates,
+
+    # Compute all candidate verdicts once, caching equivalence results.
+    candidate_verdicts_raw: list[dict[str, Any]] = []
+    for index, latex in enumerate(candidates[:MAX_OCR_CANDIDATES]):
+        verdict = classify_line_candidates(
+            [latex],
             manifest,
             exact_values,
             variable,
             reference_latex,
-        ),
-        manifest,
-    )
-    candidate_verdicts = []
-    for index, latex in enumerate(candidates[:MAX_OCR_CANDIDATES]):
-        verdict = public_line_selection(
-            classify_line_candidates([latex], manifest, exact_values, variable, reference_latex),
-            manifest,
         )
-        candidate_verdicts.append({
+        verdict = public_line_selection(verdict, manifest)
+        verdict["_original_candidate_index"] = index
+        candidate_verdicts_raw.append(verdict)
+
+    best, best_original_index = _pick_best_candidate_verdict(candidate_verdicts_raw)
+    if best is not None:
+        selected = best
+        if selected.get("selectedCandidateIndex") is not None:
+            selected["selectedCandidateIndex"] = best_original_index
+    elif candidates:
+        selected = classify_line_candidates(candidates, manifest, exact_values, variable, reference_latex)
+    else:
+        selected = selected_line("", "other", None, "none", ())
+    if selected.get("studentLatex"):
+        selected = public_line_selection(selected, manifest)
+
+    candidate_verdicts = [
+        {
             "candidateIndex": index,
-            "latex": latex,
+            "latex": verdict.get("studentLatex", ""),
             **strip_private_selection_fields(verdict),
-        })
+        }
+        for index, verdict in enumerate(candidate_verdicts_raw)
+    ]
 
     return {
         **strip_private_selection_fields(selected),
         "candidateVerdicts": candidate_verdicts,
     }
+
+
+def _pick_best_candidate_verdict(
+    verdicts: Sequence[dict[str, Any]],
+) -> tuple[Optional[dict[str, Any]], int]:
+    """Select the most supported verdict from pre-computed per-candidate results.
+
+    Priority: best classification (valid_step > invalid_step > other), then
+    best solution_coverage when both are valid.
+
+    Returns (best_verdict, original_candidate_index).
+    """
+    classification_rank = {"valid_step": 0, "invalid_step": 1, "other": 2}
+    coverage_rank = {"full": 0, "partial": 1, "none": 2}
+    best: Optional[dict[str, Any]] = None
+    best_original_index = 0
+    best_rank = (999, 999)
+
+    for verdict in verdicts:
+        cls = verdict.get("classification", "other")
+        cov = verdict.get("solutionCoverage", "none")
+        rank = (classification_rank.get(cls, 99), coverage_rank.get(cov, 99))
+        if rank < best_rank:
+            best_rank = rank
+            best = verdict
+            best_original_index = verdict.get("_original_candidate_index", 0)
+
+    return best, best_original_index
 
 
 def classify_line_candidates(
@@ -546,11 +650,13 @@ def solution_values_equivalent(
     exact_value: sympy.Expr,
     manifest: dict[str, Any],
 ) -> bool:
-    try:
-        if sympy.simplify(candidate_value - exact_value) == 0:
-            return True
-    except Exception:
-        pass
+    simplified = _simplify_with_budget(candidate_value - exact_value)
+    if simplified is not None:
+        try:
+            if simplified == 0:
+                return True
+        except Exception:
+            pass
 
     candidate_float = safe_float(candidate_value)
     exact_float = safe_float(exact_value)
@@ -570,10 +676,11 @@ def equation_equivalent(reference_latex: str, candidate_latex: str, variable: st
         return False
 
     symbol = sympy.Symbol(variable, real=True)
-    try:
-        reference_set = sympy.solveset(reference.residual, symbol, domain=sympy.S.Reals)
-        candidate_set = sympy.solveset(candidate.residual, symbol, domain=sympy.S.Reals)
-    except Exception:
+    reference_set = _solveset_with_budget(reference.residual, symbol)
+    if reference_set is None:
+        return False
+    candidate_set = _solveset_with_budget(candidate.residual, symbol)
+    if candidate_set is None:
         return False
     return solution_sets_equal(reference_set, candidate_set)
 
@@ -585,8 +692,11 @@ def equation_identity(latex: str) -> bool:
         return False
     if parsed.kind != "equation":
         return False
+    simplified = _simplify_with_budget(parsed.residual)
+    if simplified is None:
+        return False
     try:
-        return sympy.simplify(parsed.residual) == 0
+        return bool(simplified == 0)
     except Exception:
         return False
 

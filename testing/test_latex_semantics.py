@@ -1486,7 +1486,7 @@ class LatexSemanticsTests(unittest.TestCase):
                     "candidateId": "slow-candidate",
                     "elapsedSeconds": 8.0,
                     "candidates": [
-                        {"latex": r"2 x = 8", "score": -1.0},
+                        {"latex": r"2 y = 8", "score": -1.0},
                     ],
                 },
             ],

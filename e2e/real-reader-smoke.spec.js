@@ -84,6 +84,41 @@ test('real reader recognizes temporally spaced handwriting replay', async ({ pag
     expect(crop.darkPixels).toBeGreaterThan(10);
   }
 
+  // --- Blind grading verdict assertions ---
+  // These assertions verify the full pipeline: real OCR → real semantic scoring
+  // → real grading. The grading result must reflect the actual recognized lines,
+  // not mocked data.
+  expect(result.grading).toBeTruthy();
+  expect(result.grading.status).toBe('complete');
+  expect(result.grading.failed).toBe(false);
+  expect(result.grading.result).toBeTruthy();
+
+  const problemStatus = result.grading.result.problemStatus;
+  expect(['correct', 'incorrect', 'incomplete', 'not_started']).toContain(problemStatus);
+
+  // For the algebra_prompt_context fixture, the expected work solves 2x + 3 = 11
+  // with steps: 2x = 8, / 2 / 2, x = 4. The problem should be correct.
+  expect(problemStatus).toBe('correct');
+
+  // Every recognized line should have a grading classification.
+  for (const line of result.lines) {
+    expect(line.grading).toBeTruthy();
+    expect(['valid_step', 'invalid_step', 'other']).toContain(line.grading.classification);
+  }
+
+  // At least one line should be classified as a valid step.
+  expect(result.lines.some((line) => line.grading.classification === 'valid_step')).toBe(true);
+
+  // The solution should be found in the matched solutions.
+  expect(result.grading.result.foundSolutions).toContain('4');
+
+  // Steps should be populated.
+  expect(result.grading.steps.length).toBeGreaterThan(0);
+  for (const step of result.grading.steps) {
+    expect(step.studentLatex).toBeTruthy();
+    expect(['valid_step', 'invalid_step', 'other']).toContain(step.classification);
+  }
+
   await expect(page.getByTestId('next-problem')).toBeEnabled();
 
   const screenshotPath = testInfo.outputPath('real-reader-final.png');

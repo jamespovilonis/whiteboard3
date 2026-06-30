@@ -3015,6 +3015,15 @@ def score_candidate_group(
     previous_latex: Sequence[str] = (),
     answer_manifest: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    """Score one OCR candidate group, computing symbolic equivalence once.
+
+    Grading-first strategy: the grader computes symbolic equivalence for each
+    candidate against the reference line and solution set. If any candidate is
+    a valid step or solution match, it is selected directly without re-running
+    equivalence in the semantic scorer. This avoids redundant SymPy work and
+    improves recognition latency for the common case where a valid candidate
+    exists among the top-5 predictions.
+    """
     elapsed_seconds = group.get("elapsedSeconds")
     predictions = list(group.get("candidates") or [])
     if not predictions and group.get("latex"):
@@ -3025,12 +3034,7 @@ def score_candidate_group(
             for prediction in predictions
         ]
 
-    scored = score_ocr_predictions(
-        predictions,
-        problem_latex=problem_latex,
-        previous_latex=previous_latex,
-    )
-    best = scored[0] if scored else None
+    # Grading-first: compute symbolic equivalence once via the grader.
     grading = None
     if answer_manifest is not None:
         grading = grade_candidate_group(
@@ -3039,16 +3043,37 @@ def score_candidate_group(
             previous_latex=previous_latex,
             problem_latex=problem_latex,
         )
+
+    # If grading found a valid step or solution match, select that candidate
+    # directly. This avoids redundant equivalence computation in the semantic
+    # scorer and improves recognition latency.
+    if grading is not None and _grading_prefers_candidate(grading):
         grading_latex = str(grading.get("studentLatex") or "").strip()
-        grading_is_preferred = (
-            grading.get("classification") == "valid_step" or
-            grading.get("solutionCoverage") in {"partial", "full"} or
-            bool(grading.get("matchedSolutions"))
-        )
-        if grading_is_preferred and grading_latex:
-            grading_best = next((item for item in scored if item.latex == grading_latex), None)
-            if grading_best is not None:
-                best = grading_best
+        if grading_latex:
+            scored = _score_candidates_from_grading(grading, grading_latex)
+            best = next((item for item in scored if item.latex == grading_latex), None)
+            if best is None and scored:
+                best = scored[0]
+            return {
+                "candidateId": group.get("candidateId"),
+                "lineIndex": group.get("lineIndex"),
+                "semanticScore": best.score if best else 1000,
+                "bestLatex": best.latex if best else grading_latex,
+                "sound": best.sound if best else True,
+                "equivalentToProblem": best.equivalent_to_problem if best else True,
+                "equivalentToPrevious": best.equivalent_to_previous if best else True,
+                "grading": grading,
+                "candidateScores": [item.to_json() for item in scored],
+            }
+
+    # Fall back to full semantic scoring when grading is unavailable or
+    # found no valid candidate. Repair variants are only explored here.
+    scored = score_ocr_predictions(
+        predictions,
+        problem_latex=problem_latex,
+        previous_latex=previous_latex,
+    )
+    best = scored[0] if scored else None
 
     return {
         "candidateId": group.get("candidateId"),
@@ -3061,6 +3086,61 @@ def score_candidate_group(
         "grading": grading,
         "candidateScores": [item.to_json() for item in scored],
     }
+
+
+def _grading_prefers_candidate(grading: Optional[dict[str, Any]]) -> bool:
+    """Return True when grading found a valid step or solution match."""
+    if not grading:
+        return False
+    if grading.get("classification") == "valid_step":
+        return True
+    if grading.get("solutionCoverage") in {"partial", "full"}:
+        return True
+    if grading.get("matchedSolutions"):
+        return True
+    return False
+
+
+def _score_candidates_from_grading(
+    grading: dict[str, Any],
+    grading_latex: str,
+) -> list[CandidateScore]:
+    """Build CandidateScore list from grading verdicts without recomputing equivalence.
+
+    When the grader has already determined symbolic equivalence for each
+    candidate, we can construct scores directly from its verdicts. This avoids
+    redundant SymPy calls in the semantic scorer.
+    """
+    candidate_verdicts = grading.get("candidateVerdicts") or []
+    scored: list[CandidateScore] = []
+    for verdict in candidate_verdicts:
+        latex = str(verdict.get("latex") or "").strip()
+        if not latex:
+            continue
+        classification = verdict.get("classification", "other")
+        is_valid = classification == "valid_step"
+        is_solution = verdict.get("solutionCoverage") in {"partial", "full"}
+        sound = classification in {"valid_step", "invalid_step"}
+
+        score = 0.0
+        if sound:
+            score += 1.2
+        if is_valid:
+            score += 2.2
+        if is_solution:
+            score += 3.0
+        if latex == grading_latex:
+            score += 5.0
+
+        scored.append(CandidateScore(
+            latex=latex,
+            score=round(score, 4),
+            sound=sound,
+            equivalent_to_problem=bool(is_valid),
+            equivalent_to_previous=bool(is_valid),
+            detail={"fromGrading": True, "classification": classification},
+        ))
+    return sorted(scored, key=lambda item: item.score, reverse=True)
 
 
 def prediction_with_elapsed(prediction: dict[str, Any] | str, elapsed_seconds: Any) -> dict[str, Any] | str:
