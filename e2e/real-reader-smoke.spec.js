@@ -119,6 +119,8 @@ test('real reader recognizes temporally spaced handwriting replay', async ({ pag
     expect(['valid_step', 'invalid_step', 'other']).toContain(step.classification);
   }
 
+  await expect(page.getByTestId('next-problem')).toBeDisabled();
+  await page.getByTestId('submit-answer').click();
   await expect(page.getByTestId('next-problem')).toBeEnabled();
 
   const screenshotPath = testInfo.outputPath('real-reader-final.png');

@@ -116,6 +116,28 @@
   line-height: 1.45;
 }
 
+.model-shell-status {
+  color: rgba(48, 48, 56, 0.76);
+  font-weight: 750;
+}
+
+.model-shell-status[data-status="analyzing"] {
+  color: rgba(42, 94, 171, 0.86);
+  text-transform: lowercase;
+}
+
+.model-shell-status[data-status="correct"] {
+  color: rgb(20, 132, 82);
+}
+
+.model-shell-status[data-status="incorrect"] {
+  color: rgb(190, 56, 48);
+}
+
+.model-shell-status[data-status="incomplete"] {
+  color: rgb(153, 93, 32);
+}
+
 .model-shell-equation {
   width: 100%;
   text-align: center;

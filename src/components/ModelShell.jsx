@@ -5,6 +5,7 @@ const SHELL_TRANSITION_MS = 450;
 
 export default function ModelShell({
   response,
+  activeProblem = null,
   recognitionResults = [],
   auditByProblemId = {},
   debugMode = false,
@@ -13,7 +14,7 @@ export default function ModelShell({
   onNextProblem,
   onSubmitAnswer
 }) {
-  const [mode, setMode] = useState('closed');
+  const [mode, setMode] = useState('open');
   const closeTimerRef = useRef(null);
   const equationHtml = useMemo(() => {
     return katex.renderToString(response.latex, {
@@ -21,6 +22,10 @@ export default function ModelShell({
       displayMode: true
     });
   }, [response.latex]);
+  const problemStatus = problemStatusDisplay(activeProblem, response);
+  const submittedRecognitionResults = useMemo(() => (
+    recognitionResults.filter((entry) => entry.problemStatus === 'submitted')
+  ), [recognitionResults]);
 
   useEffect(() => {
     return () => {
@@ -89,16 +94,20 @@ export default function ModelShell({
           ) : (
             <>
               <div className="model-shell-copy">
-                <p>{response.before}</p>
+                <p
+                  className="model-shell-status"
+                  data-status={problemStatus.status}
+                >
+                  {problemStatus.text}
+                </p>
                 <div
                   className="model-shell-equation"
                   dangerouslySetInnerHTML={{ __html: equationHtml }}
                 />
-                <p>{response.after}</p>
               </div>
 
-              {recognitionResults.length > 0 && (
-                <RecognitionResults results={recognitionResults} />
+              {submittedRecognitionResults.length > 0 && (
+                <RecognitionResults results={submittedRecognitionResults} />
               )}
             </>
           )}
@@ -151,6 +160,57 @@ function RecognitionDebugInspector({ results = [], auditByProblemId = {} }) {
       ))}
     </div>
   );
+}
+
+function problemStatusDisplay(problem, response = {}) {
+  if (!problem) {
+    return {
+      status: 'idle',
+      text: response.before || 'All done.'
+    };
+  }
+
+  if (problem.status !== 'submitted') {
+    return {
+      status: 'solving',
+      text: 'Try your best and press Submit when you are ready.'
+    };
+  }
+
+  if (problem.recognition?.status === 'empty') {
+    return {
+      status: 'incomplete',
+      text: 'Incomplete'
+    };
+  }
+
+  if (problem.recognition?.status === 'error') {
+    return {
+      status: 'incomplete',
+      text: 'Incomplete'
+    };
+  }
+
+  const grading = problem.recognition?.result?.grading || null;
+  const status = grading?.result?.problemStatus || '';
+  if (status === 'correct' || status === 'incorrect' || status === 'incomplete') {
+    return {
+      status,
+      text: gradingDecisionLabel(status)
+    };
+  }
+
+  if (status === 'not_started') {
+    return {
+      status: 'incomplete',
+      text: 'Incomplete'
+    };
+  }
+
+  return {
+    status: 'analyzing',
+    text: 'analyzing'
+  };
 }
 
 function DebugRecognitionResult({ entry, audit = null }) {

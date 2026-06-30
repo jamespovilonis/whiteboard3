@@ -98,6 +98,8 @@ for (const item of CASES) {
     expect(recognizedLines.map(normalizeLatex)).toEqual(
       expect.arrayContaining(expectedLines.map(normalizeLatex))
     );
+    await expect(page.getByTestId('next-problem')).toBeDisabled();
+    await page.getByTestId('submit-answer').click();
     await expect(page.getByTestId('next-problem')).toBeEnabled();
 
     const screenshotPath = testInfo.outputPath(`${item.name}-final.png`);

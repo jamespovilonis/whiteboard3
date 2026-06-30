@@ -85,7 +85,7 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
 
         setProblemFlow((currentFlow) => {
           const targetProblem = currentFlow.problems.find((problem) => problem.id === snapshot.problemId);
-          if (!targetProblem || targetProblem.status !== 'solving') return currentFlow;
+          if (!shouldAcceptRecognitionSnapshot(targetProblem)) return currentFlow;
           return applyProblemRecognitionProgress(currentFlow, snapshot.problemId, {
             status: snapshot.status,
             result: snapshot.result,
@@ -124,12 +124,13 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
 
   useEffect(() => {
     const activeProblem = getActiveProblem(problemFlow);
+    const shouldRecognize = shouldKeepRecognitionAttached(activeProblem);
     schedulerRef.current?.update({
-      problemId: activeProblem?.status === 'solving' ? activeProblem.id : null,
+      problemId: shouldRecognize ? activeProblem.id : null,
       strokes: latestStrokesRef.current,
-      answerBox: activeProblem?.answerBox || null,
-      problemLatex: activeProblem?.latex || '',
-      problemMetadata: activeProblem?.metadata || {},
+      answerBox: shouldRecognize ? activeProblem?.answerBox || null : null,
+      problemLatex: shouldRecognize ? activeProblem?.latex || '' : '',
+      problemMetadata: shouldRecognize ? activeProblem?.metadata || {} : {},
       previousLatex: activeProblem ? previousLatexForSubmission(problemFlow, activeProblem.id) : [],
       apiUrl: getRecognitionApiUrl()
     });
@@ -169,15 +170,7 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
     const strokes = engineRef?.current?.getStrokes?.() || [];
     const result = submitActiveProblem(problemFlow, getViewportWidth());
     setProblemFlow(result.flow);
-    schedulerRef.current?.update({
-      problemId: null,
-      strokes,
-      answerBox: null,
-      problemLatex: '',
-      problemMetadata: {},
-      previousLatex: [],
-      apiUrl: getRecognitionApiUrl()
-    });
+    schedulerRef.current?.flushNow?.();
     onRecognitionEvent?.('submit-active-problem', {
       problemId: activeProblem?.id || null,
       strokeCount: strokes.length,
@@ -221,6 +214,20 @@ function getViewportWidth() {
 
 export function previousLatexForSubmission(_flow, _problemId) {
   return [];
+}
+
+function shouldAcceptRecognitionSnapshot(problem) {
+  if (!problem) return false;
+  if (problem.status === 'solving') return true;
+  if (problem.status !== 'submitted') return false;
+  return !['complete', 'error', 'empty'].includes(problem.recognition?.status);
+}
+
+function shouldKeepRecognitionAttached(problem) {
+  if (!problem?.answerStrokeIds?.length) return false;
+  if (problem.status === 'solving') return true;
+  if (problem.status !== 'submitted') return false;
+  return !['complete', 'error', 'empty'].includes(problem.recognition?.status);
 }
 
 function maybeEnqueueRecognitionAudit({

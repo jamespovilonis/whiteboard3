@@ -4024,10 +4024,22 @@ test('submitting a custom problem freezes it without opening the next prompt', (
 
   assert.equal(submittedProblem.status, 'submitted');
   assert.equal(submittedProblem.answerBoxFrozen, true);
-  assert.equal(submittedProblem.recognition.status, 'idle');
+  assert.equal(submittedProblem.recognition.status, 'pending');
   assert.equal(submitted.activeProblemId, active.id);
   assert.equal(submitted.awaitingEquation, false);
   assert.equal(submitted.completedCount, 1);
+});
+
+test('submitting a blank custom problem marks it incomplete-ready', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
+
+  const submitted = submitActiveProblem(started, 1200).flow;
+  const submittedProblem = getActiveProblem(submitted);
+
+  assert.equal(submittedProblem.status, 'submitted');
+  assert.equal(submittedProblem.recognition.status, 'empty');
+  assert.equal(isProblemReadyForNext(submittedProblem), true);
 });
 
 test('submitted problem answer box ignores later strokes underneath it', () => {
@@ -4126,7 +4138,7 @@ test('answer box keeps horizontally aligned continuation rows with larger vertic
   assert.ok(problem.answerBox.yMax >= rows[3].canvasBbox.yMax);
 });
 
-test('next problem request finalizes a realtime-read solving problem', () => {
+test('next problem request waits for explicit submit after realtime read', () => {
   const initial = createInitialProblemFlow(1200);
   const started = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
   const active = getActiveProblem(started);
@@ -4160,8 +4172,10 @@ test('next problem request finalizes a realtime-read solving problem', () => {
     }
   });
 
-  assert.equal(isProblemReadyForNext(getActiveProblem(read)), true);
-  const next = requestNextProblem(read, 1200).flow;
+  assert.equal(isProblemReadyForNext(getActiveProblem(read)), false);
+  const submitted = submitActiveProblem(read, 1200).flow;
+  assert.equal(isProblemReadyForNext(getActiveProblem(submitted)), true);
+  const next = requestNextProblem(submitted, 1200).flow;
 
   assert.equal(next.problems[0].status, 'submitted');
   assert.equal(next.activeProblemId, null);
@@ -4202,7 +4216,8 @@ test('custom problem flow can render another user latex problem after realtime n
       }
     }
   });
-  const awaitingNextLatex = requestNextProblem(read, 1200).flow;
+  const submitted = submitActiveProblem(read, 1200).flow;
+  const awaitingNextLatex = requestNextProblem(submitted, 1200).flow;
   const secondStarted = startCustomProblem(awaitingNextLatex, '\\sqrt{x + 9} = 7', 1200);
   const secondProblem = getActiveProblem(secondStarted.flow);
 
@@ -4264,7 +4279,7 @@ test('submitted problem flow preserves recognition status and result', () => {
   const submittedProblem = submitted.problems.find((problem) => problem.id === active.id);
   assert.equal(submittedProblem.status, 'submitted');
   assert.equal(submittedProblem.answerBoxFrozen, true);
-  assert.equal(submittedProblem.recognition.status, 'idle');
+  assert.equal(submittedProblem.recognition.status, 'pending');
 
   const completed = applyProblemRecognitionResult(submitted, active.id, {
     latex: 'x = 4',

@@ -71,6 +71,8 @@ test('solves multiple user-entered latex problems and can scroll the canvas for 
       call.postDataJson?.context?.problemLatex === customProblem.latex
     ))).toBe(true);
 
+    await expect(page.getByTestId('next-problem')).toBeDisabled();
+    await page.getByTestId('submit-answer').click();
     await expect(page.getByTestId('next-problem')).toBeEnabled();
     await page.getByTestId('next-problem').click();
     await page.waitForFunction(() => {

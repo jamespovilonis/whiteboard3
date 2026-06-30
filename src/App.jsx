@@ -23,7 +23,7 @@ export default function App() {
   const [penColor, setPenColor] = useState(DEFAULT_PEN_COLOR);
   const [sliderValue, setSliderValue] = useState(4);
   const [isPanning, setIsPanning] = useState(false);
-  const [debugBoxesEnabled, setDebugBoxesEnabled] = useState(true);
+  const [debugBoxesEnabled, setDebugBoxesEnabled] = useState(false);
   const [auditByProblemId, setAuditByProblemId] = useState({});
   const engineRef = useRef(null);
   const e2eEventsRef = useRef([]);
@@ -162,10 +162,11 @@ export default function App() {
 
       <ModelShell
         response={modelResponse}
+        activeProblem={activeProblem}
         recognitionResults={recognitionResults}
         auditByProblemId={auditByProblemId}
         debugMode={debugBoxesEnabled || E2E_TEST_ENABLED}
-        submitDisabled={true}
+        submitDisabled={!isProblemSubmittable(activeProblem)}
         nextProblemDisabled={!isProblemReadyForNext(activeProblem)}
         onSubmitAnswer={handleSubmitAnswer}
         onNextProblem={goToNextProblem}
@@ -229,4 +230,11 @@ function auditStatusLabel(status) {
   if (status === 'disabled') return 'Audit disabled';
   if (status === 'unknown') return 'Audit status unknown';
   return 'Audit processing';
+}
+
+function isProblemSubmittable(problem) {
+  return Boolean(
+    problem &&
+    problem.status === 'solving'
+  );
 }
