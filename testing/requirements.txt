@@ -3,3 +3,5 @@ Pillow
 matplotlib
 opencv-python
 sympy
+fastapi
+uvicorn

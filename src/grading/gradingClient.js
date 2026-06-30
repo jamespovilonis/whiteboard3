@@ -54,7 +54,7 @@ export async function gradeEquationWork(request, options = {}) {
 function gradingHttpErrorMessage(status, url, payload) {
   if (payload?.detail) return payload.detail;
   if (Number(status) === 404) {
-    return `HTTP 404 from ${url}. The recognition gateway is running, but it does not expose grading yet. Restart it with the latest code: python3 testing/semantic_score_server.py --port 8010 --upstream-api-url http://127.0.0.1:8000 --semantic-timeout 2.5`;
+    return `HTTP 404 from ${url}. The recognition API is running, but it does not expose grading yet. Restart it with the latest code: python3 -m src.server.app --port 8010 --upstream-api-url http://127.0.0.1:8000 --semantic-timeout 2.5`;
   }
   return `HTTP ${status} from ${url}`;
 }

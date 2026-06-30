@@ -135,13 +135,13 @@ python3 testing/run_live_recognition_matrix.py \
   --min-accepted-match-rate 1
 ```
 
-## Local Recognition Gateway
+## Local Recognition API
 
 To exercise OCR, segmentation, and semantic scoring through one browser API URL,
 start the CoMER/DBNet server, then run:
 
 ```sh
-python3 testing/semantic_score_server.py \
+python3 -m src.server.app \
   --port 8010 \
   --upstream-api-url http://127.0.0.1:8000 \
   --semantic-timeout 2.5
@@ -150,10 +150,11 @@ python3 testing/semantic_score_server.py \
 Then start the app with:
 
 ```sh
-VITE_OCR_API_URL=http://127.0.0.1:8010 npm run dev
+VITE_API_URL=http://127.0.0.1:8010 npm run dev
 ```
 
-The gateway handles `/score-latex-candidates` directly and proxies
-`/recognize`, `/segment-lines`, `/health`, and `/segment-lines/health` to the
-upstream model server. The semantic timeout keeps malformed or unusually
-complex CoMER candidates from blocking the browser pipeline.
+The FastAPI backend handles `/score-latex-candidates` and
+`/grade-equation-work` directly and proxies `/recognize`, `/segment-lines`,
+`/health`, and `/segment-lines/health` to the upstream model server. The
+semantic timeout keeps malformed or unusually complex CoMER candidates from
+blocking the browser pipeline.

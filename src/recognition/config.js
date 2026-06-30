@@ -1,5 +1,5 @@
 export function getRecognitionApiUrl() {
-  const envUrl = import.meta.env?.VITE_OCR_API_URL;
+  const envUrl = import.meta.env?.VITE_API_URL || import.meta.env?.VITE_OCR_API_URL;
   if (envUrl) return normalizeConfiguredApiUrl(envUrl);
 
   if (typeof window !== 'undefined' && window.location?.hostname) {

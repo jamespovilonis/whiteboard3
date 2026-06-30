@@ -69,7 +69,7 @@ class LiveGradingIntegrationTest(unittest.TestCase):
         if not ocr_server_available(cls.api_url):
             raise unittest.SkipTest(
                 f"OCR server not reachable at {cls.api_url}. "
-                "Start it with: python3 testing/semantic_score_server.py"
+                "Start it with: python3 -m src.server.app --upstream-api-url http://127.0.0.1:8000"
             )
 
     def test_algebra_simple_blind_grading(self):

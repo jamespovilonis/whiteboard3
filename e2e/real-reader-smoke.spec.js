@@ -16,7 +16,7 @@ test.describe.configure({ mode: 'serial' });
 test('real reader recognizes temporally spaced handwriting replay', async ({ page }, testInfo) => {
   test.skip(
     process.env.REAL_OCR_E2E !== '1',
-    'Set REAL_OCR_E2E=1 and VITE_OCR_API_URL=http://127.0.0.1:8010 to run the live reader smoke.'
+    'Set REAL_OCR_E2E=1 and VITE_API_URL=http://127.0.0.1:8010 to run the live reader smoke.'
   );
   test.setTimeout(REAL_READER_TIMEOUT_MS);
 

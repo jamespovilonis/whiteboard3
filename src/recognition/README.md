@@ -111,17 +111,18 @@ previous line, a high semantic score, or a repair from an unsound current top
 candidate. The same conservative rule is used when deciding which recognized
 line to feed into the next line's semantic context.
 
-By default the browser posts OCR, detector, and semantic-scoring requests to the
-current page hostname on port `8010`, matching the local recognition gateway. Set
-`VITE_OCR_API_URL` to override this, for example
-`VITE_OCR_API_URL=http://localhost:8010 npm run dev`.
+By default the browser posts OCR, detector, semantic-scoring, and grading
+requests to the current page hostname on port `8010`, matching the local
+FastAPI recognition backend. Set `VITE_API_URL` to override this, for example
+`VITE_API_URL=http://localhost:8010 npm run dev`. The older
+`VITE_OCR_API_URL` name still works as a compatibility fallback.
 
 The semantic endpoint is optional, but it is most useful when it sits beside the
 model endpoints. During local experiments, run the CoMER/DBNet API on port
-`8000`, then start the standard-library gateway:
+`8000`, then start the FastAPI backend:
 
 ```sh
-python3 testing/semantic_score_server.py \
+python3 -m src.server.app \
   --port 8010 \
   --upstream-api-url http://127.0.0.1:8000 \
   --semantic-timeout 2.5
@@ -130,14 +131,14 @@ python3 testing/semantic_score_server.py \
 Point the app at the gateway:
 
 ```sh
-VITE_OCR_API_URL=http://127.0.0.1:8010 npm run dev
+VITE_API_URL=http://127.0.0.1:8010 npm run dev
 ```
 
-The gateway serves `/score-latex-candidates` locally and proxies `/recognize`,
-`/segment-lines`, and health checks to the model API, so the browser can use one
-base URL for the whole recognition pipeline. Semantic scoring runs behind a
-request-level timeout so pathological SymPy comparisons fail closed instead of
-blocking OCR.
+The backend serves `/score-latex-candidates` and `/grade-equation-work` locally
+and proxies `/recognize`, `/segment-lines`, and health checks to the model API,
+so the browser can use one base URL for the whole recognition pipeline. Semantic
+scoring and grading run behind a request-level timeout so pathological SymPy
+comparisons fail closed instead of blocking OCR.
 
 ## Live Evaluation
 

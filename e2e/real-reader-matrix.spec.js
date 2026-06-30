@@ -49,7 +49,7 @@ for (const item of CASES) {
   test(`real reader preserves one-shot accuracy on rendered fixture: ${item.name}`, async ({ page }, testInfo) => {
     test.skip(
       process.env.REAL_OCR_E2E !== '1',
-      'Set REAL_OCR_E2E=1 and VITE_OCR_API_URL=http://127.0.0.1:8010 to run the live reader matrix.'
+      'Set REAL_OCR_E2E=1 and VITE_API_URL=http://127.0.0.1:8010 to run the live reader matrix.'
     );
     test.fail(Boolean(item.expectedFailure), item.expectedFailure || '');
     test.setTimeout(REAL_MATRIX_TIMEOUT_MS);
