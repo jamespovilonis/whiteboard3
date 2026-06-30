@@ -520,6 +520,115 @@ test('student writing pipeline skips CoMER for contained single-stroke alternati
   assert.ok(noSkipCalls.length > calls.length);
 });
 
+test('student writing pipeline defers larger boxes covered by valid deterministic lines', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('a', 0, 0, 50, 30),
+    stroke('b', 0, 80, 50, 110),
+  ];
+  const calls = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 60, yMax: 120 },
+    problemLatex: 'x = 1',
+    semanticScoring: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async (image) => {
+      calls.push(image.candidateId);
+      if (image.candidateId === 'parent_a|b') {
+        throw new Error('covered parent should not hit initial OCR');
+      }
+      return {
+        latex: 'x = 1',
+        top: { latex: 'x = 1', score: 2 },
+        candidates: [{ latex: 'x = 1', score: 2 }],
+        elapsedSeconds: 0.04
+      };
+    }
+  });
+
+  assert.deepEqual(calls, ['loose_a', 'loose_b']);
+  const parentEntry = result.candidatePredictions.find((entry) => entry.candidateId === 'parent_a|b');
+  assert.ok(parentEntry);
+  assert.equal(parentEntry.skippedRecognition, true);
+  assert.equal(parentEntry.image, null);
+  assert.equal(parentEntry.prediction.skipReason, 'covered-by-valid-deterministic-line');
+  assert.ok(result.candidatePredictions.length > calls.length);
+});
+
+test('student writing pipeline OCRs larger box when deterministic children are weak', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('a', 0, 0, 50, 30),
+    stroke('b', 0, 80, 50, 110),
+  ];
+  const calls = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 60, yMax: 120 },
+    problemLatex: 'x = 1',
+    semanticScoring: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async (image) => {
+      calls.push(image.candidateId);
+      if (image.candidateId === 'parent_a|b') {
+        return {
+          latex: 'x = 1',
+          top: { latex: 'x = 1', score: 2 },
+          candidates: [{ latex: 'x = 1', score: 2 }],
+          elapsedSeconds: 0.04
+        };
+      }
+      return {
+        latex: '',
+        top: null,
+        candidates: [],
+        failed: true,
+        elapsedSeconds: 0.02
+      };
+    }
+  });
+
+  assert.deepEqual(calls, ['loose_a', 'loose_b', 'parent_a|b']);
+  assert.equal(result.lines.length, 1);
+  assert.equal(result.lines[0].candidateId, 'parent_a|b');
+  assert.equal(result.latex, 'x = 1');
+});
+
+test('covered parent deferral can be disabled for eager alternative OCR', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('a', 0, 0, 50, 30),
+    stroke('b', 0, 80, 50, 110),
+  ];
+  const calls = [];
+
+  await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 60, yMax: 120 },
+    problemLatex: 'x = 1',
+    semanticScoring: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    deferCoveredParentRecognition: false,
+    recognizeLine: async (image) => {
+      calls.push(image.candidateId);
+      return {
+        latex: 'x = 1',
+        top: { latex: 'x = 1', score: 2 },
+        candidates: [{ latex: 'x = 1', score: 2 }],
+        elapsedSeconds: 0.04
+      };
+    }
+  });
+
+  assert.ok(calls.includes('parent_a|b'));
+});
+
 test('student writing pipeline defers contained nonstructural alternatives', async () => {
   installFakeCanvas();
   const strokes = [
@@ -762,6 +871,7 @@ test('pipeline debug timing covers selected and discarded candidates', async () 
     answerBox: { xMin: -5, yMin: -5, xMax: 60, yMax: 120 },
     problemLatex: 'x = 1',
     semanticScoring: true,
+    deferCoveredParentRecognition: false,
     retryRasterHeights: [],
     semanticRetryRasterHeights: [],
     recognizeLine: async (image) => {

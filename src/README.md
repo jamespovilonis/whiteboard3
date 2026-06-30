@@ -36,3 +36,11 @@ Submitting a problem snapshots the current strokes, freezes the dynamic answer b
 - `styles/model-shell.css`
 
 Keep new component styles near their feature area unless a value is truly global.
+
+
+## How to start all servers
+
+Type into terminal:
+cd /Users/jpovj/Documents/dev/whiteboard_3
+npm run dev:stop
+npm run dev:all
