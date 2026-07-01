@@ -85,7 +85,11 @@ fed into the next problem's semantic context.
 10. For wide selected lines that still fail, split the line at large horizontal
    gaps, classify isolated equals signs geometrically, OCR the remaining chunks,
    and concatenate the chunk LaTeX.
-11. Return ordered LaTeX lines plus the top candidate lists and elapsed times.
+11. Post-OCR merge pass: coalesce adjacent selected lines when both have low
+    individual OCR confidence and no structural fraction boundary between them.
+    This prevents over-segmentation where a single equation is split into
+    multiple weak lines.
+12. Return ordered LaTeX lines plus the top candidate lists and elapsed times.
 
 The first geometry pass gives us a candidate graph and a stable baseline. The
 OCR pass can then let a single structural parent beat its child rows, or let
@@ -95,6 +99,13 @@ whole-line image, and it cannot collapse several readable rows into a parent
 crop when the parent OCR is missing or empty. Failed or timed-out OCR calls
 degrade to geometry-only selection so the app can still preserve segmentation
 metadata when CoMER is offline.
+
+Initial OCR recognition runs with a concurrency of 3 by default, so multiple
+candidate crops are recognized in parallel to reduce wall-clock latency. The
+post-OCR merge pass then coalesces adjacent weak lines that likely belong to
+the same equation, preventing false over-segmentation without requiring
+additional OCR calls. Semantic retry raster heights are pruned to `[72, 104]`
+to avoid redundant retries on heights that rarely change the OCR result.
 
 OCR crops are normalized to a CoMER-friendly height before the first request,
 then selected-line retries try alternate heights only when the first result is

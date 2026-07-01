@@ -456,7 +456,7 @@ def _pick_best_candidate_verdict(
 
     Returns (best_verdict, original_candidate_index).
     """
-    classification_rank = {"valid_step": 0, "invalid_step": 1, "other": 2}
+    classification_rank = {"valid_step": 0, "invalid_step": 1, "other": 2, "unrecognized": 3}
     coverage_rank = {"full": 0, "partial": 1, "none": 2}
     best: Optional[dict[str, Any]] = None
     best_original_index = 0
@@ -521,6 +521,15 @@ def classify_line_candidates(
     if first_parseable_equation is not None:
         index, text = first_parseable_equation
         return selected_line(text, "invalid_step", index, "none", ())
+
+    # Distinguish between lines with no parseable content at all
+    # (unrecognized) and lines with some non-equation content (other).
+    has_any_text = any(
+        str(latex or "").strip()
+        for latex in candidates[:MAX_OCR_CANDIDATES]
+    )
+    if not has_any_text:
+        return selected_line(first_latex, "unrecognized", 0 if candidates else None, "none", ())
 
     return selected_line(first_latex, "other", 0 if candidates else None, "none", ())
 

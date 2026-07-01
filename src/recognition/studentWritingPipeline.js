@@ -38,7 +38,7 @@ export async function recognizeStudentWriting(options = {}) {
     initialRasterMinCssHeight = 1,
     retryRasterHeights = [88, 104, 72],
     structuralRetryTimeoutMs = 12000,
-    semanticRetryRasterHeights = [48, 64, 72, 88, 104],
+    semanticRetryRasterHeights = [72, 104],
     chunkFallback = true,
     chunkFallbackMinCssWidth = 460,
     chunkFallbackMaxCssWidth = 340,
@@ -47,7 +47,7 @@ export async function recognizeStudentWriting(options = {}) {
     skipSingleStrokeAlternatives = true,
     stagedAlternativeRecognition = true,
     deferCoveredParentRecognition = true,
-    initialRecognitionConcurrency = 1,
+    initialRecognitionConcurrency = 3,
     signal = null,
     recognizeLine = recognizeLineImage,
     gradeWork = gradeEquationWork,
@@ -122,7 +122,7 @@ export async function recognizeStudentWriting(options = {}) {
   if (recognizeAlternatives) {
     const preSemanticSelected = selectCandidateCover(candidatesToRecognize, {
       scoreByCandidateId: evidenceByCandidateId,
-      baselineCandidates: baselineCover
+      baselineCandidates: baselineCover,
     });
     await recognizeDeferredAlternativesInsideWeakSelection(preSemanticSelected, {
       candidates: candidatesToRecognize,
@@ -178,7 +178,7 @@ export async function recognizeStudentWriting(options = {}) {
   let selected = recognizeAlternatives
     ? selectCandidateCover(candidatesToRecognize, {
         scoreByCandidateId: evidenceByCandidateId,
-        baselineCandidates: baselineCover
+        baselineCandidates: baselineCover,
       })
     : segmentation.selected;
   const contextualCandidateSemantic = await resolveContextualCandidateSemanticScores({
@@ -224,7 +224,7 @@ export async function recognizeStudentWriting(options = {}) {
     if (recognizeAlternatives) {
       selected = selectCandidateCover(candidatesToRecognize, {
         scoreByCandidateId: evidenceByCandidateId,
-        baselineCandidates: baselineCover
+        baselineCandidates: baselineCover,
       });
     }
   }
@@ -330,13 +330,20 @@ export async function recognizeStudentWriting(options = {}) {
     }
   }
 
-  const recognizedLines = selected.map((candidate, index) => {
+  let recognizedLines = selected.map((candidate, index) => {
     const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
     return {
       ...entry,
       lineIndex: index,
       selected: true
     };
+  });
+  recognizedLines = postOcrMergePass(recognizedLines, {
+    candidatePredictions,
+    candidatesToRecognize,
+    evidenceByCandidateId,
+    problemLatex,
+    previousLatex
   });
   applyGeometryOperationAnnotationRepairs(recognizedLines, problemLatex);
 
@@ -1590,6 +1597,140 @@ function nearestOperationAnchor(line, equationLines) {
     })
     .filter((item) => item.valid)
     .sort((a, b) => a.score - b.score)[0]?.anchor || null;
+}
+
+/**
+ * Post-OCR merge pass: coalesce adjacent selected lines when both have low
+ * individual OCR confidence and no structural fraction boundary between them.
+ * This prevents over-segmentation where a single equation is split into
+ * multiple weak lines.
+ */
+function postOcrMergePass(lines, {
+  candidatePredictions = [],
+  candidatesToRecognize = [],
+  evidenceByCandidateId = new Map(),
+  problemLatex = '',
+  previousLatex = []
+} = {}) {
+  if (!lines || lines.length < 2) return lines;
+
+  const merged = [];
+  let i = 0;
+  while (i < lines.length) {
+    const current = lines[i];
+    const next = lines[i + 1];
+    if (!next) {
+      merged.push(current);
+      i += 1;
+      continue;
+    }
+
+    if (shouldMergeAdjacentLines(current, next, { problemLatex, previousLatex })) {
+      const combined = mergeLineEntries(current, next, {
+        candidatePredictions,
+        candidatesToRecognize,
+        evidenceByCandidateId,
+        problemLatex,
+        previousLatex
+      });
+      merged.push(combined);
+      i += 2;
+    } else {
+      merged.push(current);
+      i += 1;
+    }
+  }
+
+  return merged.map((line, index) => ({ ...line, lineIndex: index }));
+}
+
+function shouldMergeAdjacentLines(upper, lower, { problemLatex = '', previousLatex = [] } = {}) {
+  if (!upper || !lower) return false;
+  if (upper.skippedRecognition || lower.skippedRecognition) return false;
+
+  const upperEvidence = Number(upper.evidenceScore);
+  const lowerEvidence = Number(lower.evidenceScore);
+  if (Number.isFinite(upperEvidence) && upperEvidence > -50) return false;
+  if (Number.isFinite(lowerEvidence) && lowerEvidence > -50) return false;
+
+  const upperBox = upper.tightBbox;
+  const lowerBox = lower.tightBbox;
+  if (!upperBox || !lowerBox) return false;
+
+  const gap = Math.max(0, lowerBox.yMin - upperBox.yMax);
+  const upperHeight = Math.max(1, upperBox.yMax - upperBox.yMin);
+  if (gap > upperHeight * 0.8) return false;
+
+  const overlap = horizontalOverlapRatio(upperBox, lowerBox);
+  if (overlap < 0.2) return false;
+
+  if (hasFractionBoundaryBetween(upper, lower)) return false;
+
+  const combinedLatex = `${upper.latex || ''} ${lower.latex || ''}`.trim();
+  if (!combinedLatex) return false;
+  if (!/[=]/.test(combinedLatex) && !/\\frac/.test(combinedLatex)) return false;
+
+  return true;
+}
+
+function hasFractionBoundaryBetween(upper, lower) {
+  const upperStrokes = upper.strokes || [];
+  const lowerStrokes = lower.strokes || [];
+  const allStrokes = [...upperStrokes, ...lowerStrokes];
+  const bars = allStrokes.filter((stroke) => {
+    const box = stroke?.canvasBbox;
+    if (!box) return false;
+    const width = Math.max(0, box.xMax - box.xMin);
+    const height = Math.max(1, box.yMax - box.yMin);
+    return width >= 18 && height <= 12 && width >= height * 3.5;
+  });
+  if (bars.length === 0) return false;
+
+  const upperBox = upper.tightBbox;
+  const lowerBox = lower.tightBbox;
+  for (const bar of bars) {
+    const barBox = bar.canvasBbox;
+    const barY = (barBox.yMin + barBox.yMax) / 2;
+    if (barY >= upperBox.yMin && barY <= lowerBox.yMax) return true;
+  }
+  return false;
+}
+
+function mergeLineEntries(upper, lower, {
+  candidatePredictions = [],
+  candidatesToRecognize = [],
+  evidenceByCandidateId = new Map(),
+  problemLatex = '',
+  previousLatex = []
+}) {
+  const combinedStrokes = [...(upper.strokes || []), ...(lower.strokes || [])];
+  const combinedStrokeIds = [...(upper.strokeIds || []), ...(lower.strokeIds || [])];
+  const combinedTightBbox = bboxForStrokes(combinedStrokes);
+  const combinedCandidates = [...(upper.candidates || []), ...(lower.candidates || [])];
+  const mergedPrediction = mergePredictionAttempts([upper.prediction, lower.prediction]);
+  const combinedLatex = [upper.latex, lower.latex].filter(Boolean).join(' ').trim();
+
+  return {
+    ...upper,
+    candidateId: `${upper.candidateId}+${lower.candidateId}`,
+    strokeIds: combinedStrokeIds,
+    strokes: combinedStrokes,
+    tightBbox: combinedTightBbox,
+    prediction: mergedPrediction,
+    candidates: combinedCandidates,
+    ocrLatex: [upper.ocrLatex, lower.ocrLatex].filter(Boolean).join(' ').trim(),
+    latex: combinedLatex,
+    evidenceScore: Number(upper.evidenceScore) + Number(lower.evidenceScore),
+    mergedFrom: [upper.candidateId, lower.candidateId],
+    timing: {
+      ...(upper.timing || {}),
+      ocrElapsedSeconds: finiteSeconds(
+        (Number(upper.timing?.ocrElapsedSeconds) || 0) +
+        (Number(lower.timing?.ocrElapsedSeconds) || 0)
+      ),
+      submitToFinalPredictionSeconds: upper.timing?.submitToFinalPredictionSeconds || 0
+    }
+  };
 }
 
 function finiteSeconds(value) {

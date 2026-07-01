@@ -167,7 +167,32 @@ class EquationGraderWorkTests(unittest.TestCase):
         ])
 
         self.assertEqual(result["result"]["problemStatus"], "not_started")
-        self.assertEqual([step["classification"] for step in result["steps"]], ["other", "other"])
+        self.assertEqual([step["classification"] for step in result["steps"]], ["other", "unrecognized"])
+
+    def test_unrecognized_line_does_not_trigger_incorrect(self):
+        """A line with no parseable content should classify as 'unrecognized',
+        not 'invalid_step', so it doesn't trigger an incorrect problem status."""
+        manifest = create_answer_manifest("3x + 5 = 17")
+        result = grade_equation_work(manifest, [
+            {"latex": "3x = 12"},
+            {"latex": ""},
+        ])
+        self.assertEqual(result["steps"][0]["classification"], "valid_step")
+        self.assertEqual(result["steps"][1]["classification"], "unrecognized")
+        self.assertEqual(result["result"]["problemStatus"], "incomplete")
+
+    def test_unrecognized_with_no_valid_steps_is_not_started(self):
+        """If all lines are unrecognized, the problem should be not_started."""
+        manifest = create_answer_manifest("x + 1 = 2")
+        result = grade_equation_work(manifest, [
+            {"latex": ""},
+            {"latex": ""},
+        ])
+        self.assertEqual(result["result"]["problemStatus"], "not_started")
+        self.assertTrue(all(
+            step["classification"] == "unrecognized" for step in result["steps"]
+        ))
+
 
     def test_accepts_exact_radical_solutions(self):
         manifest = create_answer_manifest("x^2 - 2 = 0")
@@ -375,7 +400,7 @@ class EquationGraderWorkTests(unittest.TestCase):
         for scratch in scratch_patterns:
             with self.subTest(scratch=scratch):
                 result = grade_equation_work(manifest, [{"latex": scratch}])
-                self.assertEqual(result["steps"][0]["classification"], "other")
+                self.assertIn(result["steps"][0]["classification"], ("other", "unrecognized"))
         self.assertEqual(result["result"]["problemStatus"], "not_started")
 
     def test_solution_set_coverage_combined_form(self):

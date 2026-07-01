@@ -381,6 +381,7 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
   score -= adjacentLineIntrusionPenalty(candidate, allCandidates, { medianHeight });
   score -= dbnetLineBoundaryIntrusionPenalty(candidate, allCandidates);
   score -= dbnetBoundaryStrokeIntrusionPenalty(candidate, allCandidates, { medianHeight });
+  score -= annotationPenalty(candidate);
 
   return score;
 }
@@ -1923,6 +1924,122 @@ function mostlyHorizontal(row) {
 
 function isHorizontalStroke(stroke) {
   return stroke?.canvasBbox && strokeWidth(stroke) / strokeHeight(stroke) >= 3;
+}
+
+/**
+ * Detect strokes that look like diagonal strike-through (crossed-out) marks.
+ * A crossed-out stroke is typically long, thin, and diagonal, crossing through
+ * the bounding boxes of multiple other strokes in the same candidate.
+ */
+export function detectCrossedOutStrokes(strokes) {
+  const usable = (strokes || []).filter((stroke) => stroke?.canvasBbox);
+  if (usable.length < 3) return [];
+
+  const medianHeight = median(usable.map(strokeHeight)) || 1;
+  const crossedOut = [];
+
+  for (const stroke of usable) {
+    const box = stroke.canvasBbox;
+    const width = bboxWidth(box);
+    const height = bboxHeight(box);
+    const length = Math.sqrt(width * width + height * height);
+    if (length < Math.max(30, medianHeight * 1.5)) continue;
+    if (width < height * 1.2) continue;
+
+    const aspectRatio = width / Math.max(1, height);
+    if (aspectRatio < 1.2 || aspectRatio > 12) continue;
+
+    const angle = Math.atan2(height, width);
+    if (angle < 0.15 || angle > 1.4) continue;
+
+    const others = usable.filter((other) => other !== stroke);
+    const crossedCount = others.filter((other) => {
+      const otherBox = other.canvasBbox;
+      const overlap = Math.max(0, Math.min(box.xMax, otherBox.xMax) - Math.max(box.xMin, otherBox.xMin));
+      const overlapRatio = overlap / Math.max(1, Math.min(width, bboxWidth(otherBox)));
+      return overlapRatio >= 0.3;
+    }).length;
+
+    if (crossedCount >= 2) {
+      crossedOut.push(stroke);
+    }
+  }
+
+  return crossedOut;
+}
+
+/**
+ * Detect small isolated scratch annotations positioned above the main content.
+ * These are short strokes or small groups of strokes that sit above the main
+ * equation line with a vertical gap, often representing mental arithmetic
+ * notes like "+1" or scratch calculations.
+ */
+export function detectScratchAnnotations(strokes) {
+  const usable = (strokes || []).filter((stroke) => stroke?.canvasBbox);
+  if (usable.length < 4) return [];
+
+  const sorted = usable.slice().sort(compareStrokeCenterY);
+  const medianHeight = median(usable.map(strokeHeight)) || 1;
+  const overallBox = computeTightBbox(usable);
+  if (!overallBox) return [];
+
+  const topThreshold = overallBox.yMin + medianHeight * 0.8;
+  const topStrokes = sorted.filter((stroke) => centerY(stroke.canvasBbox) < topThreshold);
+  if (topStrokes.length === 0 || topStrokes.length === usable.length) return [];
+
+  const topBox = computeTightBbox(topStrokes);
+  if (!topBox) return [];
+  const topWidth = bboxWidth(topBox);
+  const topHeight = bboxHeight(topBox);
+
+  if (topWidth > bboxWidth(overallBox) * 0.5) return [];
+  if (topStrokes.length > 4) return [];
+  if (topHeight > medianHeight * 2.5) return [];
+
+  const remaining = usable.filter((stroke) => !topStrokes.includes(stroke));
+  if (remaining.length < 2) return [];
+  const remainingBox = computeTightBbox(remaining);
+  if (!remainingBox) return [];
+
+  const gap = remainingBox.yMin - topBox.yMax;
+  if (gap < 4 || gap > medianHeight * 1.5) return [];
+
+  if (horizontalOverlapRatio(topBox, remainingBox) < 0.2) return [];
+
+  return topStrokes;
+}
+
+/**
+ * Check if a candidate contains crossed-out or scratch annotation strokes
+ * and return a penalty score if it does.
+ */
+function annotationPenalty(candidate) {
+  const strokes = candidate?.strokes || [];
+  if (strokes.length < 3) return 0;
+
+  const crossedOut = detectCrossedOutStrokes(strokes);
+  const scratch = detectScratchAnnotations(strokes);
+  let penalty = 0;
+
+  if (crossedOut.length > 0) {
+    const nonCrossedCount = strokes.length - crossedOut.length;
+    if (nonCrossedCount < 2) {
+      penalty += 6.0;
+    } else {
+      penalty += 2.5;
+    }
+  }
+
+  if (scratch.length > 0) {
+    const nonScratchCount = strokes.length - scratch.length;
+    if (nonScratchCount < 2) {
+      penalty += 5.0;
+    } else {
+      penalty += 1.5;
+    }
+  }
+
+  return penalty;
 }
 
 function hasCloserUpperNeighbor(childIndex, parentIndex, rows, gapToParent) {
