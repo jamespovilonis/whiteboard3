@@ -69,6 +69,44 @@ class EquationGraderManifestTests(unittest.TestCase):
         self.assertEqual(manifest["cardinality"], "finite")
         self.assertEqual(manifest["exact_set"], ["4"])
 
+    def test_creates_logarithmic_manifest(self):
+        manifest = create_answer_manifest(r"\log { x } = 2")
+
+        self.assertEqual(manifest["cardinality"], "finite")
+        self.assertEqual(manifest["exact_set"], ["exp(2)"])
+        self.assertEqual(manifest["decimal_set"], [7.389])
+
+    def test_creates_base_logarithm_manifest(self):
+        manifest = create_answer_manifest("log_2(x + 1) = 3")
+
+        self.assertEqual(manifest["cardinality"], "finite")
+        self.assertEqual(manifest["exact_set"], ["7"])
+
+    def test_creates_exponential_manifest(self):
+        manifest = create_answer_manifest("2^x = 8")
+
+        self.assertEqual(manifest["cardinality"], "finite")
+        self.assertEqual(manifest["exact_set"], ["3"])
+
+    def test_creates_rational_manifest_with_domain_restriction(self):
+        manifest = create_answer_manifest(r"\frac { x ^ { 2 } - 1 } { x - 1 } = 2")
+
+        self.assertEqual(manifest["cardinality"], "none")
+
+    def test_creates_trigonometric_infinite_family_manifest(self):
+        manifest = create_answer_manifest(r"\sin { x } = 0")
+
+        self.assertEqual(manifest["cardinality"], "infinite_family")
+        self.assertIn("ImageSet", manifest["solution_set_repr"])
+
+    def test_creates_compact_cosine_infinite_family_manifest(self):
+        manifest = create_answer_manifest(r"\cos(x) = 1")
+
+        self.assertEqual(manifest["variable"], "x")
+        self.assertEqual(manifest["cardinality"], "infinite_family")
+        self.assertEqual(manifest["problem_standardized"], "cos(x) = 1")
+        self.assertIn("2*_n*pi", manifest["solution_set_repr"])
+
 
 class EquationGraderWorkTests(unittest.TestCase):
     def test_top_five_candidate_recovery_selects_valid_prediction(self):
@@ -227,6 +265,86 @@ class EquationGraderWorkTests(unittest.TestCase):
 
         self.assertEqual(result["result"]["problemStatus"], "correct")
         self.assertEqual(result["steps"][0]["acceptedSpecialAnswer"], "infinite")
+
+    def test_accepts_logarithmic_solution(self):
+        manifest = create_answer_manifest(r"\ln { x } = 3")
+
+        result = grade_equation_work(manifest, [{"latex": "x = e ^ { 3 }"}])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["matchedSolutions"], ["exp(3)"])
+
+    def test_accepts_base_logarithm_solution(self):
+        for problem_latex in (
+            "log_2(x + 1) = 3",
+            r"\log _ { 2 } ( x + 1 ) = 3",
+            r"\log_{2}{(x + 1)} = 3",
+        ):
+            with self.subTest(problem=problem_latex):
+                manifest = create_answer_manifest(problem_latex)
+
+                result = grade_equation_work(manifest, [{"latex": "x = 7"}])
+
+                self.assertEqual(result["result"]["problemStatus"], "correct")
+                self.assertEqual(result["steps"][0]["matchedSolutions"], ["7"])
+
+    def test_accepts_exponential_solution(self):
+        manifest = create_answer_manifest("3^x = 81")
+
+        result = grade_equation_work(manifest, [{"latex": "x = 4"}])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+
+    def test_accepts_rational_solution(self):
+        manifest = create_answer_manifest(r"\frac { 1 } { x - 1 } = 2")
+
+        result = grade_equation_work(manifest, [{"latex": r"x = \frac { 3 } { 2 }"}])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["matchedSolutions"], ["3/2"])
+
+    def test_accepts_trigonometric_general_solution(self):
+        manifest = create_answer_manifest(r"\sin { x } = 0")
+
+        result = grade_equation_work(manifest, [{"latex": "x = n pi"}])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
+        self.assertEqual(result["steps"][0]["matchedSolutions"], ["infinite_family"])
+
+    def test_accepts_tangent_general_solution(self):
+        manifest = create_answer_manifest(r"\tan ( x ) = 1")
+
+        result = grade_equation_work(manifest, [{"latex": r"x = n \pi + \frac { \pi } { 4 }"}])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+
+    def test_accepts_two_family_cosine_general_solution(self):
+        manifest = create_answer_manifest(r"\cos { x } = \frac { 1 } { 2 }")
+
+        result = grade_equation_work(manifest, [{
+            "latex": r"x = 2 n \pi + \frac { \pi } { 3 }, 2 n \pi + \frac { 5 \pi } { 3 }",
+        }])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+
+    def test_accepts_compact_cosine_general_solution_payload(self):
+        result = grade_equation_payload({
+            "problemLatex": r"\cos(x) = 1",
+            "lines": [{"latex": r"x = 2 n \pi"}],
+        })
+
+        self.assertEqual(result["problem"]["manifest"]["cardinality"], "infinite_family")
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["matchedSolutions"], ["infinite_family"])
+
+    def test_rejects_incomplete_trigonometric_general_solution(self):
+        manifest = create_answer_manifest(r"\cos { x } = \frac { 1 } { 2 }")
+
+        result = grade_equation_work(manifest, [{"latex": r"x = 2 n \pi + \frac { \pi } { 3 }"}])
+
+        self.assertEqual(result["result"]["problemStatus"], "incorrect")
+        self.assertEqual(result["steps"][0]["classification"], "invalid_step")
 
     def test_payload_generates_manifest_from_problem_latex(self):
         result = grade_equation_payload({

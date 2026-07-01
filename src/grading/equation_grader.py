@@ -7,8 +7,9 @@ The grader has two layers:
 * ``grade_equation_work`` classifies OCR line candidates against that manifest.
 
 V1 intentionally focuses on real-valued equations solved for one variable. It
-handles finite, empty, and all-real solution sets directly, and returns an
-``unsupported`` manifest for symbolic sets that need a richer future grader.
+handles finite, empty, all-real, and integer-parameterized infinite solution
+families directly, and returns an ``unsupported`` manifest for symbolic sets
+that need a richer future grader.
 """
 
 from __future__ import annotations
@@ -72,11 +73,36 @@ KNOWN_FUNCTIONS = {
     "sin": sympy.sin,
     "cos": sympy.cos,
     "tan": sympy.tan,
+    "sec": sympy.sec,
+    "csc": sympy.csc,
+    "cot": sympy.cot,
+    "asin": sympy.asin,
+    "acos": sympy.acos,
+    "atan": sympy.atan,
+    "arcsin": sympy.asin,
+    "arccos": sympy.acos,
+    "arctan": sympy.atan,
     "log": sympy.log,
     "ln": sympy.log,
+    "exp": sympy.exp,
     "abs": sympy.Abs,
 }
 KNOWN_CONSTANTS = {"pi": sympy.pi, "e": sympy.E}
+
+LATEX_FUNCTION_REPLACEMENTS = {
+    r"\sin": "sin",
+    r"\cos": "cos",
+    r"\tan": "tan",
+    r"\sec": "sec",
+    r"\csc": "csc",
+    r"\cot": "cot",
+    r"\arcsin": "arcsin",
+    r"\arccos": "arccos",
+    r"\arctan": "arctan",
+    r"\log": "log",
+    r"\ln": "ln",
+    r"\exp": "exp",
+}
 
 NO_SOLUTION_STRINGS = {
     "nosolution",
@@ -226,10 +252,9 @@ def create_answer_manifest(
     manifest["variable"] = symbol.name
     manifest["problem_standardized"] = parsed.standardized
 
-    try:
-        solution_set = sympy.solveset(parsed.residual, symbol, domain=sympy.S.Reals)
-    except Exception as exc:
-        return {**manifest, "error": f"solveset failed: {exc}"}
+    solution_set = _solveset_with_budget(parsed.residual, symbol)
+    if solution_set is None:
+        return {**manifest, "error": "solveset failed or exceeded budget"}
 
     if solution_set == sympy.S.EmptySet:
         return {
@@ -265,6 +290,14 @@ def create_answer_manifest(
             "exact_set": exact_set,
             "decimal_set": decimal_set,
             "acceptable_strings": acceptable_strings_for_finite(symbol.name, values),
+        }
+
+    if isinstance(solution_set, sympy.Set) and solution_set.is_FiniteSet is False:
+        return {
+            **manifest,
+            "cardinality": "infinite_family",
+            "solution_set_repr": sympy.sstr(solution_set),
+            "acceptable_strings": [],
         }
 
     return {
@@ -512,6 +545,16 @@ def classify_line_candidates(
                 solution_match.matched_indices,
             )
 
+        general_match = general_solution_match(text, manifest, variable)
+        if general_match is not None:
+            return selected_line(
+                text,
+                "valid_step",
+                index,
+                general_match.coverage,
+                general_match.matched_indices,
+            )
+
         if equation_equivalent(reference_latex, text, variable):
             return selected_line(text, "valid_step", index, "none", ())
 
@@ -601,6 +644,8 @@ def problem_complete(
         return bool(exact_values) and len(found_indices) == len(exact_values)
     if cardinality in {"none", "infinite"}:
         return -1 in found_indices
+    if cardinality == "infinite_family":
+        return -1 in found_indices
     return False
 
 
@@ -627,6 +672,62 @@ def finite_solution_match(
         return None
     coverage = "full" if len(matched) == len(exact_values) else "partial"
     return SolutionMatch(tuple(sorted(matched)), coverage)
+
+
+def general_solution_match(latex: str, manifest: dict[str, Any], variable: str) -> Optional[SolutionMatch]:
+    if manifest.get("cardinality") != "infinite_family":
+        return None
+
+    expected = manifest_solution_set(manifest, variable)
+    if expected is None:
+        return None
+    candidate = candidate_general_solution_set(latex, variable)
+    if candidate is None:
+        return None
+    if solution_sets_equal(expected, candidate):
+        return SolutionMatch((-1,), "full")
+    return None
+
+
+def manifest_solution_set(manifest: dict[str, Any], variable: str) -> Optional[sympy.Set]:
+    raw = str(manifest.get("problem_raw") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = parse_math(raw)
+    except GradingParseFailure:
+        return None
+    if parsed.kind != "equation":
+        return None
+    symbol = sympy.Symbol(variable, real=True)
+    return _solveset_with_budget(parsed.residual, symbol)
+
+
+def candidate_general_solution_set(latex: str, variable: str) -> Optional[sympy.Set]:
+    parts = split_solution_parts(latex, variable)
+    if not parts:
+        return None
+
+    solution_sets: list[sympy.Set] = []
+    solve_symbol = sympy.Symbol(variable, real=True)
+    for part in parts:
+        try:
+            expression = parse_expression(part)
+        except GradingParseFailure:
+            continue
+        parameter_symbols = sorted(expression.free_symbols - {solve_symbol}, key=lambda item: item.name)
+        if len(parameter_symbols) != 1 or solve_symbol in expression.free_symbols:
+            continue
+        parameter = parameter_symbols[0]
+        integer_parameter = sympy.Symbol(parameter.name, integer=True)
+        integer_expression = expression.xreplace({parameter: integer_parameter})
+        solution_sets.append(sympy.imageset(integer_parameter, integer_expression, sympy.S.Integers))
+
+    if not solution_sets:
+        return None
+    if len(solution_sets) == 1:
+        return solution_sets[0]
+    return sympy.Union(*solution_sets)
 
 
 def special_solution_match(latex: str, manifest: dict[str, Any]) -> Optional[SolutionMatch]:
@@ -711,6 +812,8 @@ def equation_identity(latex: str) -> bool:
 
 
 def solution_sets_equal(a: sympy.Set, b: sympy.Set) -> bool:
+    if a is None or b is None:
+        return False
     if a == b:
         return True
     if isinstance(a, sympy.FiniteSet) and isinstance(b, sympy.FiniteSet) and len(a) == len(b):
@@ -727,6 +830,91 @@ def solution_sets_equal(a: sympy.Set, b: sympy.Set) -> bool:
                 return False
             remaining.pop(match_index)
         return True
+    if symmetric_difference_empty(a, b):
+        return True
+    canonical_a = canonical_periodic_set(a)
+    canonical_b = canonical_periodic_set(b)
+    if canonical_a is not None and canonical_a == canonical_b:
+        return True
+    if sampled_sets_match(a, b):
+        return True
+    return False
+
+
+def symmetric_difference_empty(a: sympy.Set, b: sympy.Set) -> bool:
+    try:
+        with sympy_grader_budget():
+            symmetric_difference = sympy.simplify(a.symmetric_difference(b))
+    except (Exception, SympyGraderBudgetExceeded):
+        return False
+    return symmetric_difference == sympy.S.EmptySet
+
+
+def canonical_periodic_set(solution_set: sympy.Set) -> Optional[tuple[Any, ...]]:
+    if isinstance(solution_set, sympy.ImageSet):
+        lambda_expr, base_set = solution_set.args
+        if base_set != sympy.S.Integers or not isinstance(lambda_expr, sympy.Lambda):
+            return None
+        parameter = lambda_expr.variables[0]
+        canonical_parameter = sympy.Symbol("_k", integer=True)
+        canonical_expr = sympy.simplify(lambda_expr.expr.xreplace({parameter: canonical_parameter}))
+        return ("image", sympy.sstr(canonical_expr))
+    if isinstance(solution_set, sympy.Union):
+        parts = [canonical_periodic_set(part) for part in solution_set.args]
+        if any(part is None for part in parts):
+            return None
+        return ("union", tuple(sorted(parts)))
+    return None
+
+
+def sampled_sets_match(a: sympy.Set, b: sympy.Set) -> bool:
+    a_samples = sample_solution_set_values(a)
+    b_samples = sample_solution_set_values(b)
+    if not a_samples or not b_samples:
+        return False
+    for value in a_samples:
+        if not set_contains_value(b, value):
+            return False
+    for value in b_samples:
+        if not set_contains_value(a, value):
+            return False
+    return True
+
+
+def sample_solution_set_values(solution_set: sympy.Set) -> list[sympy.Expr]:
+    if isinstance(solution_set, sympy.FiniteSet):
+        return list(solution_set)
+    if isinstance(solution_set, sympy.ImageSet):
+        lambda_expr, base_set = solution_set.args
+        if base_set != sympy.S.Integers or not isinstance(lambda_expr, sympy.Lambda):
+            return []
+        parameter = lambda_expr.variables[0]
+        return [
+            sympy.simplify(lambda_expr.expr.subs(parameter, value))
+            for value in range(-3, 4)
+        ]
+    if isinstance(solution_set, sympy.Union):
+        samples: list[sympy.Expr] = []
+        for part in solution_set.args:
+            samples.extend(sample_solution_set_values(part))
+        return samples
+    return []
+
+
+def set_contains_value(solution_set: sympy.Set, value: sympy.Expr) -> bool:
+    try:
+        contained = solution_set.contains(value)
+        if contained == sympy.true:
+            return True
+        if contained == sympy.false:
+            return False
+    except Exception:
+        pass
+    if isinstance(solution_set, sympy.FiniteSet):
+        return any(
+            solution_values_equivalent(value, exact, {"tolerance": DEFAULT_TOLERANCE})
+            for exact in solution_set
+        )
     return False
 
 
@@ -925,15 +1113,146 @@ def normalize_math_text(text: str) -> str:
 
     for old, new in LATEX_COMMAND_REPLACEMENTS.items():
         output = output.replace(old, new)
+    for old, new in sorted(LATEX_FUNCTION_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
+        output = output.replace(old, new)
     for old, new in sorted(LATEX_VARIABLE_COMMANDS.items(), key=lambda item: len(item[0]), reverse=True):
         output = output.replace(old, new)
 
     output = replace_structural_latex(output)
     output = output.replace("{", "(").replace("}", ")")
+    output = normalize_log_base_application(output)
+    output = normalize_bare_function_application(output)
+    output = normalize_spaced_implicit_multiplication(output)
     output = re.sub(r"\s+", "", output)
     if "\\" in output:
         raise GradingParseFailure("unsupported LaTeX command")
     return output
+
+
+def normalize_log_base_application(text: str) -> str:
+    result: list[str] = []
+    index = 0
+    while index < len(text):
+        if not starts_word_at(text, "log", index):
+            result.append(text[index])
+            index += 1
+            continue
+
+        after_name = skip_spaces(text, index + 3)
+        if after_name >= len(text) or text[after_name] != "_":
+            result.append(text[index])
+            index += 1
+            continue
+
+        try:
+            base, after_base = extract_log_base_token(text, after_name + 1)
+            argument, after_argument = extract_log_argument_token(text, after_base)
+        except GradingParseFailure:
+            result.append(text[index])
+            index += 1
+            continue
+
+        result.append(f"log({argument},{base})")
+        index = after_argument
+    return "".join(result)
+
+
+def starts_word_at(text: str, word: str, index: int) -> bool:
+    if not text.startswith(word, index):
+        return False
+    before = text[index - 1] if index > 0 else ""
+    after_index = index + len(word)
+    after = text[after_index] if after_index < len(text) else ""
+    return not before.isalnum() and before != "_" and not after.isalnum()
+
+
+def extract_log_base_token(text: str, index: int) -> tuple[str, int]:
+    start = skip_spaces(text, index)
+    if start >= len(text):
+        raise GradingParseFailure("expected logarithm base")
+    if text[start] == "(":
+        return extract_parenthetical_token(text, start)
+
+    end = start
+    while end < len(text) and not text[end].isspace() and text[end] not in "()+-*/=,":
+        end += 1
+    if end == start:
+        raise GradingParseFailure("expected logarithm base")
+    return text[start:end], end
+
+
+def extract_log_argument_token(text: str, index: int) -> tuple[str, int]:
+    start = skip_spaces(text, index)
+    if start >= len(text):
+        raise GradingParseFailure("expected logarithm argument")
+    if text[start] == "(":
+        return extract_parenthetical_token(text, start)
+
+    end = start
+    while end < len(text) and not text[end].isspace() and text[end] not in "+-*/=,":
+        end += 1
+    if end == start:
+        raise GradingParseFailure("expected logarithm argument")
+    return text[start:end], end
+
+
+def extract_parenthetical_token(text: str, opening_index: int) -> tuple[str, int]:
+    if opening_index >= len(text) or text[opening_index] != "(":
+        raise GradingParseFailure("expected a parenthetical group")
+    depth = 0
+    for index in range(opening_index, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return text[opening_index + 1:index], index + 1
+    raise GradingParseFailure("unbalanced parentheses")
+
+
+def normalize_bare_function_application(text: str) -> str:
+    function_names = sorted(KNOWN_FUNCTIONS, key=len, reverse=True)
+    function_pattern = "|".join(re.escape(name) for name in function_names)
+    return re.sub(
+        rf"\b({function_pattern})\s+([A-Za-z][A-Za-z0-9_]*|\d+(?:\.\d+)?)\b",
+        r"\1(\2)",
+        text,
+    )
+
+
+def normalize_spaced_implicit_multiplication(text: str) -> str:
+    output: list[str] = []
+    index = 0
+    function_names = tuple(sorted(KNOWN_FUNCTIONS, key=len, reverse=True))
+    while index < len(text):
+        char = text[index]
+        if not char.isspace():
+            output.append(char)
+            index += 1
+            continue
+
+        next_index = index
+        while next_index < len(text) and text[next_index].isspace():
+            next_index += 1
+
+        previous = output[-1] if output else ""
+        next_char = text[next_index] if next_index < len(text) else ""
+        prefix = "".join(output)
+        follows_function = next_char == "(" and any(
+            re.search(rf"\b{re.escape(name)}$", prefix)
+            for name in function_names
+        )
+        if (
+            previous
+            and next_char
+            and re.match(r"[A-Za-z0-9)]", previous)
+            and re.match(r"[A-Za-z(]", next_char)
+            and not follows_function
+        ):
+            output.append("*")
+
+        index = next_index
+    return "".join(output)
 
 
 def replace_structural_latex(text: str) -> str:
