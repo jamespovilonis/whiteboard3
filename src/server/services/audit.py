@@ -255,7 +255,6 @@ class RecognitionAuditService:
         attempts: list[dict[str, Any]],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         last_schema_error: AuditSchemaError | None = None
-        last_error: Exception | None = None
         for attempt_index in range(2):
             started = time.perf_counter()
             raw_vlm: dict[str, Any] | None = None
@@ -285,7 +284,6 @@ class RecognitionAuditService:
                     write_json(audit_dir / f"vlm_raw_attempt_{attempt_index + 1}.json", raw_vlm)
             except Exception as exc:
                 elapsed = time.perf_counter() - started
-                last_error = exc
                 attempts.append({
                     "attempt": attempt_index + 1,
                     "status": "failed",
@@ -293,10 +291,9 @@ class RecognitionAuditService:
                     "error": str(exc),
                     "elapsedSeconds": round(elapsed, 3),
                 })
+                raise
         if last_schema_error is not None:
             raise last_schema_error
-        if last_error is not None:
-            raise last_error
         raise RuntimeError("VLM audit failed without an attempt result")
 
     def _set_status(self, audit_id: str, status_payload: dict[str, Any]) -> None:

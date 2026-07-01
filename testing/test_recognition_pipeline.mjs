@@ -864,6 +864,84 @@ test('student writing pipeline runs independent initial OCR alternatives concurr
   assert.equal(result.latex, 'x = 1');
 });
 
+test('post-OCR merge coalesces same-row final answer fragments left to right', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('x', 0, 0, 40, 50),
+    stroke('eq', 72, -5, 96, 55),
+    stroke('nine', 104, -5, 140, 55),
+  ];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -20, xMax: 160, yMax: 80 },
+    problemLatex: 'x = 11',
+    semanticScoring: true,
+    skipSingleStrokeAlternatives: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async (image) => {
+      const strokeIds = image.strokeIds.join('|');
+      if (strokeIds.includes('x') && strokeIds.includes('eq') && strokeIds.includes('nine')) {
+        return { failed: true, latex: '', top: null, candidates: [], elapsedSeconds: 0.01 };
+      }
+      if (strokeIds === 'x') {
+        return {
+          latex: 'x',
+          top: { latex: 'x', score: 20 },
+          candidates: [{ latex: 'x', score: 20 }],
+          elapsedSeconds: 0.01
+        };
+      }
+      if (strokeIds.includes('eq') && strokeIds.includes('nine')) {
+        return {
+          latex: '= 9',
+          top: { latex: '= 9', score: 20 },
+          candidates: [{ latex: '= 9', score: 20 }],
+          elapsedSeconds: 0.01
+        };
+      }
+      return { latex: '', top: null, candidates: [], elapsedSeconds: 0 };
+    },
+    scoreSemantics: async (request) => ({
+      answerManifest: {
+        problem_raw: request.problemLatex,
+        variable: 'x',
+        cardinality: 'finite',
+        exact_set: ['11'],
+        decimal_set: [11],
+        tolerance: 0.005
+      },
+      candidateScores: request.candidateGroups.map((group) => {
+        const isMergedFinalAnswer = String(group.latex || '').trim() === 'x = 9';
+        return {
+          candidateId: group.candidateId,
+          lineIndex: group.lineIndex,
+          semanticScore: isMergedFinalAnswer ? 1 : 10,
+          bestLatex: group.latex,
+          sound: false,
+          equivalentToProblem: false,
+          equivalentToPrevious: false,
+          grading: isMergedFinalAnswer ? {
+            studentLatex: group.latex,
+            classification: 'invalid_step',
+            selectedCandidateIndex: 0,
+            solutionCoverage: 'none',
+            matchedSolutions: []
+          } : null,
+          candidateScores: []
+        };
+      }),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.equal(result.lines.length, 1);
+  assert.deepEqual(result.lines[0].mergedFrom, ['strict_eq|nine', 'strict_x']);
+  assert.equal(result.latex, 'x = 9');
+  assert.equal(result.grading.result.problemStatus, 'incorrect');
+});
+
 test('pipeline debug timing covers selected and discarded candidates', async () => {
   installFakeCanvas();
   const strokes = [
@@ -2854,6 +2932,43 @@ test('wide selected line tries chunk OCR before height retries', async () => {
   assert.equal(result.latex, 'x = 10');
 });
 
+test('selected line height retries stop after the first timeout', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('x', 0, 0, 40, 40),
+    stroke('eq_top', 70, 14, 110, 20),
+    stroke('eq_bottom', 70, 30, 110, 36),
+    stroke('four', 140, 0, 180, 40),
+  ];
+  assignTimes(strokes);
+  const targetHeights = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 200, yMax: 65 },
+    problemLatex: 'x = 4',
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    retryRasterHeights: [72, 88, 104],
+    initialRasterHeight: 104,
+    semanticRetryRasterHeights: [],
+    recognizeLine: async (image) => {
+      targetHeights.push(image.targetPixelHeight);
+      return {
+        latex: '',
+        top: null,
+        candidates: [],
+        timedOut: true,
+        elapsedSeconds: 20
+      };
+    }
+  });
+
+  assert.deepEqual(targetHeights, [104, 72]);
+  assert.equal(result.lines[0].retryPredictions.length, 1);
+  assert.equal(result.lines[0].retryPredictions[0].timedOut, true);
+});
+
 test('ellipsis-truncated wide rows fall back to chunk OCR', async () => {
   installFakeCanvas();
   const strokes = [
@@ -3260,7 +3375,8 @@ test('selected lines are semantically refined with previous lines from the same 
       }
 
       const group = request.candidateGroups[0];
-      const bestLatex = request.previousLatex.includes('\\eta = 5')
+      const context = group.previousLatex || request.previousLatex || [];
+      const bestLatex = context.includes('\\eta = 5')
         ? '\\eta + 1 = 6'
         : '\\eta = 5';
       return {
@@ -3286,6 +3402,73 @@ test('selected lines are semantically refined with previous lines from the same 
   assert.deepEqual(result.latexLines, ['\\eta = 5', '\\eta + 1 = 6']);
   assert.equal(result.semantic.sequential.lineScores.length, 2);
   assert.equal(result.lines[1].sequentialSemantic.bestLatex, '\\eta + 1 = 6');
+});
+
+test('contextual candidate semantic scoring batches per-line contexts', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('a', 0, 0, 50, 30),
+    stroke('b', 0, 80, 50, 110),
+    stroke('c', 0, 160, 50, 190),
+  ];
+  const semanticRequests = [];
+
+  await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 70, yMax: 210 },
+    problemLatex: 'a = 1',
+    semanticScoring: true,
+    recognizeAlternatives: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async (image) => {
+      const latex = image.tightBbox.yMin < 50
+        ? 'a = 1'
+        : image.tightBbox.yMin < 130
+          ? 'a + 1 = 2'
+          : 'a + 2 = 3';
+      return {
+        latex,
+        top: { latex, score: 1 },
+        candidates: [{ latex, score: 1 }],
+        elapsedSeconds: 0.03
+      };
+    },
+    scoreSemantics: async (request) => {
+      semanticRequests.push(JSON.parse(JSON.stringify(request)));
+      return {
+        candidateScores: request.candidateGroups.map((group) => {
+          const context = group.previousLatex || request.previousLatex || [];
+          return {
+            candidateId: group.candidateId,
+            lineIndex: group.lineIndex,
+            semanticScore: context.length,
+            bestLatex: group.latex,
+            sound: true,
+            equivalentToProblem: false,
+            equivalentToPrevious: context.length > 0,
+            candidateScores: []
+          };
+        }),
+        elapsedSeconds: 0.01
+      };
+    }
+  });
+
+  const contextualRequest = semanticRequests.find((request) => (
+    request.candidateGroups.length === 2 &&
+    request.candidateGroups.every((group) => Array.isArray(group.previousLatex))
+  ));
+
+  assert.ok(contextualRequest);
+  assert.ok(contextualRequest.candidateGroups.some((group) => (
+    group.previousLatex.includes('a = 1') &&
+    !group.previousLatex.includes('a + 1 = 2')
+  )));
+  assert.ok(contextualRequest.candidateGroups.some((group) => (
+    group.previousLatex.includes('a = 1') &&
+    group.previousLatex.includes('a + 1 = 2')
+  )));
 });
 
 test('same-answer context can reselect the cover away from a parent crop', async () => {
@@ -3337,7 +3520,8 @@ test('same-answer context can reselect the cover away from a parent crop', async
       }
 
       const group = request.candidateGroups[0];
-      const hasEtaContext = request.previousLatex.includes('\\eta = 5');
+      const context = group.previousLatex || request.previousLatex || [];
+      const hasEtaContext = context.includes('\\eta = 5');
       const isLowerLine = group.latex === 'z + 1 = 6' || group.latex === '\\eta + 1 = 6';
       return {
         candidateScores: [{

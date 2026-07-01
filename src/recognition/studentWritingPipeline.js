@@ -38,7 +38,7 @@ export async function recognizeStudentWriting(options = {}) {
     initialRasterMinCssHeight = 1,
     retryRasterHeights = [88, 104, 72],
     structuralRetryTimeoutMs = 12000,
-    semanticRetryRasterHeights = [72, 104],
+    semanticRetryRasterHeights = [48, 64, 72, 88, 104],
     chunkFallback = true,
     chunkFallbackMinCssWidth = 460,
     chunkFallbackMaxCssWidth = 340,
@@ -47,7 +47,7 @@ export async function recognizeStudentWriting(options = {}) {
     skipSingleStrokeAlternatives = true,
     stagedAlternativeRecognition = true,
     deferCoveredParentRecognition = true,
-    initialRecognitionConcurrency = 3,
+    initialRecognitionConcurrency = 1,
     signal = null,
     recognizeLine = recognizeLineImage,
     gradeWork = gradeEquationWork,
@@ -800,36 +800,49 @@ async function resolveContextualCandidateSemanticScores({
   }
 
   const candidateScores = [];
-  let elapsedSeconds = 0;
 
   try {
+    const sameAnswerContextByCandidateId = new Map();
+    const contextualGroups = [];
     for (const entry of scorablePredictions) {
       const sameAnswerContext = priorLineContextLatex(entry, scorablePredictions);
       if (sameAnswerContext.length === 0) continue;
-
-      const payload = await scoreSemantics({
-        problemLatex,
-        problemMetadata,
+      sameAnswerContextByCandidateId.set(entry.candidateId, sameAnswerContext);
+      contextualGroups.push({
+        candidateId: entry.candidateId,
+        latex: entry.latex,
         previousLatex: [
           ...(previousLatex || []),
           ...sameAnswerContext
         ].filter(Boolean),
-        candidateGroups: [{
-          candidateId: entry.candidateId,
-          latex: entry.latex,
-          candidates: semanticCandidateAlternatives(entry.candidates, semanticCandidateLimit),
-          elapsedSeconds: entry.prediction?.elapsedSeconds
-        }]
-      }, { apiUrl, timeoutMs, signal });
-      throwIfAborted(signal);
+        candidates: semanticCandidateAlternatives(entry.candidates, semanticCandidateLimit),
+        elapsedSeconds: entry.prediction?.elapsedSeconds
+      });
+    }
 
-      elapsedSeconds += Number(payload?.elapsedSeconds) || 0;
-      const score = (payload?.candidateScores || [])[0];
+    if (contextualGroups.length === 0) {
+      return {
+        source: 'empty',
+        failed: false,
+        elapsedSeconds: 0,
+        candidateScores: []
+      };
+    }
+
+    const payload = await scoreSemantics({
+      problemLatex,
+      problemMetadata,
+      previousLatex,
+      candidateGroups: contextualGroups
+    }, { apiUrl, timeoutMs, signal });
+    throwIfAborted(signal);
+
+    for (const score of payload?.candidateScores || []) {
       if (score) {
         candidateScores.push({
           ...score,
           answerManifest: payload?.answerManifest || score.answerManifest || null,
-          sameAnswerContext
+          sameAnswerContext: sameAnswerContextByCandidateId.get(score.candidateId) || []
         });
       }
     }
@@ -837,7 +850,7 @@ async function resolveContextualCandidateSemanticScores({
     return {
       source: 'semantic-service',
       failed: false,
-      elapsedSeconds,
+      elapsedSeconds: Number(payload?.elapsedSeconds) || 0,
       answerManifest: candidateScores.find((entry) => entry.answerManifest)?.answerManifest || null,
       candidateScores
     };
@@ -1085,11 +1098,13 @@ async function retrySelectedLineRecognition(candidate, {
   recognizeLine
 }) {
   const attempts = [];
+  let sawTimeout = false;
   const seenHeights = new Set((skipRasterHeights || [])
     .map((height) => Number(height))
     .filter((height) => Number.isFinite(height) && height > 0));
   for (const height of retryRasterHeights || []) {
     throwIfAborted(signal);
+    if (sawTimeout) break;
     const targetPixelHeight = Number(height);
     if (!Number.isFinite(targetPixelHeight) || targetPixelHeight <= 0 || seenHeights.has(targetPixelHeight)) {
       continue;
@@ -1110,9 +1125,11 @@ async function retrySelectedLineRecognition(candidate, {
       ...prediction,
       retryTargetPixelHeight: targetPixelHeight
     });
+    if (prediction?.timedOut) sawTimeout = true;
   }
   if (
     attempts.length &&
+    (!sawTimeout || candidateNeedsExtendedTimeout(candidate)) &&
     attempts.every((attempt) => predictionNeedsRetry(attempt)) &&
     candidateNeedsExtendedTimeout(candidate) &&
     Number(extendedTimeoutMs) > Number(timeoutMs)
@@ -1137,7 +1154,12 @@ async function retrySelectedLineRecognition(candidate, {
       extendedTimeoutMs: Number(extendedTimeoutMs)
     });
   }
-  if (chunkFallback && attempts.length && attempts.every((attempt) => predictionNeedsRetry(attempt))) {
+  if (
+    chunkFallback &&
+    !sawTimeout &&
+    attempts.length &&
+    attempts.every((attempt) => predictionNeedsRetry(attempt))
+  ) {
     const chunked = await recognizeChunkedLine(candidate, {
       apiUrl,
       model,
@@ -1314,7 +1336,7 @@ async function recognizeDeferredAlternativesInsideWeakSelection(selected, {
 function selectedEntryNeedsDeferredAlternatives(entry) {
   if (!entry || entry.skippedRecognition) return false;
   if (predictionNeedsRetry(entry.prediction)) return true;
-  return Number(entry.evidenceScore) <= -20;
+  return Number(entry.evidenceScore) <= -35;
 }
 
 function initialRecognitionSkipReason(candidate, context = {}) {
@@ -1601,9 +1623,10 @@ function nearestOperationAnchor(line, equationLines) {
 
 /**
  * Post-OCR merge pass: coalesce adjacent selected lines when both have low
- * individual OCR confidence and no structural fraction boundary between them.
+ * individual OCR confidence and no structural fraction boundary between them,
+ * or when same-row fragments form a plausible equation in left-to-right order.
  * This prevents over-segmentation where a single equation is split into
- * multiple weak lines.
+ * multiple weak lines or symbol fragments.
  */
 function postOcrMergePass(lines, {
   candidatePredictions = [],
@@ -1625,11 +1648,13 @@ function postOcrMergePass(lines, {
       continue;
     }
 
-    if (shouldMergeAdjacentLines(current, next, { problemLatex, previousLatex })) {
+    const mergeMode = adjacentLineMergeMode(current, next, { problemLatex, previousLatex });
+    if (mergeMode) {
       const combined = mergeLineEntries(current, next, {
         candidatePredictions,
         candidatesToRecognize,
         evidenceByCandidateId,
+        mergeMode,
         problemLatex,
         previousLatex
       });
@@ -1644,9 +1669,10 @@ function postOcrMergePass(lines, {
   return merged.map((line, index) => ({ ...line, lineIndex: index }));
 }
 
-function shouldMergeAdjacentLines(upper, lower, { problemLatex = '', previousLatex = [] } = {}) {
+function adjacentLineMergeMode(upper, lower, { problemLatex = '', previousLatex = [] } = {}) {
   if (!upper || !lower) return false;
   if (upper.skippedRecognition || lower.skippedRecognition) return false;
+  if (shouldMergeInlineEquationFragments(upper, lower)) return 'inline';
 
   const upperEvidence = Number(upper.evidenceScore);
   const lowerEvidence = Number(lower.evidenceScore);
@@ -1670,7 +1696,28 @@ function shouldMergeAdjacentLines(upper, lower, { problemLatex = '', previousLat
   if (!combinedLatex) return false;
   if (!/[=]/.test(combinedLatex) && !/\\frac/.test(combinedLatex)) return false;
 
-  return true;
+  return 'vertical';
+}
+
+function shouldMergeInlineEquationFragments(first, second) {
+  const firstBox = first?.tightBbox;
+  const secondBox = second?.tightBbox;
+  if (!firstBox || !secondBox) return false;
+
+  const verticalOverlap = bboxVerticalOverlapRatio(firstBox, secondBox);
+  const centerDistance = Math.abs(bboxYCenter(firstBox) - bboxYCenter(secondBox));
+  const maxHeight = Math.max(1, bboxHeight(firstBox), bboxHeight(secondBox));
+  if (verticalOverlap < 0.25 && centerDistance > maxHeight * 0.45) return false;
+
+  const gap = bboxHorizontalGap(firstBox, secondBox);
+  if (gap > Math.max(80, maxHeight * 1.1)) return false;
+
+  const ordered = orderLinesForInlineMerge(first, second);
+  const parts = ordered.map((line) => normalizedLineLatex(line));
+  if (!parts[0] || !parts[1]) return false;
+  if (!parts.some(looksLikeEquationFragment)) return false;
+
+  return looksLikeInlineEquation(parts.join(' '));
 }
 
 function hasFractionBoundaryBetween(upper, lower) {
@@ -1700,15 +1747,17 @@ function mergeLineEntries(upper, lower, {
   candidatePredictions = [],
   candidatesToRecognize = [],
   evidenceByCandidateId = new Map(),
+  mergeMode = 'vertical',
   problemLatex = '',
   previousLatex = []
 }) {
-  const combinedStrokes = [...(upper.strokes || []), ...(lower.strokes || [])];
-  const combinedStrokeIds = [...(upper.strokeIds || []), ...(lower.strokeIds || [])];
+  const orderedLines = mergeMode === 'inline' ? orderLinesForInlineMerge(upper, lower) : [upper, lower];
+  const combinedStrokes = orderedLines.flatMap((line) => line.strokes || []);
+  const combinedStrokeIds = orderedLines.flatMap((line) => line.strokeIds || []);
   const combinedTightBbox = bboxForStrokes(combinedStrokes);
-  const combinedCandidates = [...(upper.candidates || []), ...(lower.candidates || [])];
-  const mergedPrediction = mergePredictionAttempts([upper.prediction, lower.prediction]);
-  const combinedLatex = [upper.latex, lower.latex].filter(Boolean).join(' ').trim();
+  const combinedCandidates = orderedLines.flatMap((line) => line.candidates || []);
+  const mergedPrediction = mergePredictionAttempts(orderedLines.map((line) => line.prediction));
+  const combinedLatex = orderedLines.map((line) => line.latex).filter(Boolean).join(' ').trim();
 
   return {
     ...upper,
@@ -1718,7 +1767,7 @@ function mergeLineEntries(upper, lower, {
     tightBbox: combinedTightBbox,
     prediction: mergedPrediction,
     candidates: combinedCandidates,
-    ocrLatex: [upper.ocrLatex, lower.ocrLatex].filter(Boolean).join(' ').trim(),
+    ocrLatex: orderedLines.map((line) => line.ocrLatex).filter(Boolean).join(' ').trim(),
     latex: combinedLatex,
     evidenceScore: Number(upper.evidenceScore) + Number(lower.evidenceScore),
     mergedFrom: [upper.candidateId, lower.candidateId],
@@ -1731,6 +1780,37 @@ function mergeLineEntries(upper, lower, {
       submitToFinalPredictionSeconds: upper.timing?.submitToFinalPredictionSeconds || 0
     }
   };
+}
+
+function orderLinesForInlineMerge(first, second) {
+  return [first, second].slice().sort((a, b) => (
+    (a?.tightBbox?.xMin ?? 0) - (b?.tightBbox?.xMin ?? 0) ||
+    (a?.tightBbox?.yMin ?? 0) - (b?.tightBbox?.yMin ?? 0)
+  ));
+}
+
+function normalizedLineLatex(line = {}) {
+  return String(line.latex || line.ocrLatex || line.acceptedLatex || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function looksLikeEquationFragment(latex = '') {
+  const normalized = String(latex || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  if (/^(?:=|[+\-*/]|\\(?:times|cdot|div)\b)/.test(normalized)) return true;
+  if (/(?:=|[+\-*/]|\\times|\\cdot|\\div)\s*$/.test(normalized)) return true;
+  return /^[a-zA-Z](?:\s*(?:_\s*\{?\w+\}?|\^\s*\{?\w+\}?))?$/.test(normalized);
+}
+
+function looksLikeInlineEquation(latex = '') {
+  const normalized = String(latex || '').replace(/\s+/g, ' ').trim();
+  if (!normalized || (normalized.match(/=/g) || []).length !== 1) return false;
+  const [left, right] = normalized.split('=').map((part) => part.trim());
+  if (!left || !right) return false;
+  if (!/[a-zA-Z0-9\\)]/.test(left)) return false;
+  if (!/[a-zA-Z0-9\\(]/.test(right)) return false;
+  return true;
 }
 
 function finiteSeconds(value) {
@@ -2683,6 +2763,26 @@ function bboxXCenter(box) {
 
 function bboxYCenter(box) {
   return ((box?.yMin ?? 0) + (box?.yMax ?? 0)) / 2;
+}
+
+function bboxVerticalOverlapRatio(a, b) {
+  if (!a || !b) return 0;
+  const yMin = Math.max(a.yMin ?? 0, b.yMin ?? 0);
+  const yMax = Math.min(a.yMax ?? 0, b.yMax ?? 0);
+  if (yMax <= yMin) return 0;
+  const smallerHeight = Math.min(
+    Math.max(1, bboxHeight(a)),
+    Math.max(1, bboxHeight(b))
+  );
+  return (yMax - yMin) / smallerHeight;
+}
+
+function bboxHorizontalGap(a, b) {
+  if (!a || !b) return Infinity;
+  return Math.max(
+    0,
+    Math.max(a.xMin ?? 0, b.xMin ?? 0) - Math.min(a.xMax ?? 0, b.xMax ?? 0)
+  );
 }
 
 function bboxOverlapRatio(a, b) {

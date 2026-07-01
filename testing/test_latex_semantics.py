@@ -48,6 +48,20 @@ class LatexSemanticsTests(unittest.TestCase):
                 self.assertEqual(parsed.kind, "operation")
                 self.assertTrue(is_sound_latex(latex))
 
+    def test_semantic_payload_accepts_group_level_previous_latex(self):
+        result = score_semantic_payload({
+            "problemLatex": "y = 0",
+            "previousLatex": ["x = 5"],
+            "candidateGroups": [
+                {"candidateId": "with-context", "latex": "x = 5", "previousLatex": ["x = 5"]},
+                {"candidateId": "without-context", "latex": "x = 5", "previousLatex": []},
+            ],
+        })
+
+        by_id = {score["candidateId"]: score for score in result["candidateScores"]}
+        self.assertTrue(by_id["with-context"]["equivalentToPrevious"])
+        self.assertFalse(by_id["without-context"]["equivalentToPrevious"])
+
     def test_fixture_catalog_rows_are_parseable_or_sound_annotations(self):
         failures = []
         for problem in PROBLEMS:

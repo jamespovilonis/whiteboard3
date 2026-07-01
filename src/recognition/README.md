@@ -76,19 +76,23 @@ fed into the next problem's semantic context.
    SymPy-backed soundness/equivalence scoring.
 6. Re-select the exact stroke cover with geometry plus OCR/semantic evidence,
    gated by the first geometry-selected cover.
-7. Re-score competing candidates that have plausible earlier same-answer lines
-   above them, then re-run the exact-cover selector once.
+7. Batch re-score competing candidates that have plausible earlier same-answer
+   lines above them, using per-candidate context, then re-run the exact-cover
+   selector once.
 8. Retry selected lines at alternate normalized raster heights when CoMER times
-   out, returns no LaTeX, or produces a suspicious operation annotation.
+   out, returns no LaTeX, or produces a suspicious operation annotation. After
+   a retry timeout, stop trying additional heights; structural rows still get
+   their one longer-timeout rescue attempt.
 9. Re-score the selected lines in reading order, feeding earlier lines from the
    same answer back as semantic context.
 10. For wide selected lines that still fail, split the line at large horizontal
    gaps, classify isolated equals signs geometrically, OCR the remaining chunks,
    and concatenate the chunk LaTeX.
 11. Post-OCR merge pass: coalesce adjacent selected lines when both have low
-    individual OCR confidence and no structural fraction boundary between them.
+    individual OCR confidence and no structural fraction boundary between them,
+    or when same-row fragments form a plausible equation in left-to-right order.
     This prevents over-segmentation where a single equation is split into
-    multiple weak lines.
+    multiple weak lines or symbol fragments.
 12. Return ordered LaTeX lines plus the top candidate lists and elapsed times.
 
 The first geometry pass gives us a candidate graph and a stable baseline. The
@@ -100,17 +104,20 @@ crop when the parent OCR is missing or empty. Failed or timed-out OCR calls
 degrade to geometry-only selection so the app can still preserve segmentation
 metadata when CoMER is offline.
 
-Initial OCR recognition runs with a concurrency of 3 by default, so multiple
-candidate crops are recognized in parallel to reduce wall-clock latency. The
-post-OCR merge pass then coalesces adjacent weak lines that likely belong to
-the same equation, preventing false over-segmentation without requiring
-additional OCR calls. Semantic retry raster heights are pruned to `[72, 104]`
-to avoid redundant retries on heights that rarely change the OCR result.
+Initial OCR recognition runs serially by default to avoid overloading the local
+CoMER backend with speculative alternatives. Callers can raise the concurrency
+when the backend can serve parallel crops reliably. The post-OCR merge pass
+then coalesces adjacent weak lines that likely belong to the same equation,
+preventing false over-segmentation without requiring additional OCR calls.
 
 OCR crops are normalized to a CoMER-friendly height before the first request,
 then selected-line retries try alternate heights only when the first result is
 empty, timed out, structurally suspicious, or a low-semantic function/equation
-read that may improve at another crop height. Selected-line retries are
+read that may improve at another crop height. Retry loops short-circuit after a
+timeout so one slow CoMER crop does not cascade through every alternate height;
+structural rows keep a single extended-timeout attempt because those are the
+cases where the longer read has historically recovered real fractions and tall
+equations. Selected-line retries are
 intentionally narrower than candidate recognition. They do not influence the
 segmentation cover. They only improve final LaTeX output for the chosen lines,
 using normalized crop heights that CoMER handles better on tall fractions,

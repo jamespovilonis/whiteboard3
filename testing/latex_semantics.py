@@ -3169,7 +3169,14 @@ def score_semantic_payload(payload: dict[str, Any]) -> dict[str, Any]:
             score_candidate_group(
                 group,
                 problem_latex=problem_latex,
-                previous_latex=previous_latex,
+                previous_latex=[
+                    str(item)
+                    for item in (
+                        group.get("previousLatex")
+                        if isinstance(group, dict) and "previousLatex" in group
+                        else previous_latex
+                    ) or []
+                ],
                 answer_manifest=answer_manifest,
             )
             for group in groups

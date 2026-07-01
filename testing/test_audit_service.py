@@ -138,6 +138,8 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(summary["discrepancyTypes"], ["vlm_unavailable"])
             self.assertEqual(summary["failureKind"], "vlm_unavailable")
             self.assertIn("ollama offline", summary["description"])
+            metadata = json.loads((Path(summary["auditDir"]) / "audit_metadata.json").read_text())
+            self.assertEqual(len(metadata["attempts"]), 1)
 
     def test_normalize_vlm_response_accepts_fenced_json(self):
         normalized = normalize_vlm_response({
