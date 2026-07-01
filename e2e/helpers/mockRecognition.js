@@ -51,8 +51,10 @@ export async function installMockRecognitionRoutes(page, options = {}) {
 
     if (endpoint === '/score-latex-candidates') {
       const payload = JSON.parse(request.postData() || '{}');
+      const problemType = payload.problemType || payload.problemMetadata?.problemType || 'equation-solving';
       const answerManifest = options.answerManifest || {
         problem_raw: payload.problemLatex || '',
+        responseKind: problemType === 'evaluate-expression' ? 'numeric_value' : 'solution_set',
         variable: payload.problemMetadata?.solveVariable || 'x',
         cardinality: 'finite',
         exact_set: ['4'],
@@ -76,9 +78,10 @@ export async function installMockRecognitionRoutes(page, options = {}) {
       return;
     }
 
-    if (endpoint === '/grade-equation-work') {
+    if (endpoint === '/grade-equation-work' || endpoint === '/grade-math-work') {
       const payload = JSON.parse(request.postData() || '{}');
       const lines = payload.lines || [];
+      const problemType = payload.problemType || payload.problemMetadata?.problemType || 'equation-solving';
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -89,7 +92,12 @@ export async function installMockRecognitionRoutes(page, options = {}) {
             cardinality: 'finite',
             solutionSet: [],
             decimalSet: [],
-            tolerance: 0.005
+            tolerance: 0.005,
+            manifest: {
+              responseKind: problemType === 'evaluate-expression' ? 'numeric_value' : 'solution_set',
+              problem_raw: payload.problemLatex || '',
+              cardinality: 'finite'
+            }
           },
           steps: lines.map((line, index) => ({
             lineIndex: line.lineIndex ?? index,

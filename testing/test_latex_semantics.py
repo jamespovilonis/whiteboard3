@@ -93,6 +93,18 @@ class LatexSemanticsTests(unittest.TestCase):
         )
         self.assertTrue(exponent_step.equivalent)
 
+        base_ten_log_step = check_equivalence(
+            r"\log ( x ) = 2",
+            r"x = 100",
+        )
+        self.assertTrue(base_ten_log_step.equivalent)
+
+        natural_log_step = check_equivalence(
+            r"\ln ( x ) = 2",
+            r"x = e ^ { 2 }",
+        )
+        self.assertTrue(natural_log_step.equivalent)
+
     def test_parses_integral_and_leading_equals_continuation_rows(self):
         integral = parse_math(r"\int _ { 0 } ^ { 2 } ( 3 x ^ { 2 } + 1 ) d x")
         self.assertEqual(integral.kind, "expression")
@@ -146,6 +158,26 @@ class LatexSemanticsTests(unittest.TestCase):
         self.assertEqual(score["grading"]["classification"], "valid_step")
         self.assertEqual(score["grading"]["selectedCandidateIndex"], 1)
         self.assertEqual(score["grading"]["matchedSolutions"], ["4"])
+
+    def test_semantic_payload_uses_expression_manifest_for_evaluate_problems(self):
+        payload = score_semantic_payload({
+            "problemType": "evaluate-expression",
+            "problemLatex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }",
+            "candidateGroups": [{
+                "candidateId": "line-1",
+                "latex": "1",
+                "candidates": [
+                    {"latex": "1", "score": 1.0},
+                    {"latex": r"\frac { 2 } { 2 }", "score": -5.0},
+                ],
+            }],
+        })
+
+        self.assertEqual(payload["answerManifest"]["responseKind"], "numeric_value")
+        score = payload["candidateScores"][0]
+        self.assertEqual(score["bestLatex"], "1")
+        self.assertEqual(score["grading"]["classification"], "valid_step")
+        self.assertEqual(score["grading"]["answerFinality"], "final")
 
     def test_scores_transformed_first_student_line_against_explicit_prompt(self):
         scored = score_ocr_predictions(

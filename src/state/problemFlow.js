@@ -7,6 +7,8 @@ import {
 import { bboxOverlap, padBbox, unionBbox } from '../whiteboard/geometry.js';
 import { getInitialProblemPosition } from '../whiteboard/viewport.js';
 
+const PROBLEM_TYPES = new Set(['equation-solving', 'evaluate-expression']);
+
 export function createInitialProblemFlow(viewportWidth, problemDefinitions = []) {
   const definitions = normalizeProblemDefinitions(problemDefinitions);
   if (!definitions.length) {
@@ -45,7 +47,7 @@ export function getActiveProblem(flow) {
 export function getActiveModelResponse(flow) {
   if (flow.awaitingEquation) {
     return {
-      before: 'Enter an equation to solve.',
+      before: 'Enter a problem.',
       latex: '\\square',
       after: 'The problem will appear on the whiteboard.'
     };
@@ -199,7 +201,8 @@ export function requestNextProblem(flow, viewportWidth) {
 }
 
 export function startCustomProblem(flow, latex, viewportWidth) {
-  const normalizedLatex = String(latex || '').trim();
+  const input = normalizeCustomProblemInput(latex);
+  const normalizedLatex = input.latex;
   if (!normalizedLatex) {
     return { flow, targetViewport: null, problem: null };
   }
@@ -217,11 +220,12 @@ export function startCustomProblem(flow, latex, viewportWidth) {
     : INITIAL_VIEWPORT;
   const definition = {
     id: `problem-${index + 1}`,
-    kind: 'equation-solving',
+    kind: input.problemType,
     latex: normalizedLatex,
-    modelResponse: normalizeModelResponse(null, normalizedLatex, index),
+    modelResponse: normalizeModelResponse(null, normalizedLatex, index, input.problemType),
     metadata: {
-      source: 'user-latex'
+      source: 'user-latex',
+      problemType: input.problemType
     }
   };
   const problem = createProblemSession({
@@ -249,19 +253,25 @@ export function normalizeProblemDefinitions(problemDefinitions = []) {
   const validDefinitions = (Array.isArray(problemDefinitions) ? problemDefinitions : [])
     .filter((definition) => (
       definition &&
-      (!definition.kind || definition.kind === 'equation-solving') &&
+      PROBLEM_TYPES.has(normalizeProblemType(definition.kind || definition.problemType || definition.metadata?.problemType)) &&
       typeof definition.id === 'string' &&
       definition.id.trim() &&
       typeof definition.latex === 'string' &&
       definition.latex.trim()
     ))
-    .map((definition, index) => ({
-      id: definition.id,
-      kind: 'equation-solving',
-      latex: definition.latex,
-      modelResponse: normalizeModelResponse(definition.modelResponse, definition.latex, index),
-      metadata: normalizeProblemMetadata(definition)
-    }));
+    .map((definition, index) => {
+      const problemType = normalizeProblemType(definition.kind || definition.problemType || definition.metadata?.problemType);
+      return {
+        id: definition.id,
+        kind: problemType,
+        latex: definition.latex,
+        modelResponse: normalizeModelResponse(definition.modelResponse, definition.latex, index, problemType),
+        metadata: {
+          ...normalizeProblemMetadata(definition),
+          problemType
+        }
+      };
+    });
 
   return validDefinitions;
 }
@@ -308,20 +318,14 @@ export function applyProblemRecognitionError(flow, problemId, error) {
 }
 
 export function applyProblemGradingProgress(flow, problemId, grading) {
-  return updateProblem(flow, problemId, (problem) => {
-    const currentResult = problem.recognition?.result || {};
-    return {
-      ...problem,
-      recognition: {
-        ...problem.recognition,
-        result: {
-          ...currentResult,
-          grading
-        },
-        updatedAt: Date.now()
-      }
-    };
-  });
+  return updateProblem(flow, problemId, (problem) => ({
+    ...problem,
+    initialGrading: grading,
+    recognition: {
+      ...problem.recognition,
+      updatedAt: Date.now()
+    }
+  }));
 }
 
 export function isProblemReadyForNext(problem) {
@@ -362,6 +366,7 @@ function createProblemSession({ definition, index, boardPosition, viewportWidth,
   return {
     id: definition.id,
     index,
+    kind: definition.kind || 'equation-solving',
     status: 'solving',
     latex: definition.latex,
     metadata: definition.metadata || {},
@@ -372,6 +377,7 @@ function createProblemSession({ definition, index, boardPosition, viewportWidth,
     answerContentBox: null,
     answerBox: null,
     answerBoxFrozen: false,
+    initialGrading: null,
     recognition: {
       status: 'idle',
       error: null,
@@ -397,6 +403,67 @@ function normalizeProblemMetadata(definition) {
   };
 }
 
+function normalizeCustomProblemInput(input) {
+  if (input && typeof input === 'object') {
+    const latex = String(input.latex || '').trim();
+    const requestedProblemType = normalizeProblemType(input.problemType || input.kind);
+    return {
+      latex,
+      problemType: resolveCustomProblemType(latex, requestedProblemType)
+    };
+  }
+  const latex = String(input || '').trim();
+  return {
+    latex,
+    problemType: resolveCustomProblemType(latex, 'equation-solving')
+  };
+}
+
+function normalizeProblemType(value) {
+  const problemType = String(value || 'equation-solving').trim();
+  return PROBLEM_TYPES.has(problemType) ? problemType : 'equation-solving';
+}
+
+function resolveCustomProblemType(latex, requestedProblemType = 'equation-solving') {
+  if (requestedProblemType === 'evaluate-expression') return requestedProblemType;
+  return looksLikeNumericEvaluationPrompt(latex) ? 'evaluate-expression' : requestedProblemType;
+}
+
+function looksLikeNumericEvaluationPrompt(latex) {
+  const text = String(latex || '').trim();
+  if (!text || text.includes('=')) return false;
+
+  const allowedCommands = new Set([
+    'arccos',
+    'arcsin',
+    'arctan',
+    'cdot',
+    'cos',
+    'dfrac',
+    'div',
+    'e',
+    'frac',
+    'left',
+    'ln',
+    'log',
+    'pi',
+    'right',
+    'sin',
+    'sqrt',
+    'tan',
+    'tfrac',
+    'times'
+  ]);
+  const commands = [...text.matchAll(/\\([A-Za-z]+)/g)].map((match) => match[1]);
+  if (commands.some((command) => !allowedCommands.has(command))) return false;
+
+  const withoutCommands = text.replace(/\\[A-Za-z]+/g, '');
+  const withoutNamedConstants = withoutCommands.replace(/\b(?:pi|e)\b/g, '');
+  const residue = withoutNamedConstants.replace(/[0-9\s+\-*/^().{},[\]|_]/g, '');
+
+  return residue.length === 0 && /(?:\d|\\(?:frac|dfrac|tfrac|sqrt|pi)|\b(?:pi|e)\b)/.test(text);
+}
+
 function submissionRecognitionStatus(problem) {
   if (!problem.answerStrokeIds.length) return 'empty';
   const status = problem.recognition?.status || 'idle';
@@ -404,7 +471,7 @@ function submissionRecognitionStatus(problem) {
   return 'pending';
 }
 
-function normalizeModelResponse(modelResponse, latex, index) {
+function normalizeModelResponse(modelResponse, latex, index, problemType = 'equation-solving') {
   if (
     modelResponse &&
     typeof modelResponse.before === 'string' &&
@@ -412,6 +479,14 @@ function normalizeModelResponse(modelResponse, latex, index) {
     typeof modelResponse.after === 'string'
   ) {
     return modelResponse;
+  }
+
+  if (problemType === 'evaluate-expression') {
+    return {
+      before: index === 0 ? 'Evaluate the expression.' : 'Continue evaluating the next expression.',
+      latex,
+      after: 'Submit your work when you are ready.'
+    };
   }
 
   return {

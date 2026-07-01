@@ -77,6 +77,13 @@ LATEX_VARIABLE_COMMANDS = {
     r"\omega": "omega",
 }
 
+
+def sympy_log10(arg: sympy.Expr, base: Optional[sympy.Expr] = None) -> sympy.Expr:
+    if base is None:
+        return sympy.log(arg, 10)
+    return sympy.log(arg, base)
+
+
 KNOWN_FUNCTIONS = {
     "sqrt": sympy.sqrt,
     "sin": sympy.sin,
@@ -91,7 +98,7 @@ KNOWN_FUNCTIONS = {
     "arcsin": sympy.asin,
     "arccos": sympy.acos,
     "arctan": sympy.atan,
-    "log": sympy.log,
+    "log": sympy_log10,
     "ln": sympy.log,
     "exp": sympy.exp,
     "abs": sympy.Abs,
@@ -408,7 +415,7 @@ def create_expression_manifest(
     if exact is None:
         exact = parsed.left
     exact = sympy.simplify(exact)
-    exact_set = [sympy.sstr(exact)]
+    exact_set = [expression_answer_string(exact)]
     decimal = safe_float(exact)
     return {
         **manifest,
@@ -531,35 +538,81 @@ def grade_expression_work(
     manifest: dict[str, Any],
     lines: Sequence[dict[str, Any] | str],
 ) -> dict[str, Any]:
-    """Grade numeric expression-evaluation answers against a manifest."""
+    """Grade numeric expression-evaluation answers against a manifest.
+
+    Evaluate-mode work is graded as one ordered expression sequence. A student
+    may write a horizontal chain, vertical chain, leading-equals continuation
+    lines, or a mixture of those forms.
+    """
 
     normalized_lines = list(lines or [])
     exact_values = manifest_exact_values(manifest)
-    found_indices: set[int] = set()
-    steps: list[dict[str, Any]] = []
-    saw_valid = False
-    first_invalid_index: Optional[int] = None
+    selected_by_line: list[dict[str, Any]] = []
+    expression_elements: list[dict[str, Any]] = []
 
     for fallback_index, line in enumerate(normalized_lines):
         line_index = line.get("lineIndex", fallback_index) if isinstance(line, dict) else fallback_index
         candidates = line_candidate_latex(line)
         selected = classify_expression_candidates(candidates, manifest, exact_values)
-        selected = public_line_selection(selected, manifest)
-
-        if selected["classification"] == "valid_step":
-            saw_valid = True
-            if selected.get("countsTowardCompletion", True) is not False:
-                found_indices.update(selected.get("_matched_indices", ()))
-        elif selected["classification"] == "invalid_step" and first_invalid_index is None:
-            first_invalid_index = int(line_index)
-
-        steps.append({
+        for raw_part, value in selected.get("_expression_elements", ()):
+            expression_elements.append({
+                "lineIndex": int(line_index),
+                "raw": raw_part,
+                "value": value,
+            })
+        selected_by_line.append({
             "lineIndex": line_index,
-            **strip_private_selection_fields(selected),
+            **selected,
         })
 
-    complete = bool(exact_values) and len(found_indices) == len(exact_values)
-    if complete:
+    first_invalid_index: Optional[int] = next(
+        (
+            int(step["lineIndex"])
+            for step in selected_by_line
+            if step.get("classification") == "invalid_step"
+        ),
+        None,
+    )
+    saw_valid = any(step.get("classification") == "valid_step" for step in selected_by_line)
+    found_indices: set[int] = set()
+
+    if first_invalid_index is None and expression_elements:
+        clear_expression_completion_credit(selected_by_line)
+        first_invalid_index = first_broken_expression_link_index(expression_elements, manifest)
+        if first_invalid_index is not None:
+            mark_expression_line_invalid(
+                selected_by_line,
+                first_invalid_index,
+                "adjacent expressions are not equivalent",
+            )
+
+    if first_invalid_index is None and expression_elements and exact_values:
+        final_element = expression_elements[-1]
+        matched = tuple(
+            index
+            for index, exact in enumerate(exact_values)
+            if solution_values_equivalent(final_element["value"], exact, manifest)
+        )
+        if matched:
+            finality = expression_value_finality(final_element["raw"], final_element["value"])
+            mark_expression_line_final(
+                selected_by_line,
+                int(final_element["lineIndex"]),
+                matched,
+                finality,
+            )
+            saw_valid = True
+            if finality.counts_toward_completion:
+                found_indices.update(matched)
+        else:
+            first_invalid_index = int(final_element["lineIndex"])
+            mark_expression_line_invalid(
+                selected_by_line,
+                first_invalid_index,
+                "final value does not match the prompt",
+            )
+
+    if found_indices and len(found_indices) == len(exact_values):
         status = "correct"
         breakdown_line_index = None
     elif first_invalid_index is not None:
@@ -573,6 +626,12 @@ def grade_expression_work(
         breakdown_line_index = None
 
     exact_set = list(manifest.get("exact_set") or [])
+    steps = [
+        {
+            **strip_private_selection_fields(public_line_selection(step, manifest)),
+        }
+        for step in selected_by_line
+    ]
     return {
         "problem": {
             "latex": manifest.get("problem_raw", ""),
@@ -616,6 +675,9 @@ def grade_candidate_group(
     verdict and per-candidate verdicts.
     """
 
+    if manifest.get("responseKind") == "numeric_value":
+        return grade_expression_candidate_group(manifest, group)
+
     variable = str(manifest.get("variable") or "x")
     exact_values = manifest_exact_values(manifest)
     candidates = line_candidate_latex(group)
@@ -646,6 +708,45 @@ def grade_candidate_group(
         selected = selected_line("", "other", None, "none", ())
     if selected.get("studentLatex"):
         selected = public_line_selection(selected, manifest)
+
+    candidate_verdicts = [
+        {
+            "candidateIndex": index,
+            "latex": verdict.get("studentLatex", ""),
+            **strip_private_selection_fields(verdict),
+        }
+        for index, verdict in enumerate(candidate_verdicts_raw)
+    ]
+
+    return {
+        **strip_private_selection_fields(selected),
+        "candidateVerdicts": candidate_verdicts,
+    }
+
+
+def grade_expression_candidate_group(
+    manifest: dict[str, Any],
+    group: dict[str, Any] | str,
+) -> dict[str, Any]:
+    exact_values = manifest_exact_values(manifest)
+    candidates = line_candidate_latex(group)
+
+    candidate_verdicts_raw: list[dict[str, Any]] = []
+    for index, latex in enumerate(candidates[:MAX_OCR_CANDIDATES]):
+        verdict = classify_expression_candidates([latex], manifest, exact_values)
+        verdict = public_line_selection(verdict, manifest)
+        verdict["_original_candidate_index"] = index
+        candidate_verdicts_raw.append(verdict)
+
+    best, best_original_index = _pick_best_candidate_verdict(candidate_verdicts_raw)
+    if best is not None:
+        selected = best
+        if selected.get("selectedCandidateIndex") is not None:
+            selected["selectedCandidateIndex"] = best_original_index
+    elif candidates:
+        selected = classify_expression_candidates(candidates, manifest, exact_values)
+    else:
+        selected = selected_line("", "other", None, "none", ())
 
     candidate_verdicts = [
         {
@@ -811,21 +912,14 @@ def classify_expression_candidate(
     exact_values: Sequence[sympy.Expr],
 ) -> dict[str, Any]:
     try:
-        parsed = parse_math(text)
+        expression_parts = parse_expression_sequence(text)
     except GradingParseFailure:
         return selected_line(text, "other", index, "none", ())
 
-    if parsed.kind == "equation":
-        return selected_line(
-            text,
-            "invalid_step",
-            index,
-            "none",
-            (),
-            finality=invalid_format("expression answers must be numeric values, not equations"),
-        )
+    if not expression_parts:
+        return selected_line(text, "other", index, "none", ())
 
-    if parsed.left.free_symbols:
+    if any(value.free_symbols for _raw, value in expression_parts):
         return selected_line(
             text,
             "invalid_step",
@@ -835,16 +929,28 @@ def classify_expression_candidate(
             finality=invalid_format("expression answers must not contain variables"),
         )
 
+    broken = first_broken_expression_parts_index(expression_parts, manifest)
+    if broken is not None:
+        return selected_line(
+            text,
+            "invalid_step",
+            index,
+            "none",
+            (),
+            finality=invalid_format("adjacent expressions are not equivalent"),
+        )
+
+    final_raw, final_value = expression_parts[-1]
     matched: set[int] = set()
     for exact_index, exact in enumerate(exact_values):
-        if solution_values_equivalent(parsed.left, exact, manifest):
+        if solution_values_equivalent(final_value, exact, manifest):
             matched.add(exact_index)
 
     if not matched:
         return selected_line(text, "invalid_step", index, "none", (), finality=invalid_format("numeric value does not match"))
 
-    finality = expression_value_finality(text, parsed.left)
-    return selected_line(
+    finality = expression_value_finality(final_raw, final_value)
+    verdict = selected_line(
         text,
         "valid_step",
         index,
@@ -852,6 +958,76 @@ def classify_expression_candidate(
         tuple(sorted(matched)),
         finality=finality,
     )
+    verdict["_expression_elements"] = tuple(expression_parts)
+    return verdict
+
+
+def first_broken_expression_parts_index(
+    expression_parts: Sequence[tuple[str, sympy.Expr]],
+    manifest: dict[str, Any],
+) -> Optional[int]:
+    for index in range(1, len(expression_parts)):
+        if not solution_values_equivalent(expression_parts[index - 1][1], expression_parts[index][1], manifest):
+            return index
+    return None
+
+
+def first_broken_expression_link_index(
+    expression_elements: Sequence[dict[str, Any]],
+    manifest: dict[str, Any],
+) -> Optional[int]:
+    for index in range(1, len(expression_elements)):
+        previous = expression_elements[index - 1]["value"]
+        current = expression_elements[index]["value"]
+        if not solution_values_equivalent(previous, current, manifest):
+            return int(expression_elements[index]["lineIndex"])
+    return None
+
+
+def mark_expression_line_invalid(
+    selected_by_line: list[dict[str, Any]],
+    line_index: int,
+    reason: str,
+) -> None:
+    for step in selected_by_line:
+        if int(step.get("lineIndex", -1)) != int(line_index):
+            continue
+        step.update({
+            "classification": "invalid_step",
+            "solutionCoverage": "none",
+            "_matched_indices": (),
+            **invalid_format(reason).public_fields(),
+        })
+        return
+
+
+def clear_expression_completion_credit(selected_by_line: list[dict[str, Any]]) -> None:
+    for step in selected_by_line:
+        if step.get("classification") != "valid_step":
+            continue
+        step.update({
+            "solutionCoverage": "none",
+            "_matched_indices": (),
+            **not_answer().public_fields(),
+        })
+
+
+def mark_expression_line_final(
+    selected_by_line: list[dict[str, Any]],
+    line_index: int,
+    matched_indices: Sequence[int],
+    finality: AnswerFinality,
+) -> None:
+    for step in reversed(selected_by_line):
+        if int(step.get("lineIndex", -1)) != int(line_index):
+            continue
+        step.update({
+            "classification": "valid_step",
+            "solutionCoverage": "full",
+            "_matched_indices": tuple(sorted(set(matched_indices))),
+            **finality.public_fields(),
+        })
+        return
 
 
 def public_line_selection(selected: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
@@ -1393,6 +1569,27 @@ def parse_math(latex: str) -> ParsedMath:
     return ParsedMath("equation", left, right, f"{sympy.sstr(left)} = {sympy.sstr(right)}")
 
 
+def parse_expression_sequence(text: str) -> list[tuple[str, sympy.Expr]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+
+    parts = split_top_level_equals(raw)
+    if not parts:
+        parts = [raw]
+
+    if parts[0].strip() == "":
+        parts = parts[1:]
+    if not parts or any(not part.strip() for part in parts):
+        raise GradingParseFailure("expression chain contains a missing expression")
+
+    expressions: list[tuple[str, sympy.Expr]] = []
+    for part in parts:
+        parsed = parse_expression(part)
+        expressions.append((part.strip(), parsed))
+    return expressions
+
+
 def parse_expression(text: str, *, evaluate: bool = True) -> sympy.Expr:
     normalized = normalize_math_text(text)
     if not normalized:
@@ -1446,6 +1643,15 @@ def expression_value_finality(raw_text: str, evaluated: sympy.Expr) -> AnswerFin
         return unsimplified_answer("answer is equivalent but not fully simplified")
 
     return final_answer()
+
+
+def expression_answer_string(value: sympy.Expr) -> str:
+    if isinstance(value, sympy.Float):
+        try:
+            return format(float(value), ".12g")
+        except Exception:
+            pass
+    return sympy.sstr(value)
 
 
 def compact_math_form(text: str) -> str:
@@ -1697,6 +1903,26 @@ def split_equation_text(text: str) -> Optional[tuple[str, str]]:
     if not left.strip() or not right.strip():
         return None
     return left, right
+
+
+def split_top_level_equals(text: str) -> list[str]:
+    raw = str(text or "").strip()
+    if "=" not in raw:
+        return []
+
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for index, char in enumerate(raw):
+        if char in "({[":
+            depth += 1
+        elif char in ")}]":
+            depth = max(0, depth - 1)
+        elif char == "=" and depth == 0:
+            parts.append(raw[start:index].strip())
+            start = index + 1
+    parts.append(raw[start:].strip())
+    return parts
 
 
 def split_top_level_commas(text: str) -> list[str]:

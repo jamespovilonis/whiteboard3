@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.grading import create_answer_manifest, grade_candidate_group
+from src.grading import create_answer_manifest, create_expression_manifest, grade_candidate_group
 
 
 TRANSFORMATIONS = standard_transformations + (
@@ -95,6 +95,12 @@ def sympy_eval_at(expr, lower, upper):
     return sympy.simplify(expr.subs(variable, upper) - expr.subs(variable, lower))
 
 
+def sympy_log10(arg: sympy.Expr, base: Optional[sympy.Expr] = None) -> sympy.Expr:
+    if base is None:
+        return sympy.log(arg, 10)
+    return sympy.log(arg, base)
+
+
 KNOWN_FUNCTIONS = {
     "Integral": sympy.Integral,
     "evalat": sympy_eval_at,
@@ -102,7 +108,7 @@ KNOWN_FUNCTIONS = {
     "sin": sympy.sin,
     "cos": sympy.cos,
     "tan": sympy.tan,
-    "log": sympy.log,
+    "log": sympy_log10,
     "ln": sympy.log,
     "exp": sympy.exp,
     "abs": sympy.Abs,
@@ -3158,10 +3164,19 @@ def score_semantic_payload(payload: dict[str, Any]) -> dict[str, Any]:
     problem_metadata = payload.get("problemMetadata") if isinstance(payload.get("problemMetadata"), dict) else {}
     answer_manifest = payload.get("answerManifest") if isinstance(payload.get("answerManifest"), dict) else None
     if answer_manifest is None:
-        answer_manifest = create_answer_manifest(
-            problem_latex,
-            variable=payload.get("variable") or problem_metadata.get("solveVariable"),
+        problem_type = str(
+            payload.get("problemType") or
+            problem_metadata.get("problemType") or
+            problem_metadata.get("kind") or
+            "equation-solving"
         )
+        if problem_type in {"evaluate-expression", "expression-evaluation", "numeric-expression"}:
+            answer_manifest = create_expression_manifest(problem_latex)
+        else:
+            answer_manifest = create_answer_manifest(
+                problem_latex,
+                variable=payload.get("variable") or problem_metadata.get("solveVariable"),
+            )
 
     return {
         "answerManifest": answer_manifest,

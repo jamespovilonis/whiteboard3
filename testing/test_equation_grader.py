@@ -81,6 +81,13 @@ class EquationGraderManifestTests(unittest.TestCase):
         manifest = create_answer_manifest(r"\log { x } = 2")
 
         self.assertEqual(manifest["cardinality"], "finite")
+        self.assertEqual(manifest["exact_set"], ["100"])
+        self.assertEqual(manifest["decimal_set"], [100.0])
+
+    def test_creates_natural_logarithm_manifest(self):
+        manifest = create_answer_manifest(r"\ln { x } = 2")
+
+        self.assertEqual(manifest["cardinality"], "finite")
         self.assertEqual(manifest["exact_set"], ["exp(2)"])
         self.assertEqual(manifest["decimal_set"], [7.389])
 
@@ -674,6 +681,25 @@ class ExpressionGraderTests(unittest.TestCase):
         self.assertEqual(manifest["exact_set"], ["3"])
         self.assertEqual(manifest["decimal_set"], [3.0])
 
+    def test_expression_manifest_formats_decimal_result_cleanly(self):
+        manifest = create_expression_manifest("0.11 + 0.8 - 0.1")
+
+        self.assertEqual(manifest["exact_set"], ["0.81"])
+        self.assertEqual(manifest["decimal_set"], [0.81])
+
+    def test_expression_manifest_formats_decimal_subtraction_cleanly(self):
+        manifest = create_expression_manifest("0.9 - 0.11")
+
+        self.assertEqual(manifest["exact_set"], ["0.79"])
+        self.assertEqual(manifest["decimal_set"], [0.79])
+
+    def test_expression_manifest_uses_base_ten_log_and_natural_ln(self):
+        base_ten = create_expression_manifest(r"\log ( 100 )")
+        natural = create_expression_manifest(r"\ln ( e )")
+
+        self.assertEqual(base_ten["exact_set"], ["2"])
+        self.assertEqual(natural["exact_set"], ["1"])
+
     def test_expression_accepts_final_numeric_answer(self):
         result = grade_expression_payload({
             "problemLatex": "5 - 2",
@@ -717,6 +743,84 @@ class ExpressionGraderTests(unittest.TestCase):
         self.assertEqual(correct["result"]["problemStatus"], "correct")
         self.assertEqual(incomplete["steps"][0]["answerFinality"], "unsimplified")
         self.assertEqual(incomplete["result"]["problemStatus"], "incomplete")
+
+    def test_expression_accepts_horizontal_equality_chain(self):
+        result = grade_expression_payload({
+            "problemLatex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }",
+            "lines": [{
+                "latex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 } = \frac { 2 } { 4 } + \frac { 2 } { 4 } = \frac { 4 } { 4 } = 1",
+            }],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["answerFinality"], "final")
+
+    def test_expression_accepts_vertical_leading_equals_chain(self):
+        result = grade_expression_payload({
+            "problemLatex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }",
+            "lines": [
+                {"latex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }"},
+                {"latex": r"= \frac { 2 } { 4 } + \frac { 2 } { 4 }"},
+                {"latex": r"= \frac { 4 } { 4 }"},
+                {"latex": " = 1"},
+            ],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][-1]["answerFinality"], "final")
+
+    def test_expression_accepts_vertical_chain_without_equals(self):
+        result = grade_expression_payload({
+            "problemLatex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }",
+            "lines": [
+                {"latex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }"},
+                {"latex": r"\frac { 2 } { 4 } + \frac { 2 } { 4 }"},
+                {"latex": r"\frac { 4 } { 4 }"},
+                {"latex": "1"},
+            ],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+
+    def test_expression_accepts_mixed_horizontal_and_vertical_chain(self):
+        result = grade_expression_payload({
+            "problemLatex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }",
+            "lines": [
+                {"latex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 } = \frac { 2 } { 4 } + \frac { 2 } { 4 }"},
+                {"latex": r"= \frac { 4 } { 4 }"},
+                {"latex": "1"},
+            ],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+
+    def test_expression_chain_with_unsimplified_final_is_incomplete(self):
+        result = grade_expression_payload({
+            "problemLatex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }",
+            "lines": [
+                {"latex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }"},
+                {"latex": r"= \frac { 2 } { 4 } + \frac { 2 } { 4 }"},
+                {"latex": r"= \frac { 2 } { 2 }"},
+            ],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "incomplete")
+        self.assertEqual(result["steps"][-1]["answerFinality"], "unsimplified")
+        self.assertEqual(result["steps"][-1]["countsTowardCompletion"], False)
+
+    def test_expression_chain_with_broken_middle_link_is_incorrect(self):
+        result = grade_expression_payload({
+            "problemLatex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }",
+            "lines": [
+                {"lineIndex": 0, "latex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }"},
+                {"lineIndex": 1, "latex": r"= \frac { 3 } { 4 }"},
+                {"lineIndex": 2, "latex": "1"},
+            ],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "incorrect")
+        self.assertEqual(result["result"]["breakdownLineIndex"], 1)
+        self.assertEqual(result["steps"][1]["classification"], "invalid_step")
 
     def test_grade_math_payload_dispatches_expression_evaluation(self):
         result = grade_math_payload({

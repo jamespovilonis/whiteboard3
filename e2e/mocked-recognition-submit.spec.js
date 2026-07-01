@@ -33,7 +33,7 @@ test('mocked recognition grades live and reveals the result after submit', async
   const afterWriting = snapshots[snapshots.length - 1];
 
   expect(afterWriting.strokes).toHaveLength(scenario.strokes.length);
-  expect(mockRecognition.calls).toHaveLength(0);
+  expect(mockRecognition.calls.every((call) => call.endpoint === '/grade-math-work')).toBe(true);
   await expect(page.getByTestId('submit-answer')).toBeEnabled();
   await expect(page.getByTestId('next-problem')).toBeDisabled();
 
@@ -94,7 +94,7 @@ test('mocked recognition grades live and reveals the result after submit', async
   await expect(page.getByTestId('next-problem')).toBeEnabled();
   const afterSubmit = await getE2ESnapshot(page);
   expect(afterSubmit.activeProblem.status).toBe('submitted');
-  expect(mockRecognition.endpoints()).toContain('/grade-equation-work');
+  expect(mockRecognition.endpoints()).toContain('/grade-math-work');
   expect(afterRecognition.activeProblem.status).toBe('solving');
 });
 

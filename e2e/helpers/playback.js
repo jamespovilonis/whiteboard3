@@ -26,8 +26,13 @@ export async function waitForProblemSourceLoaded(page) {
   ));
 }
 
-export async function enterCustomLatexProblem(page, latex) {
+export async function enterCustomLatexProblem(page, latex, options = {}) {
   await expectBridge(page);
+  if (options.problemType === 'evaluate-expression') {
+    await page.getByTestId('latex-problem-type-evaluate').click();
+  } else if (options.problemType === 'equation-solving') {
+    await page.getByTestId('latex-problem-type-solve').click();
+  }
   await page.getByTestId('latex-equation-input').fill(latex);
   await page.getByTestId('latex-equation-submit').click();
   await waitForE2EBridge(page, { activeProblemLatex: latex });

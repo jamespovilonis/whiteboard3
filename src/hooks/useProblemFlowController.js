@@ -12,6 +12,7 @@ import {
   loadE2EEquationSolvingProblems
 } from '../state/equationProblemSource.js';
 import {
+  applyProblemGradingProgress,
   applyProblemRecognitionProgress,
   createInitialProblemFlow,
   getActiveProblem,
@@ -22,6 +23,7 @@ import {
   startCustomProblem,
   submitActiveProblem
 } from '../state/problemFlow.js';
+import { gradeMathWork } from '../grading/gradingClient.js';
 
 export function useProblemFlowController({ moveHomeViewport, engineRef, onRecognitionEvent }) {
   const [problemFlow, setProblemFlow] = useState(() => (
@@ -32,6 +34,7 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
   const startedInputSignaturesRef = useRef(new Set());
   const completedInputSignaturesRef = useRef(new Set());
   const auditInputSignaturesRef = useRef(new Set());
+  const initializedGradingProblemIdsRef = useRef(new Set());
   const problemFlowRef = useRef(problemFlow);
 
   useEffect(() => {
@@ -136,6 +139,41 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
     });
   }, [problemFlow]);
 
+  useEffect(() => {
+    const activeProblem = getActiveProblem(problemFlow);
+    if (!activeProblem?.id || !activeProblem.latex) return undefined;
+    if (initializedGradingProblemIdsRef.current.has(activeProblem.id)) return undefined;
+    initializedGradingProblemIdsRef.current.add(activeProblem.id);
+
+    let didCancel = false;
+    const problemId = activeProblem.id;
+    const problemLatex = activeProblem.latex;
+    const problemMetadata = activeProblem.metadata || {};
+    gradeMathWork({
+      problemLatex,
+      problemMetadata,
+      lines: []
+    }, {
+      apiUrl: getRecognitionApiUrl(),
+      timeoutMs: 5000
+    }).then((grading) => {
+      if (didCancel || !grading || grading.failed) return;
+      setProblemFlow((currentFlow) => (
+        applyProblemGradingProgress(currentFlow, problemId, {
+          ...grading,
+          source: 'python-grader',
+          failed: false
+        })
+      ));
+    }).catch(() => {
+      // Initial solution generation is helpful but non-blocking.
+    });
+
+    return () => {
+      didCancel = true;
+    };
+  }, [problemFlow]);
+
   const reconcileStrokes = useCallback((strokes) => {
     latestStrokesRef.current = strokes || [];
     setProblemFlow((currentFlow) => reconcileProblemFlowWithStrokes(currentFlow, strokes));
@@ -160,7 +198,8 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
     if (started?.problem) {
       onRecognitionEvent?.('custom-problem-created', {
         problemId: started.problem.id,
-        latex: started.problem.latex
+        latex: started.problem.latex,
+        problemType: started.problem.metadata?.problemType || started.problem.kind || 'equation-solving'
       });
     }
   }, [moveHomeViewport, onRecognitionEvent, problemFlow]);

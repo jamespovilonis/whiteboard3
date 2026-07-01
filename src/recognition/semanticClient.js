@@ -34,6 +34,7 @@ export async function scoreLatexCandidates(request, options = {}) {
     }
 
     return {
+      answerManifest: payload.answerManifest || null,
       candidateScores: payload.candidateScores || [],
       failed: false,
       elapsedSeconds

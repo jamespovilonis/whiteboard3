@@ -152,7 +152,7 @@ Point the app at the gateway:
 VITE_API_URL=http://127.0.0.1:8010 npm run dev
 ```
 
-The backend serves `/score-latex-candidates` and `/grade-equation-work` locally
+The backend serves `/score-latex-candidates`, `/grade-equation-work`, and `/grade-math-work` locally
 and proxies `/recognize`, `/segment-lines`, and health checks to the model API,
 so the browser can use one base URL for the whole recognition pipeline. Semantic
 scoring and grading run behind a request-level timeout so pathological SymPy

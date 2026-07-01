@@ -10,7 +10,7 @@ import { rasterizeLineCandidate } from './lineRasterizer.js';
 import { recognizeLineImage } from './ocrClient.js';
 import { requestLineDetections } from './segmentationClient.js';
 import { scoreLatexCandidates } from './semanticClient.js';
-import { gradeEquationWork } from '../grading/gradingClient.js';
+import { gradeMathWork } from '../grading/gradingClient.js';
 
 const FRACTION_CHUNK_RASTER_HEIGHTS = [72, 88, 104];
 
@@ -50,7 +50,7 @@ export async function recognizeStudentWriting(options = {}) {
     initialRecognitionConcurrency = 1,
     signal = null,
     recognizeLine = recognizeLineImage,
-    gradeWork = gradeEquationWork,
+    gradeWork = gradeMathWork,
     gradingTimeoutMs = 5000
   } = options;
 

@@ -1414,6 +1414,55 @@ test('recognition semantic scoring receives selected testing catalog problem con
   }
 });
 
+test('recognition grading receives evaluate-expression problem metadata', async () => {
+  installFakeCanvas();
+  const gradeRequests = [];
+  const strokes = [stroke('eval-answer', 0, 0, 90, 40)];
+
+  await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 100, yMax: 50 },
+    problemLatex: '\\frac{1}{2} + \\frac{2}{4}',
+    problemMetadata: { problemType: 'evaluate-expression' },
+    apiUrl: 'http://mock-grader',
+    semanticScoring: false,
+    recognizeLine: async () => ({
+      latex: '1',
+      top: { latex: '1', score: 2 },
+      candidates: [{ latex: '1', score: 2 }],
+      elapsedSeconds: 0.03
+    }),
+    gradeWork: async (request) => {
+      gradeRequests.push(request);
+      return {
+        failed: false,
+        problem: {
+          latex: request.problemLatex,
+          cardinality: 'finite',
+          solutionSet: ['1'],
+          decimalSet: [1],
+          tolerance: 0.005,
+          manifest: {
+            responseKind: 'numeric_value',
+            exact_set: ['1']
+          }
+        },
+        steps: [],
+        result: {
+          problemStatus: 'correct',
+          breakdownLineIndex: null,
+          foundSolutions: ['1'],
+          missingSolutions: []
+        }
+      };
+    }
+  });
+
+  assert.equal(gradeRequests.length, 1);
+  assert.equal(gradeRequests[0].problemLatex, '\\frac{1}{2} + \\frac{2}{4}');
+  assert.equal(gradeRequests[0].problemMetadata.problemType, 'evaluate-expression');
+});
+
 test('low-score semantic best does not overwrite a valid top OCR line', async () => {
   installFakeCanvas();
   const strokes = [stroke('a', 0, 0, 80, 40)];
@@ -4434,9 +4483,54 @@ test('starting a custom problem stores user latex as problem context', () => {
 
   assert.equal(started.flow.awaitingEquation, false);
   assert.equal(active.id, 'problem-1');
+  assert.equal(active.kind, 'equation-solving');
   assert.equal(active.latex, '\\frac{x}{2} + 5 = 13');
   assert.equal(active.modelResponse.latex, '\\frac{x}{2} + 5 = 13');
   assert.equal(active.metadata.source, 'user-latex');
+  assert.equal(active.metadata.problemType, 'equation-solving');
+});
+
+test('starting an evaluate custom problem stores problem type and model copy', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, {
+    latex: '  \\frac{1}{2} + \\frac{2}{4}  ',
+    problemType: 'evaluate-expression'
+  }, 1200);
+  const active = getActiveProblem(started.flow);
+
+  assert.equal(started.flow.awaitingEquation, false);
+  assert.equal(active.id, 'problem-1');
+  assert.equal(active.kind, 'evaluate-expression');
+  assert.equal(active.latex, '\\frac{1}{2} + \\frac{2}{4}');
+  assert.equal(active.modelResponse.before, 'Evaluate the expression.');
+  assert.equal(active.modelResponse.latex, '\\frac{1}{2} + \\frac{2}{4}');
+  assert.equal(active.metadata.source, 'user-latex');
+  assert.equal(active.metadata.problemType, 'evaluate-expression');
+});
+
+test('numeric custom expression without equals routes to evaluate mode', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, '  0.9 - 0.11  ', 1200);
+  const active = getActiveProblem(started.flow);
+
+  assert.equal(active.kind, 'evaluate-expression');
+  assert.equal(active.latex, '0.9 - 0.11');
+  assert.equal(active.modelResponse.before, 'Evaluate the expression.');
+  assert.equal(active.metadata.problemType, 'evaluate-expression');
+});
+
+test('fixture problem flow accepts evaluate-expression definitions', () => {
+  const flow = createInitialProblemFlow(1200, [{
+    id: 'evaluate-half-plus-half',
+    kind: 'evaluate-expression',
+    latex: '\\frac{1}{2} + \\frac{2}{4}'
+  }]);
+  const active = getActiveProblem(flow);
+
+  assert.equal(active.id, 'evaluate-half-plus-half');
+  assert.equal(active.kind, 'evaluate-expression');
+  assert.equal(active.metadata.problemType, 'evaluate-expression');
+  assert.equal(active.modelResponse.before, 'Evaluate the expression.');
 });
 
 test('submitting a custom problem freezes it without opening the next prompt', () => {

@@ -153,8 +153,8 @@ Then start the app with:
 VITE_API_URL=http://127.0.0.1:8010 npm run dev
 ```
 
-The FastAPI backend handles `/score-latex-candidates` and
-`/grade-equation-work` directly and proxies `/recognize`, `/segment-lines`,
+The FastAPI backend handles `/score-latex-candidates`, `/grade-equation-work`,
+and `/grade-math-work` directly and proxies `/recognize`, `/segment-lines`,
 `/health`, and `/segment-lines/health` to the upstream model server. The
 semantic timeout keeps malformed or unusually complex CoMER candidates from
 blocking the browser pipeline.
