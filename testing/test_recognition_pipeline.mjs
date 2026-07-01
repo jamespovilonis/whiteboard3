@@ -1103,6 +1103,59 @@ test('grading verdict selects a valid top-five candidate over OCR top one', asyn
   assert.equal(result.grading.result.problemStatus, 'correct');
 });
 
+test('grading verdict keeps full plus-minus solution over weaker plus-only read', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('pm', 0, 0, 120, 50)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 150, yMax: 70 },
+    problemLatex: 'x ^ { 4 } = 16',
+    semanticScoring: true,
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: 'x = + 2',
+      top: { latex: 'x = + 2', score: 2 },
+      candidates: [
+        { latex: 'x = + 2', score: 2 },
+        { latex: 'x = \\pm 2', score: 1.5 },
+      ],
+      elapsedSeconds: 0.3
+    }),
+    scoreSemantics: async (request) => ({
+      answerManifest: {
+        problem_raw: request.problemLatex,
+        variable: 'x',
+        cardinality: 'finite',
+        exact_set: ['-2', '2'],
+        decimal_set: [-2, 2],
+        tolerance: 0.005
+      },
+      candidateScores: [{
+        candidateId: request.candidateGroups[0].candidateId,
+        semanticScore: 1,
+        bestLatex: 'x = + 2',
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        grading: {
+          studentLatex: 'x = \\pm 2',
+          classification: 'valid_step',
+          selectedCandidateIndex: 1,
+          solutionCoverage: 'full',
+          matchedSolutions: ['-2', '2']
+        },
+        candidateScores: []
+      }],
+      elapsedSeconds: 0.05
+    })
+  });
+
+  assert.equal(result.latex, 'x = \\pm 2');
+  assert.equal(result.grading.result.problemStatus, 'correct');
+  assert.deepEqual(result.grading.result.foundSolutions, ['-2', '2']);
+});
+
 test('semantic scoring payload is capped to top-five OCR candidates', async () => {
   installFakeCanvas();
   const strokes = [stroke('a', 0, 0, 50, 30)];
@@ -1971,6 +2024,90 @@ test('standalone operation repair normalizes plain x times annotations', async (
 
   assert.equal(result.lines[0].ocrRepair.source, 'standalone-operation');
   assert.equal(result.latex, '\\times 12 \\times 12');
+});
+
+test('standalone operation repair normalizes detached multiplier marks', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('op', 0, 0, 80, 50)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 120, yMax: 80 },
+    problemLatex: '\\frac { x } { 4 } - 1 = 5',
+    recognizeAlternatives: false,
+    semanticScoring: true,
+    initialRasterHeight: 104,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '4 *',
+      top: { latex: '4 *', score: -1 },
+      candidates: [{ latex: '4 *', score: -1 }],
+      elapsedSeconds: 1
+    }),
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 0.2,
+        bestLatex: group.latex,
+        sound: false,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        candidateScores: [{ latex: group.latex, sound: false, score: 0.2 }]
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.equal(result.lines[0].ocrRepair.source, 'geometry-operation-annotation');
+  assert.equal(result.latex, '\\times 4 \\times 4');
+});
+
+test('geometry operation repair tags detached fraction annotations', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('op', 10, 0, 90, 42),
+    stroke('eq', 40, 86, 360, 166),
+  ];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 390, yMax: 190 },
+    problemLatex: '\\frac { x - 1 } { 2 } = \\frac { x } { 3 }',
+    recognizeAlternatives: false,
+    semanticScoring: true,
+    initialRasterHeight: 104,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async (image) => {
+      const isOperation = image.strokeIds.includes('op');
+      const latex = isOperation ? '2 .' : '\\frac { x - 1 } { 2 } = \\frac { x } { 3 }';
+      return {
+        latex,
+        top: { latex, score: isOperation ? -1 : 2 },
+        candidates: [{ latex, score: isOperation ? -1 : 2 }],
+        elapsedSeconds: 1
+      };
+    },
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: group.latex.includes('\\frac') ? 4 : 0.2,
+        bestLatex: group.latex,
+        sound: group.latex.includes('\\frac'),
+        equivalentToProblem: group.latex.includes('\\frac'),
+        equivalentToPrevious: false,
+        candidateScores: [{ latex: group.latex, sound: group.latex.includes('\\frac'), score: 0.2 }]
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  const operationLine = result.lines.find((line) => line.strokeIds.includes('op'));
+  assert.equal(operationLine.ocrRepair.source, 'geometry-operation-annotation');
+  assert.equal(operationLine.acceptedLatex, '\\times 2 \\times 2');
 });
 
 test('contextual operation repair uses previous additive constant', async () => {

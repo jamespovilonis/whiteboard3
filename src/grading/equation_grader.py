@@ -751,6 +751,10 @@ def split_solution_parts(latex: str, variable: str) -> list[str]:
     if not text:
         return []
 
+    repeated_assignments = split_repeated_solution_assignments(text, variable)
+    if repeated_assignments:
+        return repeated_assignments
+
     equation_match = split_equation_text(text)
     if equation_match is not None:
         left_text, right_text = equation_match
@@ -762,6 +766,18 @@ def split_solution_parts(latex: str, variable: str) -> list[str]:
             return split_top_level_commas(left_text)
 
     return split_top_level_commas(text)
+
+
+def split_repeated_solution_assignments(text: str, variable: str) -> list[str]:
+    variable_pattern = re.escape(str(variable or "x").strip())
+    if not variable_pattern:
+        return []
+    pattern = re.compile(rf"(?:^|\s){variable_pattern}\s*=\s*(.+?)(?=(?:\s*{variable_pattern}\s*=)|$)")
+    matches = [match.group(1).strip() for match in pattern.finditer(str(text or "").strip())]
+    matches = [match for match in matches if match and "=" not in match]
+    if len(matches) < 2:
+        return []
+    return [part for match in matches for part in split_top_level_commas(match)]
 
 
 def expand_pm(text: str) -> list[str]:

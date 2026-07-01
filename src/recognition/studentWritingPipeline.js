@@ -228,6 +228,7 @@ export async function recognizeStudentWriting(options = {}) {
       });
     }
   }
+  selected = preferFullSolutionCandidates(selected, candidatePredictions, candidatesToRecognize);
 
   for (const candidate of selected) {
     throwIfAborted(signal);
@@ -337,6 +338,7 @@ export async function recognizeStudentWriting(options = {}) {
       selected: true
     };
   });
+  applyGeometryOperationAnnotationRepairs(recognizedLines, problemLatex);
 
   let selectedLineSemantic = await resolveSelectedLineSemanticScores({
     recognizedLines,
@@ -447,12 +449,20 @@ export async function recognizeStudentWriting(options = {}) {
       sequentialSemanticElapsedSeconds: finiteSeconds(selectedLineSemantic.elapsedSeconds),
       submitToFinalPredictionSeconds: secondsSince(pipelineStartedAt)
     };
+    if (line.ocrRepair?.source === 'geometry-operation-annotation') {
+      acceptedContextLatex.push(line.latex);
+      continue;
+    }
     const operationRepair = repairStandaloneOperationLatex(line.latex, lineSemantic, { problemLatex });
     if (operationRepair) {
+      const operationRepairSource = detachedOperationOperand(line.latex) && /\\frac\b/.test(String(problemLatex || ''))
+        ? 'geometry-operation-annotation'
+        : 'standalone-operation';
       line.ocrRepair = {
-        source: 'standalone-operation',
+        source: operationRepairSource,
         originalLatex: line.latex,
-        repairedLatex: operationRepair
+        repairedLatex: operationRepair,
+        annotationBbox: operationRepairSource === 'geometry-operation-annotation' ? line.tightBbox || null : undefined
       };
       line.latex = operationRepair;
       acceptedContextLatex.push(line.latex);
@@ -1497,6 +1507,91 @@ function applyFinalCandidateDebugState(candidatePredictions, recognizedLines, pi
   }
 }
 
+function preferFullSolutionCandidates(selected = [], candidatePredictions = [], candidates = []) {
+  const selectedIds = new Set((selected || []).map((candidate) => candidate.candidateId));
+  const candidateById = new Map((candidates || []).map((candidate) => [candidate.candidateId, candidate]));
+  return (selected || []).map((candidate) => {
+    const selectedEntry = candidatePredictions.find((entry) => entry.candidateId === candidate.candidateId);
+    if (solutionCoverageRank(selectedEntry) >= 2) return candidate;
+
+    const selectedBox = candidate.tightBbox || selectedEntry?.tightBbox;
+    const replacement = (candidatePredictions || [])
+      .filter((entry) => entry?.candidateId && !selectedIds.has(entry.candidateId))
+      .filter((entry) => solutionCoverageRank(entry) >= 2)
+      .filter((entry) => bboxOverlapRatio(selectedBox, entry.tightBbox) >= 0.55)
+      .sort((a, b) => (
+        solutionCoverageRank(b) - solutionCoverageRank(a) ||
+        (Number(b.evidenceScore) || 0) - (Number(a.evidenceScore) || 0)
+      ))[0];
+
+    if (!replacement) return candidate;
+    selectedIds.delete(candidate.candidateId);
+    selectedIds.add(replacement.candidateId);
+    return candidateById.get(replacement.candidateId) || {
+      ...candidate,
+      candidateId: replacement.candidateId,
+      strokeIds: replacement.strokeIds || candidate.strokeIds,
+      tightBbox: replacement.tightBbox || candidate.tightBbox,
+    };
+  });
+}
+
+function solutionCoverageRank(entry = {}) {
+  const grading = entry?.grading || entry?.semantic?.grading || entry?.contextualSemantic?.grading || entry?.sequentialSemantic?.grading || null;
+  if (grading?.solutionCoverage === 'full') return 2;
+  if (grading?.solutionCoverage === 'partial' || (grading?.matchedSolutions || []).length > 0) return 1;
+  return 0;
+}
+
+function applyGeometryOperationAnnotationRepairs(lines = [], problemLatex = '') {
+  const equationLines = lines.filter((line) => (
+    line?.tightBbox &&
+    /[=]/.test(String(line.latex || '')) &&
+    /\\frac\b/.test(String(line.latex || problemLatex || ''))
+  ));
+  if (!equationLines.length) return;
+
+  for (const line of lines) {
+    if (!line?.tightBbox || line.ocrRepair) continue;
+    const operand = detachedOperationOperand(line.latex || line.ocrLatex || line.acceptedLatex || '');
+    if (!operand) continue;
+    const anchor = nearestOperationAnchor(line, equationLines);
+    if (!anchor) continue;
+    const repairedLatex = `\\times ${operand} \\times ${operand}`;
+    line.ocrRepair = {
+      source: 'geometry-operation-annotation',
+      originalLatex: line.latex,
+      repairedLatex,
+      operand,
+      anchorCandidateId: anchor.candidateId || null,
+      anchorBbox: anchor.tightBbox || null,
+      annotationBbox: line.tightBbox || null,
+    };
+    line.latex = repairedLatex;
+  }
+}
+
+function nearestOperationAnchor(line, equationLines) {
+  const lineBox = line.tightBbox;
+  const lineCenterY = bboxYCenter(lineBox);
+  return equationLines
+    .map((anchor) => {
+      const anchorBox = anchor.tightBbox;
+      const verticalGap = Math.max(0, Math.max(anchorBox.yMin - lineBox.yMax, lineBox.yMin - anchorBox.yMax));
+      const verticalDistance = Math.abs(lineCenterY - bboxYCenter(anchorBox));
+      const horizontallyRelevant = lineBox.xMax >= anchorBox.xMin - 120 && lineBox.xMin <= anchorBox.xMax + 120;
+      const closeEnough = verticalGap <= Math.max(90, bboxHeight(anchorBox) * 0.9) ||
+        verticalDistance <= Math.max(120, bboxHeight(anchorBox) * 1.2);
+      return {
+        anchor,
+        score: verticalGap + verticalDistance * 0.25,
+        valid: horizontallyRelevant && closeEnough,
+      };
+    })
+    .filter((item) => item.valid)
+    .sort((a, b) => a.score - b.score)[0]?.anchor || null;
+}
+
 function finiteSeconds(value) {
   const seconds = Number(value);
   return Number.isFinite(seconds) ? Number(seconds.toFixed(3)) : null;
@@ -1631,6 +1726,11 @@ function repairStandaloneOperationLatex(latex, semanticEntry = {}, { problemLate
   if (!normalized || /[=<>]/.test(normalized)) return null;
   if (/\\(?:frac|sqrt|log|ln|int|sum|prod)\b/.test(normalized)) return null;
 
+  const detachedOperand = detachedOperationOperand(normalized);
+  if (detachedOperand) {
+    return `\\times ${detachedOperand} \\times ${detachedOperand}`;
+  }
+
   const subscriptedTimes = normalized.match(
     /^(?:x|X|\\times)\s*_\s*\{\s*(-?\d+)\s*\}\s*\\times\s*(?:_|(?:x|X|\\times)\s*_)\s*\{\s*([a-zA-Z0-9-]+)\s*\}$/
   );
@@ -1679,6 +1779,23 @@ function repairStandaloneOperationLatex(latex, semanticEntry = {}, { problemLate
   const rightOperand = match[2];
   if (leftOperand !== rightOperand) return null;
   return `${operator} ${leftOperand} ${operator} ${rightOperand}`;
+}
+
+function detachedOperationOperand(latex) {
+  const normalized = String(latex || '')
+    .replace(/\\cdot/g, '*')
+    .replace(/\\times/g, '*')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized || /[=<>+\-/]/.test(normalized)) return '';
+
+  const subscript = normalized.match(/^(?:x|X|\*)\s*_\s*\{\s*((?:\d\s*){1,5})\s*\}$/);
+  if (subscript) return (subscript[1].match(/\d/g) || []).join('');
+
+  const single = normalized.match(/^(?:\*\s*)?((?:\d\s*){1,5})(?:\s*(?:\.|\*))?$/) ||
+    normalized.match(/^(?:\.|\*)\s*((?:\d\s*){1,5})$/);
+  if (!single) return '';
+  return (single[1].match(/\d/g) || []).join('');
 }
 
 function repairOperationAnnotationFromPrevious(latex, previousLatex = []) {
@@ -2421,6 +2538,25 @@ function bboxHeight(box) {
 
 function bboxXCenter(box) {
   return ((box?.xMin ?? 0) + (box?.xMax ?? 0)) / 2;
+}
+
+function bboxYCenter(box) {
+  return ((box?.yMin ?? 0) + (box?.yMax ?? 0)) / 2;
+}
+
+function bboxOverlapRatio(a, b) {
+  if (!a || !b) return 0;
+  const xMin = Math.max(a.xMin ?? 0, b.xMin ?? 0);
+  const yMin = Math.max(a.yMin ?? 0, b.yMin ?? 0);
+  const xMax = Math.min(a.xMax ?? 0, b.xMax ?? 0);
+  const yMax = Math.min(a.yMax ?? 0, b.yMax ?? 0);
+  if (xMax <= xMin || yMax <= yMin) return 0;
+  const overlapArea = (xMax - xMin) * (yMax - yMin);
+  const smallerArea = Math.min(
+    Math.max(1, bboxWidth(a) * bboxHeight(a)),
+    Math.max(1, bboxWidth(b) * bboxHeight(b))
+  );
+  return overlapArea / smallerArea;
 }
 
 function normalizeChunkedLatex(latex) {

@@ -29,10 +29,14 @@ class FakeVlmClient:
         self.calls.append({"prompt": prompt, "image_paths": image_paths})
         if self.error is not None:
             raise self.error
+        content = self.content
+        if isinstance(content, list):
+            index = min(len(self.calls) - 1, len(content) - 1)
+            content = content[index]
         return {
             "choices": [{
                 "message": {
-                    "content": self.content,
+                    "content": content,
                 },
             }],
         }
@@ -54,9 +58,17 @@ class AuditServiceTests(unittest.TestCase):
             audit_dir = Path(summary["auditDir"])
             self.assertTrue((audit_dir / "problem_crop.png").exists())
             self.assertTrue((audit_dir / "answer_crop.png").exists())
+            self.assertTrue((audit_dir / "answer_context.png").exists())
             self.assertTrue((audit_dir / "fast_overlay.png").exists())
+            self.assertTrue((audit_dir / "audit_metadata.json").exists())
             self.assertTrue((audit_dir / "vlm_grading.json").exists())
             self.assertTrue((Path(directory) / "audit_events.jsonl").exists())
+            metadata = json.loads((audit_dir / "audit_metadata.json").read_text())
+            self.assertEqual(metadata["comparisonStatus"], "complete")
+            self.assertIn("answerContext", metadata["artifactTypes"])
+            self.assertIn("answerContext", metadata["cropBoxes"])
+            self.assertEqual(summary["comparisonStatus"], "complete")
+            self.assertIn("answerContext", summary["artifactTypes"])
 
     def test_disagreement_records_status_and_solution_discrepancies(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -95,7 +107,28 @@ class AuditServiceTests(unittest.TestCase):
             summary = service.run_audit(audit_payload(), "audit_invalid_json")
 
             self.assertEqual(summary["discrepancyTypes"], ["vlm_schema_error"])
+            self.assertEqual(summary["failureKind"], "vlm_schema_error")
             self.assertTrue((Path(summary["auditDir"]) / "vlm_raw.json").exists())
+
+    def test_schema_failure_is_retried_and_preserves_attempt_raw(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, [
+                '{"lineObservations":[]}',
+                {
+                    "latexLines": ["x = 4"],
+                    "lineObservations": [{"lineIndex": 0, "latex": "x = 4", "confidence": 0.9}],
+                    "visualMarks": [],
+                    "overallConfidence": 0.9,
+                },
+            ])
+            summary = service.run_audit(audit_payload(), "audit_retry")
+
+            audit_dir = Path(summary["auditDir"])
+            metadata = json.loads((audit_dir / "audit_metadata.json").read_text())
+            self.assertEqual(summary["discrepancyCount"], 0)
+            self.assertEqual(len(metadata["attempts"]), 2)
+            self.assertEqual(metadata["attempts"][0]["failureKind"], "vlm_schema_error")
+            self.assertTrue((audit_dir / "vlm_raw_attempt_1.json").exists())
 
     def test_unavailable_vlm_records_unavailable_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -103,6 +136,7 @@ class AuditServiceTests(unittest.TestCase):
             summary = service.run_audit(audit_payload(), "audit_unavailable")
 
             self.assertEqual(summary["discrepancyTypes"], ["vlm_unavailable"])
+            self.assertEqual(summary["failureKind"], "vlm_unavailable")
             self.assertIn("ollama offline", summary["description"])
 
     def test_normalize_vlm_response_accepts_fenced_json(self):

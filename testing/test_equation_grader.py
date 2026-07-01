@@ -125,6 +125,17 @@ class EquationGraderWorkTests(unittest.TestCase):
         self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
         self.assertEqual(result["steps"][0]["matchedSolutions"], ["2", "3"])
 
+    def test_repeated_assignment_multi_solution_line_completes_problem(self):
+        manifest = create_answer_manifest("x^2 - 5x + 6 = 0")
+
+        for latex in ("x=2  x=3", "x = 2 x = 3", "x=2,3"):
+            with self.subTest(latex=latex):
+                result = grade_equation_work(manifest, [{"latex": latex}])
+
+                self.assertEqual(result["result"]["problemStatus"], "correct")
+                self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
+                self.assertEqual(result["steps"][0]["matchedSolutions"], ["2", "3"])
+
     def test_partial_solution_is_incomplete(self):
         manifest = create_answer_manifest("x^2 - 5x + 6 = 0")
 

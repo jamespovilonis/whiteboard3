@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 from threading import Lock
+import time
 from typing import Any, Callable, Optional
 import urllib.error
 import urllib.request
@@ -161,22 +162,28 @@ class RecognitionAuditService:
         write_json(audit_dir / "fast_result.json", fast_result)
 
         artifact_paths: dict[str, str] = {}
+        crop_boxes: dict[str, Any] = {}
+        audit_attempts: list[dict[str, Any]] = []
+        failure_kind: str | None = None
         comparison: dict[str, Any]
         normalized: dict[str, Any] | None = None
         vlm_grading: dict[str, Any] | None = None
         raw_vlm: dict[str, Any] | None = None
 
         try:
-            crops = render_audit_images(payload, audit_dir)
+            rendered = render_audit_images(payload, audit_dir)
+            crop_boxes = rendered.pop("cropBoxes", {})
+            crops = {key: path for key, path in rendered.items() if isinstance(path, Path)}
             artifact_paths.update({key: str(path) for key, path in crops.items()})
             prompt = build_vlm_prompt(payload)
-            raw_vlm = self.vlm_client.complete(
+            raw_vlm, normalized = self._complete_and_normalize_vlm(
                 prompt=prompt,
                 image_paths=[crops["problemCrop"], crops["answerCrop"]],
+                audit_dir=audit_dir,
+                attempts=audit_attempts,
             )
             write_json(audit_dir / "vlm_raw.json", raw_vlm)
 
-            normalized = normalize_vlm_response(raw_vlm)
             write_json(audit_dir / "vlm_normalized.json", normalized)
 
             vlm_grading = self.grader({
@@ -192,13 +199,26 @@ class RecognitionAuditService:
             write_json(audit_dir / "vlm_grading.json", vlm_grading)
             comparison = compare_audit_results(fast_result, normalized, vlm_grading)
         except AuditSchemaError as exc:
+            failure_kind = "vlm_schema_error"
             comparison = failure_comparison("vlm_schema_error", str(exc), fast_result)
             write_json(audit_dir / "vlm_raw.json", raw_vlm or {"error": str(exc)})
         except Exception as exc:
+            failure_kind = "vlm_unavailable"
             comparison = failure_comparison("vlm_unavailable", str(exc), fast_result)
             write_json(audit_dir / "vlm_raw.json", {"error": str(exc)})
 
         write_json(audit_dir / "comparison.json", comparison)
+        failure_kind = failure_kind or first_failure_kind(comparison)
+        write_json(audit_dir / "audit_metadata.json", build_audit_metadata(
+            settings=self.settings,
+            audit_id=audit_id,
+            payload=payload,
+            comparison=comparison,
+            artifact_paths=artifact_paths,
+            crop_boxes=crop_boxes,
+            attempts=audit_attempts,
+            failure_kind=failure_kind,
+        ))
         summary = build_event_summary(
             audit_id=audit_id,
             created_at=now,
@@ -208,6 +228,7 @@ class RecognitionAuditService:
             artifact_paths=artifact_paths,
             normalized=normalized,
             vlm_grading=vlm_grading,
+            failure_kind=failure_kind,
         )
         append_jsonl(self.log_dir / "audit_events.jsonl", summary)
         self._set_status(audit_id, {
@@ -221,8 +242,62 @@ class RecognitionAuditService:
             "eventLogPath": str(self.log_dir / "audit_events.jsonl"),
             "discrepancyCount": len(comparison.get("discrepancies") or []),
             "comparisonStatus": comparison.get("status"),
+            "failureKind": failure_kind,
         })
         return summary
+
+    def _complete_and_normalize_vlm(
+        self,
+        *,
+        prompt: str,
+        image_paths: list[Path],
+        audit_dir: Path,
+        attempts: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        last_schema_error: AuditSchemaError | None = None
+        last_error: Exception | None = None
+        for attempt_index in range(2):
+            started = time.perf_counter()
+            raw_vlm: dict[str, Any] | None = None
+            try:
+                raw_vlm = self.vlm_client.complete(prompt=prompt, image_paths=image_paths)
+                elapsed = time.perf_counter() - started
+                normalized = normalize_vlm_response(raw_vlm)
+                attempts.append({
+                    "attempt": attempt_index + 1,
+                    "status": "complete",
+                    "elapsedSeconds": round(elapsed, 3),
+                })
+                if attempt_index > 0:
+                    write_json(audit_dir / f"vlm_raw_attempt_{attempt_index + 1}.json", raw_vlm)
+                return raw_vlm, normalized
+            except AuditSchemaError as exc:
+                elapsed = time.perf_counter() - started
+                last_schema_error = exc
+                attempts.append({
+                    "attempt": attempt_index + 1,
+                    "status": "failed",
+                    "failureKind": "vlm_schema_error",
+                    "error": str(exc),
+                    "elapsedSeconds": round(elapsed, 3),
+                })
+                if raw_vlm is not None:
+                    write_json(audit_dir / f"vlm_raw_attempt_{attempt_index + 1}.json", raw_vlm)
+            except Exception as exc:
+                elapsed = time.perf_counter() - started
+                last_error = exc
+                attempts.append({
+                    "attempt": attempt_index + 1,
+                    "status": "failed",
+                    "failureKind": "vlm_unavailable",
+                    "error": str(exc),
+                    "elapsedSeconds": round(elapsed, 3),
+                })
+        if last_schema_error is not None:
+            raise last_schema_error
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("VLM audit failed without an attempt result")
 
     def _set_status(self, audit_id: str, status_payload: dict[str, Any]) -> None:
         with self._status_lock:
@@ -253,42 +328,62 @@ def build_vlm_prompt(payload: dict[str, Any]) -> str:
         "{\n"
         "  \"latexLines\": [\"one LaTeX string per visible student math line\"],\n"
         "  \"lineObservations\": [{\"lineIndex\": 0, \"latex\": \"...\", \"confidence\": 0.0, \"notes\": \"...\"}],\n"
-        "  \"visualMarks\": [{\"type\": \"circled_answer|boxed_answer|crossed_out|arrow|scratch|other\", \"lineIndex\": 0, \"latex\": \"...\", \"confidence\": 0.0, \"notes\": \"...\"}],\n"
+        "  \"visualMarks\": [{\"type\": \"circled_answer|boxed_answer|crossed_out|arrow|scratch|detached_operation_annotation|other\", \"lineIndex\": 0, \"latex\": \"...\", \"confidence\": 0.0, \"notes\": \"...\"}],\n"
         "  \"overallConfidence\": 0.0,\n"
         "  \"notes\": \"short reason for anything suspicious\"\n"
         "}\n\n"
+        "Confidence values must be numbers from 0 to 1. Use 0 only when the line or mark is unreadable, not as a placeholder. "
+        "Call out detached operation annotations such as multiplier/divider marks written beside both sides of an equation. "
         "Do not decide whether the app is correct. Do not include markdown. "
         "Preserve visible intermediate lines, even if a final answer is circled."
     )
 
 
-def render_audit_images(payload: dict[str, Any], audit_dir: Path) -> dict[str, Path]:
+def render_audit_images(payload: dict[str, Any], audit_dir: Path) -> dict[str, Any]:
     strokes = [stroke for stroke in payload.get("strokes") or [] if isinstance(stroke, dict)]
     problem_box = bbox_or_none(payload.get("problemBox"))
     answer_box = bbox_or_none(payload.get("answerBox")) or bbox_for_strokes(strokes)
     problem_crop_box = padded_bbox(union_bbox(problem_box, answer_box) or answer_box or problem_box, RENDER_PADDING)
     answer_crop_box = padded_bbox(answer_box or problem_crop_box, RENDER_PADDING)
+    answer_context_box = padded_bbox(answer_box or problem_crop_box, RENDER_PADDING * 2)
 
     if problem_crop_box is None:
         problem_crop_box = {"xMin": 0, "yMin": 0, "xMax": 800, "yMax": 500}
     if answer_crop_box is None:
         answer_crop_box = problem_crop_box
+    if answer_context_box is None:
+        answer_context_box = answer_crop_box
 
     problem_crop = audit_dir / "problem_crop.png"
     answer_crop = audit_dir / "answer_crop.png"
+    answer_context = audit_dir / "answer_context.png"
     fast_overlay = audit_dir / "fast_overlay.png"
+    line_boxes = fast_line_boxes(payload.get("fastResult") or {})
     render_stroke_crop(strokes, problem_crop_box, problem_crop)
     render_stroke_crop(strokes, answer_crop_box, answer_crop)
     render_stroke_crop(
         strokes,
+        answer_context_box,
+        answer_context,
+        boxes=line_boxes,
+    )
+    render_stroke_crop(
+        strokes,
         problem_crop_box,
         fast_overlay,
-        boxes=fast_line_boxes(payload.get("fastResult") or {}),
+        boxes=line_boxes,
     )
     return {
         "problemCrop": problem_crop,
         "answerCrop": answer_crop,
+        "answerContext": answer_context,
         "fastOverlay": fast_overlay,
+        "cropBoxes": {
+            "problemCrop": problem_crop_box,
+            "answerCrop": answer_crop_box,
+            "answerContext": answer_context_box,
+            "fastOverlay": problem_crop_box,
+        },
     }
 
 
@@ -475,6 +570,7 @@ def build_event_summary(
     artifact_paths: dict[str, str],
     normalized: Optional[dict[str, Any]],
     vlm_grading: Optional[dict[str, Any]],
+    failure_kind: Optional[str],
 ) -> dict[str, Any]:
     discrepancies = comparison.get("discrepancies") or []
     return {
@@ -482,17 +578,67 @@ def build_event_summary(
         "createdAt": created_at.isoformat().replace("+00:00", "Z"),
         "problemId": payload.get("problemId"),
         "inputSignature": payload.get("inputSignature"),
+        "attemptId": payload.get("attemptId"),
+        "previousAuditId": payload.get("previousAuditId"),
         "triggerReasons": payload.get("triggerReasons") or [],
+        "comparisonStatus": comparison.get("status"),
+        "failureKind": failure_kind,
         "discrepancyCount": len(discrepancies),
         "discrepancyTypes": [item.get("type") for item in discrepancies if isinstance(item, dict)],
         "description": comparison.get("description") or "",
         "auditDir": str(audit_dir),
         "artifacts": artifact_paths,
+        "artifactTypes": sorted(artifact_paths.keys()),
         "fastProblemStatus": comparison.get("fastProblemStatus"),
         "vlmProblemStatus": comparison.get("vlmProblemStatus"),
         "vlmLatexLines": (normalized or {}).get("latexLines") or [],
         "vlmGradingFailed": bool((vlm_grading or {}).get("failed")),
     }
+
+
+def build_audit_metadata(
+    *,
+    settings: ServerSettings,
+    audit_id: str,
+    payload: dict[str, Any],
+    comparison: dict[str, Any],
+    artifact_paths: dict[str, str],
+    crop_boxes: dict[str, Any],
+    attempts: list[dict[str, Any]],
+    failure_kind: Optional[str],
+) -> dict[str, Any]:
+    return {
+        "auditId": audit_id,
+        "model": settings.vlm_audit_model,
+        "timeoutSeconds": settings.vlm_audit_timeout_seconds,
+        "attempts": attempts,
+        "vlmElapsedSeconds": sum(
+            float(attempt.get("elapsedSeconds") or 0)
+            for attempt in attempts
+            if isinstance(attempt, dict)
+        ),
+        "failureKind": failure_kind,
+        "comparisonStatus": comparison.get("status"),
+        "problemId": payload.get("problemId"),
+        "inputSignature": payload.get("inputSignature"),
+        "attemptId": payload.get("attemptId"),
+        "previousAuditId": payload.get("previousAuditId"),
+        "triggerReasons": payload.get("triggerReasons") or [],
+        "cropBoxes": crop_boxes,
+        "imagePaths": artifact_paths,
+        "artifactTypes": sorted(artifact_paths.keys()),
+    }
+
+
+def first_failure_kind(comparison: dict[str, Any]) -> Optional[str]:
+    if comparison.get("status") != "failed":
+        return None
+    for discrepancy in comparison.get("discrepancies") or []:
+        if isinstance(discrepancy, dict):
+            kind = str(discrepancy.get("type") or "").strip()
+            if kind:
+                return kind
+    return "failed"
 
 
 def fast_line_boxes(fast_result: dict[str, Any]) -> list[dict[str, float]]:

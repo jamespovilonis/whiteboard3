@@ -1,4 +1,5 @@
 export const DEFAULT_AUDIT_NORMAL_SAMPLE_RATE = 0.10;
+const previousAuditIdByProblemId = new Map();
 
 export function getRecognitionAuditDecision(result = {}, options = {}) {
   const triggerReasons = [];
@@ -23,6 +24,12 @@ export function getRecognitionAuditDecision(result = {}, options = {}) {
   }
   if (hasCorrectAnswerWithInvalidStep(grading)) {
     triggerReasons.push('correct_answer_with_invalid_step');
+  }
+  if (hasDetachedOperationAnnotation(result)) {
+    triggerReasons.push('detached_operation_annotation');
+  }
+  if (hasCandidateSelectionConflict(result)) {
+    triggerReasons.push('candidate_selection_conflict');
   }
 
   if (triggerReasons.length > 0) {
@@ -57,6 +64,9 @@ export async function enqueueRecognitionAudit(payload, options = {}) {
   if (!response.ok) {
     throw new Error(body?.detail || `HTTP ${response.status} from ${url}`);
   }
+  if (body?.auditId && payload?.problemId) {
+    previousAuditIdByProblemId.set(String(payload.problemId), String(body.auditId));
+  }
   return body || {};
 }
 
@@ -79,13 +89,17 @@ export function buildRecognitionAuditPayload({
   inputSignature = '',
   triggerReasons = []
 } = {}) {
+  const problemId = problem.id || null;
+  const previousAuditId = problemId ? previousAuditIdByProblemId.get(String(problemId)) || null : null;
   return {
-    problemId: problem.id || null,
+    problemId,
     problemLatex: problem.latex || '',
     problemMetadata: problem.metadata || {},
     problemBox: clonePlain(problem.problemBox),
     answerBox: clonePlain(problem.answerBox),
     inputSignature,
+    attemptId: buildAttemptId(problemId, inputSignature),
+    previousAuditId,
     triggerReasons: triggerReasons.slice(),
     strokes: compactStrokes(strokes),
     fastResult: compactRecognitionResult(result)
@@ -103,6 +117,7 @@ export function compactRecognitionResult(result = {}) {
     realtime: clonePlain(result.realtime || null),
     lines: (result.lines || []).map(compactLine),
     candidatePredictions: (result.candidatePredictions || []).map(compactLine),
+    selectionSummary: compactSelectionSummary(result),
     segmentation: {
       selected: (result.segmentation?.selected || []).map(compactCandidate),
       candidates: (result.segmentation?.candidates || []).map(compactCandidate),
@@ -167,10 +182,68 @@ function compactLine(line = {}) {
     sequentialSemantic: clonePlain(line.sequentialSemantic || null),
     ocrRepair: clonePlain(line.ocrRepair || null),
     evidenceScore: Number.isFinite(Number(line.evidenceScore)) ? Number(line.evidenceScore) : null,
+    selectedLineIndex: line.selectedLineIndex ?? null,
+    discarded: Boolean(line.discarded),
+    selectionReason: line.selectionReason || selectionReasonForLine(line),
     timing: clonePlain(line.timing || null),
     realtimeStatus: line.realtimeStatus || null,
     provisional: Boolean(line.provisional)
   };
+}
+
+function compactSelectionSummary(result = {}) {
+  const lines = Array.isArray(result.lines) ? result.lines : [];
+  const selectedIds = new Set(lines.map((line) => line?.candidateId).filter(Boolean));
+  const predictions = Array.isArray(result.candidatePredictions) ? result.candidatePredictions : [];
+  const highConfidenceDiscarded = predictions
+    .filter((entry) => entry?.candidateId && !selectedIds.has(entry.candidateId))
+    .filter(isHighConfidenceAlternative)
+    .slice(0, 8)
+    .map((entry) => ({
+      candidateId: entry.candidateId || null,
+      latex: entry.acceptedLatex || entry.latex || entry.ocrLatex || '',
+      tightBbox: clonePlain(entry.tightBbox || null),
+      strokeIds: Array.isArray(entry.strokeIds) ? entry.strokeIds.map(String) : [],
+      evidenceScore: Number.isFinite(Number(entry.evidenceScore)) ? Number(entry.evidenceScore) : null,
+      grading: clonePlain(entry.grading || null),
+      prediction: compactPrediction(entry.prediction || null),
+    }));
+
+  return {
+    selectedCandidateIds: [...selectedIds],
+    selectedLines: lines.map((line) => ({
+      candidateId: line?.candidateId || null,
+      lineIndex: line?.lineIndex ?? null,
+      latex: line?.acceptedLatex || line?.latex || '',
+      tightBbox: clonePlain(line?.tightBbox || null),
+      strokeIds: Array.isArray(line?.strokeIds) ? line.strokeIds.map(String) : [],
+      selectionReason: selectionReasonForLine(line || {}),
+    })),
+    highConfidenceDiscarded,
+  };
+}
+
+function isHighConfidenceAlternative(entry = {}) {
+  const grading = entry.grading || entry.semantic?.grading || entry.contextualSemantic?.grading || entry.sequentialSemantic?.grading || null;
+  if (grading?.solutionCoverage === 'full' || grading?.solutionCoverage === 'partial') return true;
+  const confidence = Number(entry.prediction?.confidence ?? entry.prediction?.top?.confidence);
+  if (Number.isFinite(confidence) && confidence >= 0.6) return true;
+  const score = Number(entry.prediction?.top?.score);
+  if (Number.isFinite(score) && score >= 1.5) return true;
+  const evidenceScore = Number(entry.evidenceScore);
+  return Number.isFinite(evidenceScore) && evidenceScore >= 8;
+}
+
+function selectionReasonForLine(line = {}) {
+  if (line.ocrRepair?.source) return `ocr_repair:${line.ocrRepair.source}`;
+  const grading = line.grading || line.sequentialSemantic?.grading || line.contextualSemantic?.grading || null;
+  if (grading?.solutionCoverage === 'full') return 'grading_full_solution';
+  if (grading?.solutionCoverage === 'partial') return 'grading_partial_solution';
+  if (grading?.classification === 'valid_step') return 'grading_valid_step';
+  if (line.contextualSemantic) return 'contextual_semantic';
+  if (line.sequentialSemantic) return 'sequential_semantic';
+  if (line.semantic) return 'semantic';
+  return 'ocr_evidence';
 }
 
 function compactCandidate(candidate = {}) {
@@ -255,6 +328,62 @@ function hasLowConfidenceLine(result = {}) {
   });
 }
 
+function hasDetachedOperationAnnotation(result = {}) {
+  const values = [
+    ...(Array.isArray(result.lines) ? result.lines : []),
+    ...(Array.isArray(result.candidatePredictions) ? result.candidatePredictions : []),
+  ];
+  return values.some((line) => (
+    line?.ocrRepair?.source === 'geometry-operation-annotation' ||
+    looksLikeDetachedOperationAnnotation(line?.acceptedLatex || line?.latex || line?.ocrLatex || '')
+  ));
+}
+
+function hasCandidateSelectionConflict(result = {}) {
+  const selected = new Set((result.lines || []).map((line) => line?.candidateId).filter(Boolean));
+  return (result.candidatePredictions || []).some((entry) => {
+    if (!entry?.candidateId || selected.has(entry.candidateId)) return false;
+    const grading = entry.grading || entry.semantic?.grading || entry.contextualSemantic?.grading || null;
+    if (grading?.solutionCoverage !== 'full') return false;
+    return (result.lines || []).some((line) => boxesOverlap(line?.tightBbox, entry.tightBbox) >= 0.55);
+  });
+}
+
+function looksLikeDetachedOperationAnnotation(latex = '') {
+  const normalized = String(latex || '').replace(/\s+/g, ' ').trim();
+  if (!normalized || normalized.includes('=')) return false;
+  if (/^(?:\\times|\\cdot|\*)?\s*\d{1,3}\s*(?:\.|\*|\\times|\\cdot)?$/.test(normalized)) return true;
+  if (/^(?:\.|\*|\\times|\\cdot)\s*\d{1,3}$/.test(normalized)) return true;
+  return /^(?:x|X|\\times)\s*_\s*\{\s*\d{1,3}\s*\}/.test(normalized);
+}
+
+function boxesOverlap(left, right) {
+  const a = normalizedBox(left);
+  const b = normalizedBox(right);
+  if (!a || !b) return 0;
+  const xMin = Math.max(a.xMin, b.xMin);
+  const yMin = Math.max(a.yMin, b.yMin);
+  const xMax = Math.min(a.xMax, b.xMax);
+  const yMax = Math.min(a.yMax, b.yMax);
+  if (xMax <= xMin || yMax <= yMin) return 0;
+  const overlapArea = (xMax - xMin) * (yMax - yMin);
+  const smallerArea = Math.min((a.xMax - a.xMin) * (a.yMax - a.yMin), (b.xMax - b.xMin) * (b.yMax - b.yMin));
+  return smallerArea > 0 ? overlapArea / smallerArea : 0;
+}
+
+function normalizedBox(value) {
+  if (!value || typeof value !== 'object') return null;
+  const box = {
+    xMin: Number(value.xMin),
+    yMin: Number(value.yMin),
+    xMax: Number(value.xMax),
+    yMax: Number(value.yMax)
+  };
+  if (!Object.values(box).every(Number.isFinite)) return null;
+  if (box.xMax <= box.xMin || box.yMax <= box.yMin) return null;
+  return box;
+}
+
 function configuredNormalSampleRate() {
   const envRate = import.meta.env?.VITE_VLM_AUDIT_NORMAL_SAMPLE_RATE;
   return envRate ?? DEFAULT_AUDIT_NORMAL_SAMPLE_RATE;
@@ -277,6 +406,11 @@ function stableHash32(value) {
 
 function unique(items) {
   return [...new Set(items)];
+}
+
+function buildAttemptId(problemId, inputSignature) {
+  const key = `${problemId || 'problem'}::${inputSignature || 'input'}`;
+  return `attempt_${stableHash32(key).toString(16).padStart(8, '0')}`;
 }
 
 function stripCandidateImages(value) {
