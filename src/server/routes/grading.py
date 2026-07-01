@@ -20,7 +20,18 @@ def score_latex_candidates(payload: dict[str, Any], request: Request) -> dict[st
 
 @router.post("/grade-equation-work")
 def grade_equation_work(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    return _score(payload, request, scorer=request.app.state.grading_scorer, failure_label="Grading")
+    return _score(
+        {**payload, "problemType": "equation-solving"},
+        request,
+        scorer=request.app.state.grading_scorer,
+        failure_label="Grading",
+    )
+
+
+@router.post("/grade-math-work")
+def grade_math_work(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    scorer = getattr(request.app.state, "math_grading_scorer", request.app.state.grading_scorer)
+    return _score(payload, request, scorer=scorer, failure_label="Math grading")
 
 
 def _score(payload: dict[str, Any], request: Request, *, scorer, failure_label: str) -> dict[str, Any]:

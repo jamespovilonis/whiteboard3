@@ -7,7 +7,7 @@ import queue
 from typing import Any, Callable
 
 from testing.latex_semantics import score_semantic_payload
-from src.grading import grade_equation_payload
+from src.grading import grade_equation_payload, grade_math_payload
 
 
 class SemanticScoringTimeout(TimeoutError):
@@ -65,6 +65,7 @@ def _score_payload_worker(
 __all__ = [
     "SemanticScoringTimeout",
     "grade_equation_payload",
+    "grade_math_payload",
     "score_payload_with_timeout",
     "score_semantic_payload",
 ]

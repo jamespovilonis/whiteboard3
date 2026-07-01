@@ -1,9 +1,17 @@
 import { recognitionFetchErrorMessage } from '../recognition/fetchErrors.js';
 
 export async function gradeEquationWork(request, options = {}) {
+  return gradeWorkAtEndpoint('/grade-equation-work', request, options);
+}
+
+export async function gradeMathWork(request, options = {}) {
+  return gradeWorkAtEndpoint('/grade-math-work', request, options);
+}
+
+async function gradeWorkAtEndpoint(endpoint, request, options = {}) {
   const apiUrl = String(options.apiUrl || '').replace(/\/$/, '');
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 5000;
-  const url = `${apiUrl}/grade-equation-work`;
+  const url = `${apiUrl}${endpoint}`;
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const externalSignal = options.signal || null;
   if (externalSignal?.aborted) controller?.abort();

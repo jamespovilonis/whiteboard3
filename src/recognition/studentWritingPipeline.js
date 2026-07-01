@@ -2898,7 +2898,9 @@ function buildLiveGradingResult({ problemLatex = '', answerManifest = null, line
       classification: grading?.classification || 'other',
       selectedCandidateIndex: grading?.selectedCandidateIndex ?? null,
       solutionCoverage: grading?.solutionCoverage || 'none',
-      matchedSolutions: Array.isArray(grading?.matchedSolutions) ? grading.matchedSolutions : []
+      matchedSolutions: Array.isArray(grading?.matchedSolutions) ? grading.matchedSolutions : [],
+      answerFinality: grading?.answerFinality || 'not_answer',
+      countsTowardCompletion: grading?.countsTowardCompletion !== false
     };
   });
   const exactSet = Array.isArray(answerManifest?.exact_set)
@@ -2912,6 +2914,7 @@ function buildLiveGradingResult({ problemLatex = '', answerManifest = null, line
     if (step.classification === 'invalid_step' && firstInvalid === null) {
       firstInvalid = step.lineIndex;
     }
+    if (step.countsTowardCompletion === false) continue;
     for (const solution of step.matchedSolutions || []) {
       if (solution) matched.add(String(solution));
     }
@@ -2919,7 +2922,9 @@ function buildLiveGradingResult({ problemLatex = '', answerManifest = null, line
   const cardinality = answerManifest?.cardinality || 'unsupported';
   const complete = cardinality === 'finite'
     ? exactSet.length > 0 && exactSet.every((solution) => matched.has(solution))
-    : steps.some((step) => step.solutionCoverage === 'full' || (step.matchedSolutions || []).length > 0);
+    : steps.some((step) => step.countsTowardCompletion !== false && (
+        step.solutionCoverage === 'full' || (step.matchedSolutions || []).length > 0
+      ));
   const problemStatus = complete
     ? 'correct'
     : firstInvalid !== null

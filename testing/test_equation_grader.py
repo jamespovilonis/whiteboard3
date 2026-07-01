@@ -14,7 +14,15 @@ if str(REPO_ROOT) not in sys.path:
 if str(TESTING_DIR) not in sys.path:
     sys.path.insert(0, str(TESTING_DIR))
 
-from src.grading import create_answer_manifest, grade_candidate_group, grade_equation_payload, grade_equation_work
+from src.grading import (
+    create_answer_manifest,
+    create_expression_manifest,
+    grade_candidate_group,
+    grade_equation_payload,
+    grade_equation_work,
+    grade_expression_payload,
+    grade_math_payload,
+)
 
 
 class EquationGraderManifestTests(unittest.TestCase):
@@ -125,6 +133,47 @@ class EquationGraderWorkTests(unittest.TestCase):
         self.assertEqual(result["steps"][0]["studentLatex"], "x = 4")
         self.assertEqual(result["steps"][0]["selectedCandidateIndex"], 1)
 
+    def test_unsimplified_equivalent_solution_is_incomplete(self):
+        manifest = create_answer_manifest("x + 2 = 5")
+
+        result = grade_equation_work(manifest, [{"latex": "x = 5 - 2"}])
+
+        self.assertEqual(result["steps"][0]["classification"], "valid_step")
+        self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
+        self.assertEqual(result["steps"][0]["answerFinality"], "unsimplified")
+        self.assertEqual(result["steps"][0]["countsTowardCompletion"], False)
+        self.assertEqual(result["result"]["problemStatus"], "incomplete")
+        self.assertEqual(result["result"]["foundSolutions"], [])
+        self.assertEqual(result["result"]["missingSolutions"], ["3"])
+
+    def test_simplified_solution_completes_after_unsimplified_work(self):
+        manifest = create_answer_manifest("x + 2 = 5")
+
+        result = grade_equation_work(manifest, [
+            {"latex": "x = 5 - 2"},
+            {"latex": "x = 3"},
+        ])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual([step["answerFinality"] for step in result["steps"]], ["unsimplified", "final"])
+        self.assertEqual(result["result"]["foundSolutions"], ["3"])
+
+    def test_candidate_ranking_prefers_final_answer_over_unsimplified_answer(self):
+        manifest = create_answer_manifest("x + 2 = 5")
+
+        result = grade_equation_work(manifest, [{
+            "latex": "x = 5 - 2",
+            "candidates": [
+                {"latex": "x = 5 - 2"},
+                {"latex": "x = 3"},
+            ],
+        }])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["studentLatex"], "x = 3")
+        self.assertEqual(result["steps"][0]["selectedCandidateIndex"], 1)
+        self.assertEqual(result["steps"][0]["answerFinality"], "final")
+
     def test_candidate_group_grading_selects_valid_top_five_prediction(self):
         manifest = create_answer_manifest("3x + 5 = 17")
 
@@ -162,6 +211,17 @@ class EquationGraderWorkTests(unittest.TestCase):
         self.assertEqual(result["result"]["problemStatus"], "correct")
         self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
         self.assertEqual(result["steps"][0]["matchedSolutions"], ["2", "3"])
+
+    def test_set_notation_multi_solution_line_completes_problem(self):
+        manifest = create_answer_manifest("x^2 - 5x + 6 = 0")
+
+        for latex in ("{2, 3}", r"x = \{ 2, 3 \}", r"x \in \{ 2, 3 \}"):
+            with self.subTest(latex=latex):
+                result = grade_equation_work(manifest, [{"latex": latex}])
+
+                self.assertEqual(result["result"]["problemStatus"], "correct")
+                self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
+                self.assertEqual(result["steps"][0]["matchedSolutions"], ["2", "3"])
 
     def test_repeated_assignment_multi_solution_line_completes_problem(self):
         manifest = create_answer_manifest("x^2 - 5x + 6 = 0")
@@ -604,6 +664,69 @@ class EquationGraderWorkTests(unittest.TestCase):
             f"Grading-first path ({grading_first_time:.4f}s) should not be much slower than "
             f"fallback ({fallback_time:.4f}s)"
         )
+
+
+class ExpressionGraderTests(unittest.TestCase):
+    def test_expression_manifest_evaluates_numeric_prompt(self):
+        manifest = create_expression_manifest("5 - 2")
+
+        self.assertEqual(manifest["responseKind"], "numeric_value")
+        self.assertEqual(manifest["exact_set"], ["3"])
+        self.assertEqual(manifest["decimal_set"], [3.0])
+
+    def test_expression_accepts_final_numeric_answer(self):
+        result = grade_expression_payload({
+            "problemLatex": "5 - 2",
+            "lines": [{"latex": "3"}],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["answerFinality"], "final")
+
+    def test_expression_rejects_repeated_unsimplified_prompt_as_incomplete(self):
+        result = grade_expression_payload({
+            "problemLatex": "5 - 2",
+            "lines": [{"latex": "5 - 2"}],
+        })
+
+        self.assertEqual(result["steps"][0]["classification"], "valid_step")
+        self.assertEqual(result["steps"][0]["answerFinality"], "unsimplified")
+        self.assertEqual(result["steps"][0]["countsTowardCompletion"], False)
+        self.assertEqual(result["result"]["problemStatus"], "incomplete")
+
+    def test_expression_rejects_equation_format(self):
+        result = grade_expression_payload({
+            "problemLatex": "5 - 2",
+            "lines": [{"latex": "x = 3"}],
+        })
+
+        self.assertEqual(result["steps"][0]["classification"], "invalid_step")
+        self.assertEqual(result["steps"][0]["answerFinality"], "invalid_format")
+        self.assertEqual(result["result"]["problemStatus"], "incorrect")
+
+    def test_expression_accepts_reduced_fraction_and_rejects_unreduced_fraction(self):
+        correct = grade_expression_payload({
+            "problemLatex": r"\frac { 1 } { 4 } + \frac { 1 } { 4 }",
+            "lines": [{"latex": r"\frac { 1 } { 2 }"}],
+        })
+        incomplete = grade_expression_payload({
+            "problemLatex": r"\frac { 1 } { 4 } + \frac { 1 } { 4 }",
+            "lines": [{"latex": r"\frac { 2 } { 4 }"}],
+        })
+
+        self.assertEqual(correct["result"]["problemStatus"], "correct")
+        self.assertEqual(incomplete["steps"][0]["answerFinality"], "unsimplified")
+        self.assertEqual(incomplete["result"]["problemStatus"], "incomplete")
+
+    def test_grade_math_payload_dispatches_expression_evaluation(self):
+        result = grade_math_payload({
+            "problemType": "evaluate-expression",
+            "problemLatex": "5 - 2",
+            "lines": [{"latex": "3"}],
+        })
+
+        self.assertEqual(result["problem"]["manifest"]["responseKind"], "numeric_value")
+        self.assertEqual(result["result"]["problemStatus"], "correct")
 
 
 if __name__ == "__main__":

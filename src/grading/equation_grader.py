@@ -30,6 +30,15 @@ from sympy.parsing.sympy_parser import (
     standard_transformations,
 )
 
+from .answer_grader import (
+    AnswerFinality,
+    candidate_rank,
+    final_answer,
+    invalid_format,
+    not_answer,
+    unsimplified_answer,
+)
+
 
 DEFAULT_TOLERANCE = 0.005
 MAX_OCR_CANDIDATES = 5
@@ -202,6 +211,7 @@ class SolutionMatch:
     matched_indices: tuple[int, ...]
     coverage: str
     accepted_special: Optional[str] = None
+    finality: AnswerFinality = not_answer()
 
 
 def create_answer_manifest(
@@ -215,6 +225,8 @@ def create_answer_manifest(
     raw = str(problem_raw or "").strip()
     manifest: dict[str, Any] = {
         "problem_raw": raw,
+        "responseKind": "solution_set",
+        "finalityPolicy": "pragmatic",
         "variable": variable,
         "cardinality": "unsupported",
         "exact_set": [],
@@ -328,6 +340,101 @@ def grade_equation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return grade_equation_work(manifest, lines)
 
 
+def grade_math_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Grade a generic math-work payload.
+
+    V1 supports equation solving and numeric expression evaluation. Missing
+    problem types preserve the existing equation-solving behavior.
+    """
+
+    problem_metadata = payload.get("problemMetadata") if isinstance(payload.get("problemMetadata"), dict) else {}
+    problem_type = str(
+        payload.get("problemType") or
+        problem_metadata.get("problemType") or
+        problem_metadata.get("kind") or
+        "equation-solving"
+    )
+    if problem_type in {"evaluate-expression", "expression-evaluation", "numeric-expression"}:
+        return grade_expression_payload(payload)
+
+    equation_payload = {
+        **payload,
+        "problemType": "equation-solving",
+    }
+    return grade_equation_payload(equation_payload)
+
+
+def create_expression_manifest(
+    problem_raw: str,
+    *,
+    tolerance: float = DEFAULT_TOLERANCE,
+) -> dict[str, Any]:
+    """Create an answer manifest for a numeric-only expression prompt."""
+
+    raw = str(problem_raw or "").strip()
+    manifest: dict[str, Any] = {
+        "problem_raw": raw,
+        "responseKind": "numeric_value",
+        "finalityPolicy": "pragmatic",
+        "variable": None,
+        "cardinality": "finite",
+        "exact_set": [],
+        "decimal_set": [],
+        "tolerance": float(tolerance),
+        "acceptable_strings": [],
+    }
+    if not raw:
+        return {**manifest, "error": "empty problem"}
+
+    try:
+        parsed = parse_math(raw)
+    except GradingParseFailure as exc:
+        return {**manifest, "error": str(exc)}
+
+    if parsed.kind != "expression":
+        return {
+            **manifest,
+            "problem_standardized": parsed.standardized,
+            "error": "problem must be a numeric expression",
+        }
+    if parsed.left.free_symbols:
+        return {
+            **manifest,
+            "problem_standardized": parsed.standardized,
+            "error": "expression prompts must be numeric only",
+        }
+
+    exact = _simplify_with_budget(parsed.left)
+    if exact is None:
+        exact = parsed.left
+    exact = sympy.simplify(exact)
+    exact_set = [sympy.sstr(exact)]
+    decimal = safe_float(exact)
+    return {
+        **manifest,
+        "problem_standardized": parsed.standardized,
+        "exact_set": exact_set,
+        "decimal_set": [round(decimal, 3)] if decimal is not None else [],
+        "acceptable_strings": [compact_answer_text(exact_set[0])],
+    }
+
+
+def grade_expression_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    manifest = payload.get("manifest")
+    if not isinstance(manifest, dict):
+        problem_raw = (
+            payload.get("problem_raw") or
+            payload.get("problemRaw") or
+            payload.get("problemLatex") or
+            payload.get("problem") or
+            ""
+        )
+        manifest = create_expression_manifest(str(problem_raw))
+
+    lines = payload.get("lines") or payload.get("studentLines") or []
+    return grade_expression_work(manifest, lines)
+
+
 def grade_equation_work(
     manifest: dict[str, Any],
     lines: Sequence[dict[str, Any] | str],
@@ -358,7 +465,8 @@ def grade_equation_work(
         if selected["classification"] == "valid_step":
             saw_valid = True
             matched_indices = selected.get("_matched_indices", ())
-            found_indices.update(matched_indices)
+            if selected.get("countsTowardCompletion", True) is not False:
+                found_indices.update(matched_indices)
             if selected.get("studentLatex"):
                 reference_latex = selected["studentLatex"]
         elif selected["classification"] == "invalid_step" and first_invalid_index is None:
@@ -415,6 +523,81 @@ def grade_equation_work(
             "breakdownLineIndex": breakdown_line_index,
             "foundSolutions": found_solutions,
             "missingSolutions": missing_solutions,
+        },
+    }
+
+
+def grade_expression_work(
+    manifest: dict[str, Any],
+    lines: Sequence[dict[str, Any] | str],
+) -> dict[str, Any]:
+    """Grade numeric expression-evaluation answers against a manifest."""
+
+    normalized_lines = list(lines or [])
+    exact_values = manifest_exact_values(manifest)
+    found_indices: set[int] = set()
+    steps: list[dict[str, Any]] = []
+    saw_valid = False
+    first_invalid_index: Optional[int] = None
+
+    for fallback_index, line in enumerate(normalized_lines):
+        line_index = line.get("lineIndex", fallback_index) if isinstance(line, dict) else fallback_index
+        candidates = line_candidate_latex(line)
+        selected = classify_expression_candidates(candidates, manifest, exact_values)
+        selected = public_line_selection(selected, manifest)
+
+        if selected["classification"] == "valid_step":
+            saw_valid = True
+            if selected.get("countsTowardCompletion", True) is not False:
+                found_indices.update(selected.get("_matched_indices", ()))
+        elif selected["classification"] == "invalid_step" and first_invalid_index is None:
+            first_invalid_index = int(line_index)
+
+        steps.append({
+            "lineIndex": line_index,
+            **strip_private_selection_fields(selected),
+        })
+
+    complete = bool(exact_values) and len(found_indices) == len(exact_values)
+    if complete:
+        status = "correct"
+        breakdown_line_index = None
+    elif first_invalid_index is not None:
+        status = "incorrect"
+        breakdown_line_index = first_invalid_index
+    elif saw_valid:
+        status = "incomplete"
+        breakdown_line_index = None
+    else:
+        status = "not_started"
+        breakdown_line_index = None
+
+    exact_set = list(manifest.get("exact_set") or [])
+    return {
+        "problem": {
+            "latex": manifest.get("problem_raw", ""),
+            "standardized": manifest.get("problem_standardized", ""),
+            "solveVariable": None,
+            "cardinality": manifest.get("cardinality"),
+            "solutionSet": exact_set,
+            "decimalSet": list(manifest.get("decimal_set") or []),
+            "tolerance": manifest.get("tolerance", DEFAULT_TOLERANCE),
+            "manifest": manifest,
+        },
+        "steps": steps,
+        "result": {
+            "problemStatus": status,
+            "breakdownLineIndex": breakdown_line_index,
+            "foundSolutions": [
+                str(exact_set[index])
+                for index in sorted(found_indices)
+                if index >= 0 and index < len(exact_set)
+            ],
+            "missingSolutions": [
+                str(value)
+                for index, value in enumerate(exact_set)
+                if index not in found_indices
+            ],
         },
     }
 
@@ -489,16 +672,12 @@ def _pick_best_candidate_verdict(
 
     Returns (best_verdict, original_candidate_index).
     """
-    classification_rank = {"valid_step": 0, "invalid_step": 1, "other": 2, "unrecognized": 3}
-    coverage_rank = {"full": 0, "partial": 1, "none": 2}
     best: Optional[dict[str, Any]] = None
     best_original_index = 0
     best_rank = (999, 999)
 
     for verdict in verdicts:
-        cls = verdict.get("classification", "other")
-        cov = verdict.get("solutionCoverage", "none")
-        rank = (classification_rank.get(cls, 99), coverage_rank.get(cov, 99))
+        rank = candidate_rank(verdict)
         if rank < best_rank:
             best_rank = rank
             best = verdict
@@ -516,54 +695,26 @@ def classify_line_candidates(
 ) -> dict[str, Any]:
     """Choose and classify the best supported candidate among one OCR line."""
 
-    first_parseable_equation: Optional[tuple[int, str]] = None
     first_latex = candidates[0] if candidates else ""
+    verdicts: list[dict[str, Any]] = []
 
     for index, latex in enumerate(candidates[:MAX_OCR_CANDIDATES]):
         text = str(latex or "").strip()
         if not text:
             continue
+        verdicts.append(classify_equation_candidate(
+            text,
+            index,
+            manifest,
+            exact_values,
+            variable,
+            reference_latex,
+        ))
 
-        special = special_solution_match(text, manifest)
-        if special is not None:
-            return selected_line(
-                text,
-                "valid_step",
-                index,
-                special.coverage,
-                special.matched_indices,
-                accepted_special=special.accepted_special,
-            )
-
-        solution_match = finite_solution_match(text, manifest, exact_values, variable)
-        if solution_match is not None:
-            return selected_line(
-                text,
-                "valid_step",
-                index,
-                solution_match.coverage,
-                solution_match.matched_indices,
-            )
-
-        general_match = general_solution_match(text, manifest, variable)
-        if general_match is not None:
-            return selected_line(
-                text,
-                "valid_step",
-                index,
-                general_match.coverage,
-                general_match.matched_indices,
-            )
-
-        if equation_equivalent(reference_latex, text, variable):
-            return selected_line(text, "valid_step", index, "none", ())
-
-        if first_parseable_equation is None and is_parseable_equation(text):
-            first_parseable_equation = (index, text)
-
-    if first_parseable_equation is not None:
-        index, text = first_parseable_equation
-        return selected_line(text, "invalid_step", index, "none", ())
+    if verdicts:
+        best, _best_original_index = _pick_best_candidate_verdict(verdicts)
+        if best is not None and best.get("classification") != "other":
+            return best
 
     # Distinguish between lines with no parseable content at all
     # (unrecognized) and lines with some non-equation content (other).
@@ -575,6 +726,132 @@ def classify_line_candidates(
         return selected_line(first_latex, "unrecognized", 0 if candidates else None, "none", ())
 
     return selected_line(first_latex, "other", 0 if candidates else None, "none", ())
+
+
+def classify_equation_candidate(
+    text: str,
+    index: int,
+    manifest: dict[str, Any],
+    exact_values: Sequence[sympy.Expr],
+    variable: str,
+    reference_latex: str,
+) -> dict[str, Any]:
+    special = special_solution_match(text, manifest)
+    if special is not None:
+        return selected_line(
+            text,
+            "valid_step",
+            index,
+            special.coverage,
+            special.matched_indices,
+            accepted_special=special.accepted_special,
+            finality=special.finality,
+        )
+
+    solution_match = finite_solution_match(text, manifest, exact_values, variable)
+    if solution_match is not None:
+        return selected_line(
+            text,
+            "valid_step",
+            index,
+            solution_match.coverage,
+            solution_match.matched_indices,
+            finality=solution_match.finality,
+        )
+
+    general_match = general_solution_match(text, manifest, variable)
+    if general_match is not None:
+        return selected_line(
+            text,
+            "valid_step",
+            index,
+            general_match.coverage,
+            general_match.matched_indices,
+            finality=general_match.finality,
+        )
+
+    if equation_equivalent(reference_latex, text, variable):
+        return selected_line(text, "valid_step", index, "none", ())
+
+    if is_parseable_equation(text):
+        return selected_line(text, "invalid_step", index, "none", ())
+
+    return selected_line(text, "other", index, "none", ())
+
+
+def classify_expression_candidates(
+    candidates: Sequence[str],
+    manifest: dict[str, Any],
+    exact_values: Sequence[sympy.Expr],
+) -> dict[str, Any]:
+    first_latex = candidates[0] if candidates else ""
+    verdicts: list[dict[str, Any]] = []
+
+    for index, latex in enumerate(candidates[:MAX_OCR_CANDIDATES]):
+        text = str(latex or "").strip()
+        if not text:
+            continue
+        verdicts.append(classify_expression_candidate(text, index, manifest, exact_values))
+
+    if verdicts:
+        best, _best_original_index = _pick_best_candidate_verdict(verdicts)
+        if best is not None:
+            return best
+
+    has_any_text = any(str(latex or "").strip() for latex in candidates[:MAX_OCR_CANDIDATES])
+    if not has_any_text:
+        return selected_line(first_latex, "unrecognized", 0 if candidates else None, "none", ())
+    return selected_line(first_latex, "other", 0 if candidates else None, "none", ())
+
+
+def classify_expression_candidate(
+    text: str,
+    index: int,
+    manifest: dict[str, Any],
+    exact_values: Sequence[sympy.Expr],
+) -> dict[str, Any]:
+    try:
+        parsed = parse_math(text)
+    except GradingParseFailure:
+        return selected_line(text, "other", index, "none", ())
+
+    if parsed.kind == "equation":
+        return selected_line(
+            text,
+            "invalid_step",
+            index,
+            "none",
+            (),
+            finality=invalid_format("expression answers must be numeric values, not equations"),
+        )
+
+    if parsed.left.free_symbols:
+        return selected_line(
+            text,
+            "invalid_step",
+            index,
+            "none",
+            (),
+            finality=invalid_format("expression answers must not contain variables"),
+        )
+
+    matched: set[int] = set()
+    for exact_index, exact in enumerate(exact_values):
+        if solution_values_equivalent(parsed.left, exact, manifest):
+            matched.add(exact_index)
+
+    if not matched:
+        return selected_line(text, "invalid_step", index, "none", (), finality=invalid_format("numeric value does not match"))
+
+    finality = expression_value_finality(text, parsed.left)
+    return selected_line(
+        text,
+        "valid_step",
+        index,
+        "full",
+        tuple(sorted(matched)),
+        finality=finality,
+    )
 
 
 def public_line_selection(selected: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
@@ -620,7 +897,9 @@ def selected_line(
     matched_indices: Sequence[int],
     *,
     accepted_special: Optional[str] = None,
+    finality: Optional[AnswerFinality] = None,
 ) -> dict[str, Any]:
+    finality = finality or (final_answer() if coverage in {"full", "partial"} else not_answer())
     result = {
         "studentLatex": latex,
         "classification": classification,
@@ -628,6 +907,7 @@ def selected_line(
         "solutionCoverage": coverage,
         "matchedSolutions": [],
         "_matched_indices": tuple(sorted(set(matched_indices))),
+        **finality.public_fields(),
     }
     if accepted_special:
         result["acceptedSpecialAnswer"] = accepted_special
@@ -658,20 +938,29 @@ def finite_solution_match(
     if manifest.get("cardinality") != "finite" or not exact_values:
         return None
 
-    values = candidate_solution_values(latex, variable)
-    if not values:
+    entries = candidate_solution_entries(latex, variable)
+    if not entries:
         return None
 
     matched: set[int] = set()
-    for candidate_value in values:
+    all_matched_final = True
+    unsimplified_reasons: list[str] = []
+    for _raw_part, candidate_value, finality in entries:
         for index, exact in enumerate(exact_values):
             if solution_values_equivalent(candidate_value, exact, manifest):
                 matched.add(index)
+                if finality.status != "final":
+                    all_matched_final = False
+                    if finality.reason:
+                        unsimplified_reasons.append(finality.reason)
 
     if not matched:
         return None
     coverage = "full" if len(matched) == len(exact_values) else "partial"
-    return SolutionMatch(tuple(sorted(matched)), coverage)
+    answer_finality = final_answer() if all_matched_final else unsimplified_answer(
+        unsimplified_reasons[0] if unsimplified_reasons else "answer is equivalent but not fully simplified"
+    )
+    return SolutionMatch(tuple(sorted(matched)), coverage, finality=answer_finality)
 
 
 def general_solution_match(latex: str, manifest: dict[str, Any], variable: str) -> Optional[SolutionMatch]:
@@ -685,7 +974,7 @@ def general_solution_match(latex: str, manifest: dict[str, Any], variable: str) 
     if candidate is None:
         return None
     if solution_sets_equal(expected, candidate):
-        return SolutionMatch((-1,), "full")
+        return SolutionMatch((-1,), "full", finality=final_answer())
     return None
 
 
@@ -739,18 +1028,18 @@ def special_solution_match(latex: str, manifest: dict[str, Any]) -> Optional[Sol
     }
     if compact in acceptable:
         if cardinality in {"none", "infinite"}:
-            return SolutionMatch((-1,), "full", accepted_special=cardinality)
+            return SolutionMatch((-1,), "full", accepted_special=cardinality, finality=final_answer())
         if cardinality == "finite":
             return None
 
     if cardinality == "none" and compact in NO_SOLUTION_STRINGS:
-        return SolutionMatch((-1,), "full", accepted_special="none")
+        return SolutionMatch((-1,), "full", accepted_special="none", finality=final_answer())
 
     if cardinality == "infinite":
         if compact in INFINITE_SOLUTION_STRINGS or re.fullmatch(r"[a-z]+in(?:mathbb)?r", compact):
-            return SolutionMatch((-1,), "full", accepted_special="infinite")
+            return SolutionMatch((-1,), "full", accepted_special="infinite", finality=final_answer())
         if equation_identity(latex):
-            return SolutionMatch((-1,), "full", accepted_special="identity")
+            return SolutionMatch((-1,), "full", accepted_special="identity", finality=final_answer())
 
     return None
 
@@ -926,11 +1215,15 @@ def is_parseable_equation(latex: str) -> bool:
 
 
 def candidate_solution_values(latex: str, variable: str) -> list[sympy.Expr]:
+    return [entry[1] for entry in candidate_solution_entries(latex, variable)]
+
+
+def candidate_solution_entries(latex: str, variable: str) -> list[tuple[str, sympy.Expr, AnswerFinality]]:
     text = str(latex or "").strip()
     if not text:
         return []
 
-    values: list[sympy.Expr] = []
+    values: list[tuple[str, sympy.Expr, AnswerFinality]] = []
     for part in split_solution_parts(text, variable):
         for expanded in expand_pm(part):
             try:
@@ -939,7 +1232,7 @@ def candidate_solution_values(latex: str, variable: str) -> list[sympy.Expr]:
                 continue
             if parsed.free_symbols:
                 continue
-            values.append(parsed)
+            values.append((expanded, parsed, expression_value_finality(expanded, parsed)))
     return values
 
 
@@ -947,6 +1240,10 @@ def split_solution_parts(latex: str, variable: str) -> list[str]:
     text = str(latex or "").strip()
     if not text:
         return []
+
+    membership_parts = split_set_membership_solution(text, variable)
+    if membership_parts:
+        return membership_parts
 
     repeated_assignments = split_repeated_solution_assignments(text, variable)
     if repeated_assignments:
@@ -958,11 +1255,11 @@ def split_solution_parts(latex: str, variable: str) -> list[str]:
         left_compact = compact_answer_text(left_text)
         right_compact = compact_answer_text(right_text)
         if left_compact == compact_answer_text(variable):
-            return split_top_level_commas(right_text)
+            return split_solution_list(right_text)
         if right_compact == compact_answer_text(variable):
-            return split_top_level_commas(left_text)
+            return split_solution_list(left_text)
 
-    return split_top_level_commas(text)
+    return split_solution_list(text)
 
 
 def split_repeated_solution_assignments(text: str, variable: str) -> list[str]:
@@ -974,7 +1271,30 @@ def split_repeated_solution_assignments(text: str, variable: str) -> list[str]:
     matches = [match for match in matches if match and "=" not in match]
     if len(matches) < 2:
         return []
-    return [part for match in matches for part in split_top_level_commas(match)]
+    return [part for match in matches for part in split_solution_list(match)]
+
+
+def split_set_membership_solution(text: str, variable: str) -> list[str]:
+    variable_compact = compact_answer_text(variable)
+    for token in (r"\in", "\u2208", " in "):
+        if token not in text:
+            continue
+        left, right = text.split(token, 1)
+        if compact_answer_text(left) == variable_compact:
+            return split_solution_list(right)
+    return []
+
+
+def split_solution_list(text: str) -> list[str]:
+    return split_top_level_commas(strip_solution_set_wrapper(text))
+
+
+def strip_solution_set_wrapper(text: str) -> str:
+    output = str(text or "").strip()
+    for left, right in ((r"\left\{", r"\right\}"), (r"\{", r"\}"), ("{", "}")):
+        if output.startswith(left) and output.endswith(right):
+            return output[len(left):len(output) - len(right)].strip()
+    return output
 
 
 def expand_pm(text: str) -> list[str]:
@@ -1073,7 +1393,7 @@ def parse_math(latex: str) -> ParsedMath:
     return ParsedMath("equation", left, right, f"{sympy.sstr(left)} = {sympy.sstr(right)}")
 
 
-def parse_expression(text: str) -> sympy.Expr:
+def parse_expression(text: str, *, evaluate: bool = True) -> sympy.Expr:
     normalized = normalize_math_text(text)
     if not normalized:
         raise GradingParseFailure("empty expression")
@@ -1087,7 +1407,7 @@ def parse_expression(text: str) -> sympy.Expr:
             normalized,
             local_dict=local_dict,
             transformations=TRANSFORMATIONS,
-            evaluate=True,
+            evaluate=evaluate,
         )
     except Exception as exc:
         raise GradingParseFailure(f"could not parse expression: {exc}") from exc
@@ -1096,6 +1416,91 @@ def parse_expression(text: str) -> sympy.Expr:
     if parsed.has(sympy.zoo, sympy.oo, -sympy.oo, sympy.nan):
         raise GradingParseFailure("expression contains a non-finite value")
     return parsed
+
+
+def expression_value_finality(raw_text: str, evaluated: sympy.Expr) -> AnswerFinality:
+    try:
+        normalized = normalize_math_text(raw_text)
+        unevaluated = parse_expression(raw_text, evaluate=False)
+    except GradingParseFailure:
+        return invalid_format("could not parse final answer")
+
+    if unevaluated.free_symbols:
+        return invalid_format("final numeric answer contains variables")
+
+    compact_normalized = compact_math_form(normalized)
+    if is_decimal_or_integer_literal(normalized):
+        return final_answer()
+    if is_reduced_fraction_literal(normalized, evaluated):
+        return final_answer()
+
+    compact_canonical = compact_math_form(sympy.sstr(evaluated))
+    if compact_normalized == compact_canonical:
+        return final_answer()
+
+    if compact_math_form(normalize_e_power_text(normalized)) == compact_canonical:
+        return final_answer()
+
+    simplified = _simplify_with_budget(unevaluated - evaluated)
+    if simplified == 0:
+        return unsimplified_answer("answer is equivalent but not fully simplified")
+
+    return final_answer()
+
+
+def compact_math_form(text: str) -> str:
+    compact = str(text or "").replace(" ", "")
+    compact = compact.replace("**", "^")
+    compact = compact.replace("*", "")
+    return compact
+
+
+def normalize_e_power_text(text: str) -> str:
+    return re.sub(r"\be\^\(?([^()]+)\)?", r"exp(\1)", str(text or ""))
+
+
+def is_decimal_or_integer_literal(text: str) -> bool:
+    return bool(re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", str(text or "").strip()))
+
+
+def is_reduced_fraction_literal(text: str, evaluated: sympy.Expr) -> bool:
+    cleaned = str(text or "").strip()
+    previous = None
+    while previous != cleaned:
+        previous = cleaned
+        cleaned = re.sub(r"\((-?\d+)\)", r"\1", cleaned)
+        cleaned = strip_outer_parentheses(cleaned)
+
+    match = re.fullmatch(r"(-?\d+)/(-?\d+)", cleaned)
+    if not match:
+        return False
+    numerator = int(match.group(1))
+    denominator = int(match.group(2))
+    if denominator == 0 or math.gcd(numerator, denominator) != 1:
+        return False
+    try:
+        return sympy.Rational(numerator, denominator) == evaluated
+    except Exception:
+        return False
+
+
+def strip_outer_parentheses(text: str) -> str:
+    output = str(text or "").strip()
+    while output.startswith("(") and output.endswith(")") and outer_parentheses_wrap(output):
+        output = output[1:-1].strip()
+    return output
+
+
+def outer_parentheses_wrap(text: str) -> bool:
+    depth = 0
+    for index, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0 and index < len(text) - 1:
+                return False
+    return depth == 0
 
 
 def normalize_math_text(text: str) -> str:

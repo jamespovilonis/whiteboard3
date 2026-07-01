@@ -5175,6 +5175,23 @@ test('JS buildLiveGradingResult and Python grade_equation_work agree on problem 
       expectedStatus: 'incorrect',
     },
     {
+      name: 'incomplete unsimplified final',
+      problemLatex: 'x + 2 = 5',
+      lines: [
+        {
+          latex: 'x = 5 - 2',
+          grading: {
+            classification: 'valid_step',
+            solutionCoverage: 'full',
+            matchedSolutions: ['3'],
+            answerFinality: 'unsimplified',
+            countsTowardCompletion: false
+          }
+        },
+      ],
+      expectedStatus: 'incomplete',
+    },
+    {
       name: 'not started scratch only',
       problemLatex: '3x + 5 = 17',
       lines: [
@@ -5200,6 +5217,8 @@ test('JS buildLiveGradingResult and Python grade_equation_work agree on problem 
       classification: line.grading.classification,
       solutionCoverage: line.grading.solutionCoverage,
       matchedSolutions: line.grading.matchedSolutions,
+      answerFinality: line.grading.answerFinality || 'not_answer',
+      countsTowardCompletion: line.grading.countsTowardCompletion !== false,
     }));
 
     const exactSet = manifest.exact_set.map(String);
@@ -5211,6 +5230,7 @@ test('JS buildLiveGradingResult and Python grade_equation_work agree on problem 
       if (step.classification === 'invalid_step' && firstInvalid === null) {
         firstInvalid = step.lineIndex;
       }
+      if (step.countsTowardCompletion === false) continue;
       for (const solution of step.matchedSolutions) {
         if (solution) matched.add(String(solution));
       }

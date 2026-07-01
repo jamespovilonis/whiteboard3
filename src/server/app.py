@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from src.grading import grade_equation_payload
+from src.grading import grade_equation_payload, grade_math_payload
 from src.server.config import ServerSettings, settings_from_env
 from src.server.routes import audit, grading, health, recognition
 from src.server.services.audit import RecognitionAuditService
@@ -20,11 +20,13 @@ def create_app(
     *,
     semantic_scorer=score_semantic_payload,
     grading_scorer=grade_equation_payload,
+    math_grading_scorer=grade_math_payload,
 ) -> FastAPI:
     app = FastAPI(title="Whiteboard Recognition API")
     app.state.settings = settings or settings_from_env()
     app.state.semantic_scorer = semantic_scorer
     app.state.grading_scorer = grading_scorer
+    app.state.math_grading_scorer = math_grading_scorer
     app.state.audit_service = RecognitionAuditService(app.state.settings)
 
     app.add_middleware(
