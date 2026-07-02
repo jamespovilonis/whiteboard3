@@ -1951,7 +1951,9 @@ function repairStandaloneOperationLatex(latex, semanticEntry = {}, { problemLate
   if (!normalized || /[=<>]/.test(normalized)) return null;
   if (/\\(?:frac|sqrt|log|ln|int|sum|prod)\b/.test(normalized)) return null;
 
-  const detachedOperand = detachedOperationOperand(normalized);
+  const detachedOperand = detachedOperationOperand(normalized, {
+    requireOperationMarker: true
+  });
   if (detachedOperand) {
     return `\\times ${detachedOperand} \\times ${detachedOperand}`;
   }
@@ -2006,8 +2008,12 @@ function repairStandaloneOperationLatex(latex, semanticEntry = {}, { problemLate
   return `${operator} ${leftOperand} ${operator} ${rightOperand}`;
 }
 
-function detachedOperationOperand(latex) {
-  const normalized = String(latex || '')
+function detachedOperationOperand(latex, { requireOperationMarker = false } = {}) {
+  const raw = String(latex || '');
+  const hasOperationMarker = /(?:\\(?:cdot|times)\b|[*.]|(?:^|\s)[xX](?:\s|_|\{|$))/.test(raw);
+  if (requireOperationMarker && !hasOperationMarker) return '';
+
+  const normalized = raw
     .replace(/\\cdot/g, '*')
     .replace(/\\times/g, '*')
     .replace(/\s+/g, ' ')

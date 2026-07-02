@@ -2068,6 +2068,45 @@ test('standalone operation repair treats low-semantic x as multiplication', asyn
   assert.equal(result.latex, '\\times 6 \\times 6');
 });
 
+test('standalone operation repair preserves plain numeric OCR literals', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('a', 0, 0, 90, 70)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 120, yMax: 90 },
+    problemLatex: '2 ^ { \\log _ { 4 } 1 6 \\sqrt { 8 } }',
+    recognizeAlternatives: false,
+    semanticScoring: true,
+    initialRasterHeight: 104,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '2',
+      top: { latex: '2', score: 0 },
+      candidates: [{ latex: '2', score: 0 }],
+      elapsedSeconds: 1
+    }),
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 0.4,
+        bestLatex: group.latex,
+        sound: false,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        candidateScores: [{ latex: group.latex, sound: false, score: 0.4 }]
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '2');
+  assert.equal(result.latex, '2');
+  assert.equal(result.lines[0].ocrRepair, undefined);
+});
+
 test('standalone operation repair handles subscripted CoMER times annotations', async () => {
   installFakeCanvas();
   const strokes = [stroke('a', 0, 0, 300, 70)];
