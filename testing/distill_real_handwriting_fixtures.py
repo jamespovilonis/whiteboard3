@@ -83,6 +83,16 @@ DEFAULT_FIXTURES: Sequence[dict[str, str]] = (
         "slug": "radical-fraction-simplification-leading-minus",
         "description": "Radical fraction simplification with leading equals/minus-like strokes and stale OCR fragmentation.",
     },
+    {
+        "audit_id": "audit_20260702T132819834470Z_44f1a28ce5",
+        "slug": "superscript-expression-rows",
+        "description": "Exponent expression rows where the base and upper-right exponent clusters must remain attached.",
+    },
+    {
+        "audit_id": "audit_20260702T133425158949Z_a1e84136a1",
+        "slug": "rational-detached-parenthetical-annotations",
+        "description": "Rational equation work with detached parenthetical operation annotations and a conflicted final-answer candidate.",
+    },
 )
 
 REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
@@ -227,6 +237,52 @@ REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
             "sourceCandidateId": "parent_s001|s002|s003|s004|s005|s006|s007",
         },
     ],
+    "audit_20260702T132819834470Z_44f1a28ce5": [
+        {
+            "lineIndex": 0,
+            "latex": "2^{2+0.75}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "superscript-line_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "2^{2.75}=2^{\\frac{11}{4}}",
+            "strokeIds": ["s011", "s012", "s013", "s014", "s015", "s016", "s017", "s018", "s019", "s020", "s021", "s022", "s023", "s024"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "superscript-line_s011|s012|s013|s014|s015|s016|s017|s018|s019|s020|s021|s022|s023|s024",
+        },
+    ],
+    "audit_20260702T133425158949Z_a1e84136a1": [
+        {
+            "lineIndex": 0,
+            "latex": "(x-1)(x-1)",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010", "s011", "s012"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011|s012",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "12=4x-4",
+            "strokeIds": ["s013", "s014", "s015", "s016", "s017", "s018", "s019", "s020", "s021", "s022", "s023", "s024"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s013|s014|s015|s016|s017|s018|s019|s020|s021|s022|s023|s024",
+        },
+        {
+            "lineIndex": 2,
+            "latex": "16=4x",
+            "strokeIds": ["s036", "s037", "s038", "s039", "s040", "s041", "s042", "s043", "s044"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s036|s037|s038|s039|s040|s041|s042|s043|s044",
+        },
+        {
+            "lineIndex": 3,
+            "latex": "4\\div x",
+            "strokeIds": ["s050", "s051", "s052", "s053", "s054", "s055", "s056"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s050|s051|s052|s053|s054|s055|s056",
+        },
+    ],
 }
 
 REVIEWED_VISUAL_ONLY_STROKES: dict[str, list[str]] = {
@@ -236,6 +292,10 @@ REVIEWED_VISUAL_ONLY_STROKES: dict[str, list[str]] = {
     ],
     "audit_20260701T130355711645Z_7123ff1932": [
         "s001", "s002", "s003", "s004",
+    ],
+    "audit_20260702T133425158949Z_a1e84136a1": [
+        "s025", "s026", "s027", "s028", "s029", "s030", "s031", "s032", "s033", "s034", "s035",
+        "s045", "s046", "s047", "s048", "s049",
     ],
 }
 

@@ -51,8 +51,10 @@ export async function recognizeStudentWriting(options = {}) {
     signal = null,
     recognizeLine = recognizeLineImage,
     gradeWork = gradeMathWork,
-    gradingTimeoutMs = 5000
+    gradingTimeoutMs = 5000,
+    finalizationBudgetMs = 15000
   } = options;
+  const finalizationBudget = createFinalizationBudget(pipelineStartedAt, finalizationBudgetMs);
   const ignoredStrokeIds = (options.ignoredStrokeIds || [])
     .concat((strokes || []).filter((stroke) => stroke?.visualOnly).map((stroke) => stroke.id))
     .map(String);
@@ -124,7 +126,7 @@ export async function recognizeStudentWriting(options = {}) {
   const evidenceByCandidateId = new Map(
     candidatePredictions.map((entry) => [entry.candidateId, entry.evidenceScore])
   );
-  if (recognizeAlternatives) {
+  if (recognizeAlternatives && !finalizationBudget.check()) {
     const preSemanticSelected = selectCandidateCover(candidatesToRecognize, {
       scoreByCandidateId: evidenceByCandidateId,
       baselineCandidates: baselineCover,
@@ -170,12 +172,12 @@ export async function recognizeStudentWriting(options = {}) {
     entry.timing.semanticElapsedSeconds = finiteSeconds(semantic.elapsedSeconds);
     entry.timing.submitToFinalPredictionSeconds = secondsSince(pipelineStartedAt);
     entry.evidenceScore += Number(semanticEntry.semanticScore) || 0;
-    entry.evidenceScore += gradingEvidenceBoost(semanticEntry.grading);
+    entry.evidenceScore += gradingEvidenceBoost(entry, semanticEntry.grading);
     evidenceByCandidateId.set(entry.candidateId, entry.evidenceScore);
     const gradingLatex = gradingSelectedLatex(entry, semanticEntry);
     if (gradingLatex) {
       entry.latex = gradingLatex;
-    } else if (shouldUseSemanticLatex(entry.latex, semanticEntry)) {
+    } else if (semanticLatexSafeForReplacement(entry, semanticEntry) && shouldUseSemanticLatex(entry.latex, semanticEntry)) {
       entry.latex = semanticEntry.bestLatex;
     }
   }
@@ -217,12 +219,12 @@ export async function recognizeStudentWriting(options = {}) {
       entry.grading = contextualEntry.grading || entry.grading || null;
       entry.timing.contextualSemanticElapsedSeconds = finiteSeconds(contextualCandidateSemantic.elapsedSeconds);
       entry.timing.submitToFinalPredictionSeconds = secondsSince(pipelineStartedAt);
-      entry.evidenceScore += evidenceDelta + gradingEvidenceBoost(contextualEntry.grading);
+      entry.evidenceScore += evidenceDelta + gradingEvidenceBoost(entry, contextualEntry.grading);
       evidenceByCandidateId.set(entry.candidateId, entry.evidenceScore);
       const gradingLatex = gradingSelectedLatex(entry, contextualEntry);
       if (gradingLatex) {
         entry.latex = gradingLatex;
-      } else if (shouldUseSemanticLatex(entry.latex, contextualEntry)) {
+      } else if (semanticLatexSafeForReplacement(entry, contextualEntry) && shouldUseSemanticLatex(entry.latex, contextualEntry)) {
         entry.latex = contextualEntry.bestLatex;
       }
     }
@@ -254,9 +256,10 @@ export async function recognizeStudentWriting(options = {}) {
   }
 
   const selectedIds = new Set(selected.map((candidate) => candidate.candidateId));
-  if (chunkFallback) {
+  if (chunkFallback && !finalizationBudget.check()) {
     for (const candidate of selected) {
       throwIfAborted(signal);
+      if (finalizationBudget.check()) break;
       const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
       if (!entry || entry.skippedRecognition || !predictionNeedsRetry(entry.prediction) || !candidateCanUseChunking(candidate, {
         rasterPadding,
@@ -281,9 +284,10 @@ export async function recognizeStudentWriting(options = {}) {
       });
     }
   }
-  if (retryRasterHeights?.length) {
+  if (retryRasterHeights?.length && !finalizationBudget.check()) {
     for (const candidate of selected) {
       throwIfAborted(signal);
+      if (finalizationBudget.check()) break;
       const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
       if (!entry || entry.skippedRecognition || !predictionNeedsRetry(entry.prediction)) continue;
       const retry = await retrySelectedLineRecognition(candidate, {
@@ -293,6 +297,7 @@ export async function recognizeStudentWriting(options = {}) {
         problemLatex,
         rasterPadding,
         retryRasterHeights,
+        finalizationBudget,
         skipRasterHeights: [entry.initialTargetPixelHeight],
         extendedTimeoutMs: structuralRetryTimeoutMs,
         signal,
@@ -312,9 +317,10 @@ export async function recognizeStudentWriting(options = {}) {
       evidenceByCandidateId.set(entry.candidateId, entry.evidenceScore);
     }
   }
-  if (chunkFallback) {
+  if (chunkFallback && !finalizationBudget.check()) {
     for (const candidate of selected) {
       throwIfAborted(signal);
+      if (finalizationBudget.check()) break;
       const entry = candidatePredictions.find((item) => item.candidateId === candidate.candidateId);
       if (!entry || entry.skippedRecognition || !predictionNeedsRetry(entry.prediction)) continue;
       await applyChunkFallbackToEntry(entry, candidate, {
@@ -371,9 +377,10 @@ export async function recognizeStudentWriting(options = {}) {
   );
 
   let semanticRetryUsed = false;
-  if (semanticRetryRasterHeights?.length && semanticScoring && !selectedLineSemantic.failed) {
+  if (semanticRetryRasterHeights?.length && semanticScoring && !selectedLineSemantic.failed && !finalizationBudget.check()) {
     for (const line of recognizedLines) {
       throwIfAborted(signal);
+      if (finalizationBudget.check()) break;
       const lineSemantic = selectedLineSemanticById.get(line.candidateId);
       if (!lineSemantic || !semanticNeedsRetry(line, lineSemantic)) continue;
 
@@ -387,6 +394,7 @@ export async function recognizeStudentWriting(options = {}) {
         rasterPadding,
         initialRasterHeight,
         retryRasterHeights: semanticRetryRasterHeights,
+        finalizationBudget,
         skipRasterHeights: [
           line.initialTargetPixelHeight,
           ...(line.retryPredictions || []).map((attempt) => attempt.retryTargetPixelHeight)
@@ -462,6 +470,7 @@ export async function recognizeStudentWriting(options = {}) {
       submitToFinalPredictionSeconds: secondsSince(pipelineStartedAt)
     };
     if (line.ocrRepair?.source === 'geometry-operation-annotation') {
+      line.excludedFromGrading = true;
       acceptedContextLatex.push(line.latex);
       continue;
     }
@@ -476,6 +485,9 @@ export async function recognizeStudentWriting(options = {}) {
         repairedLatex: operationRepair,
         annotationBbox: operationRepairSource === 'geometry-operation-annotation' ? line.tightBbox || null : undefined
       };
+      if (operationRepairSource === 'geometry-operation-annotation') {
+        line.excludedFromGrading = true;
+      }
       line.latex = operationRepair;
       acceptedContextLatex.push(line.latex);
       continue;
@@ -497,7 +509,7 @@ export async function recognizeStudentWriting(options = {}) {
     const gradingLatex = gradingSelectedLatex(line, lineSemantic);
     if (gradingLatex) {
       line.latex = gradingLatex;
-    } else if (shouldUseSemanticLatex(line.latex, lineSemantic)) {
+    } else if (semanticLatexSafeForReplacement(line, lineSemantic) && shouldUseSemanticLatex(line.latex, lineSemantic)) {
       line.latex = lineSemantic.bestLatex;
     }
     const quadraticFormulaRepair = repairQuadraticFormulaFromProblem(line.latex, problemLatex);
@@ -560,10 +572,11 @@ export async function recognizeStudentWriting(options = {}) {
     contextualCandidateSemantic.answerManifest ||
     selectedLineSemantic.answerManifest ||
     null;
+  const gradableLines = gradableRecognitionLines(recognizedLines);
   let grading = buildLiveGradingResult({
     problemLatex,
     answerManifest,
-    lines: recognizedLines
+    lines: gradableLines
   });
 
   // Defer to the Python grader for the authoritative problem-level verdict
@@ -573,10 +586,10 @@ export async function recognizeStudentWriting(options = {}) {
       const pythonGrading = await gradeWork({
         problemLatex,
         problemMetadata,
-        lines: recognizedLines.map((line) => ({
+        lines: gradableLines.map((line) => ({
           lineIndex: line.lineIndex,
           latex: line.acceptedLatex || line.latex || '',
-          candidates: (line.candidates || []).slice(0, 5)
+          candidates: gradingPayloadCandidates(line)
         }))
       }, { apiUrl, timeoutMs: gradingTimeoutMs, signal });
       if (!pythonGrading.failed) {
@@ -602,11 +615,12 @@ export async function recognizeStudentWriting(options = {}) {
     semantic,
     candidatePredictions,
     lines: recognizedLines,
-    latexLines: recognizedLines.map((line) => line.acceptedLatex),
-    latex: recognizedLines.map((line) => line.acceptedLatex).filter(Boolean).join(' \\\\ '),
+    latexLines: gradableLines.map((line) => line.acceptedLatex),
+    latex: gradableLines.map((line) => line.acceptedLatex).filter(Boolean).join(' \\\\ '),
     grading,
     timing: {
-      totalElapsedSeconds: secondsSince(pipelineStartedAt)
+      totalElapsedSeconds: secondsSince(pipelineStartedAt),
+      ...(finalizationBudget.check() ? { finalizationBudgetExceeded: true } : {})
     }
   };
 }
@@ -926,7 +940,7 @@ async function resolveSelectedLineSemanticScores({
         };
         lineScores.push(lineScore);
         const trustedLatex = gradingSelectedLatex(line, lineScore) ||
-          (shouldUseSemanticLatex(line.latex, lineScore) ? lineScore.bestLatex : line.latex);
+          (semanticLatexSafeForReplacement(line, lineScore) && shouldUseSemanticLatex(line.latex, lineScore) ? lineScore.bestLatex : line.latex);
         if (trustedLatex) {
           contextLatex.push(trustedLatex);
           continue;
@@ -1098,6 +1112,7 @@ async function retrySelectedLineRecognition(candidate, {
   chunkFallbackMinCssWidth = 460,
   chunkFallbackMaxCssWidth = 340,
   chunkFallbackMinGap = 18,
+  finalizationBudget = null,
   signal,
   recognizeLine
 }) {
@@ -1108,6 +1123,7 @@ async function retrySelectedLineRecognition(candidate, {
     .filter((height) => Number.isFinite(height) && height > 0));
   for (const height of retryRasterHeights || []) {
     throwIfAborted(signal);
+    if (finalizationBudget?.check?.()) break;
     if (sawTimeout) break;
     const targetPixelHeight = Number(height);
     if (!Number.isFinite(targetPixelHeight) || targetPixelHeight <= 0 || seenHeights.has(targetPixelHeight)) {
@@ -1136,7 +1152,8 @@ async function retrySelectedLineRecognition(candidate, {
     (!sawTimeout || candidateNeedsExtendedTimeout(candidate)) &&
     attempts.every((attempt) => predictionNeedsRetry(attempt)) &&
     candidateNeedsExtendedTimeout(candidate) &&
-    Number(extendedTimeoutMs) > Number(timeoutMs)
+    Number(extendedTimeoutMs) > Number(timeoutMs) &&
+    !finalizationBudget?.check?.()
   ) {
     throwIfAborted(signal);
     const targetPixelHeight = [...seenHeights][0] || Number(retryRasterHeights?.[0]) || undefined;
@@ -1162,7 +1179,8 @@ async function retrySelectedLineRecognition(candidate, {
     chunkFallback &&
     !sawTimeout &&
     attempts.length &&
-    attempts.every((attempt) => predictionNeedsRetry(attempt))
+    attempts.every((attempt) => predictionNeedsRetry(attempt)) &&
+    !finalizationBudget?.check?.()
   ) {
     const chunked = await recognizeChunkedLine(candidate, {
       apiUrl,
@@ -1400,6 +1418,7 @@ function initialRecognitionPriority(candidate, baselineIds = new Set()) {
   if (baselineIds.has(candidate?.candidateId)) return 0;
   const profiles = candidate?.profiles || [];
   if (profiles.includes('fraction-stack-line')) return 1;
+  if (profiles.includes('superscript-line')) return 1;
   if (
     profiles.includes('row-line') ||
     profiles.includes('raw-row-line') ||
@@ -1429,6 +1448,7 @@ function isCoveredRecognitionDeferrableCandidate(candidate) {
   const profiles = candidate?.profiles || [];
   if (profiles.includes('fallback-stroke')) return false;
   if (profiles.includes('fraction-stack-line')) return false;
+  if (profiles.includes('superscript-line')) return false;
   return profiles.some((profile) => (
     profile === 'parent' ||
     profile === 'row-parent' ||
@@ -1480,6 +1500,7 @@ function isImmediateRecognitionStructuralCandidate(candidate) {
     profile === 'row-line' ||
     profile === 'raw-row-line' ||
     profile === 'fraction-stack-line' ||
+    profile === 'superscript-line' ||
     profile === 'projection-line' ||
     profile === 'dbnet-parent' ||
     profile === 'dbnet-line'
@@ -1571,6 +1592,7 @@ function preferFullSolutionCandidates(selected = [], candidatePredictions = [], 
 
 function solutionCoverageRank(entry = {}) {
   const grading = entry?.grading || entry?.semantic?.grading || entry?.contextualSemantic?.grading || entry?.sequentialSemantic?.grading || null;
+  if (gradingPreferred(grading) && !candidateSelectionSafeForGrading(entry, grading)) return 0;
   if (grading?.solutionCoverage === 'full') return 2;
   if (grading?.solutionCoverage === 'partial' || (grading?.matchedSolutions || []).length > 0) return 1;
   return 0;
@@ -1601,6 +1623,7 @@ function applyGeometryOperationAnnotationRepairs(lines = [], problemLatex = '') 
       annotationBbox: line.tightBbox || null,
     };
     line.latex = repairedLatex;
+    line.excludedFromGrading = true;
   }
 }
 
@@ -1864,6 +1887,24 @@ function performanceNow() {
   return Date.now();
 }
 
+function createFinalizationBudget(startedAt, budgetMs) {
+  const limitMs = Number(budgetMs);
+  let exceeded = false;
+  return {
+    check() {
+      if (!Number.isFinite(limitMs) || limitMs < 0) return false;
+      if (performanceNow() - startedAt >= limitMs) {
+        exceeded = true;
+        return true;
+      }
+      return false;
+    },
+    get exceeded() {
+      return exceeded;
+    }
+  };
+}
+
 function semanticNeedsRetry(line, semanticEntry = {}) {
   if (!line?.prediction || predictionNeedsRetry(line.prediction)) return false;
   if (semanticEntry.equivalentToProblem || semanticEntry.equivalentToPrevious) return false;
@@ -1950,6 +1991,7 @@ function repairStandaloneOperationLatex(latex, semanticEntry = {}, { problemLate
   const normalized = String(latex || '').replace(/\s+/g, ' ').trim();
   if (!normalized || /[=<>]/.test(normalized)) return null;
   if (/\\(?:frac|sqrt|log|ln|int|sum|prod)\b/.test(normalized)) return null;
+  if (looksLikePlainNumericLiteral(normalized)) return null;
 
   const detachedOperand = detachedOperationOperand(normalized, {
     requireOperationMarker: true
@@ -2027,6 +2069,11 @@ function detachedOperationOperand(latex, { requireOperationMarker = false } = {}
     normalized.match(/^(?:\.|\*)\s*((?:\d\s*){1,5})$/);
   if (!single) return '';
   return (single[1].match(/\d/g) || []).join('');
+}
+
+function looksLikePlainNumericLiteral(latex = '') {
+  const compact = String(latex || '').replace(/\s+/g, '');
+  return /^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(compact);
 }
 
 function repairOperationAnnotationFromPrevious(latex, previousLatex = []) {
@@ -2874,6 +2921,7 @@ export function shouldUseSemanticLatex(currentLatex, semanticEntry = {}) {
 function gradingSelectedLatex(entry = {}, semanticEntry = {}) {
   const grading = semanticEntry?.grading || entry?.grading || null;
   if (!gradingPreferred(grading)) return '';
+  if (!candidateSelectionSafeForGrading(entry, grading)) return '';
   const selectedIndex = Number(grading.selectedCandidateIndex);
   const candidates = Array.isArray(entry?.candidates) ? entry.candidates : [];
   if (Number.isInteger(selectedIndex) && selectedIndex >= 0) {
@@ -2885,6 +2933,77 @@ function gradingSelectedLatex(entry = {}, semanticEntry = {}) {
   return String(semanticEntry.bestLatex || '').trim();
 }
 
+function semanticLatexSafeForReplacement(entry = {}, semanticEntry = {}) {
+  const grading = semanticEntry?.grading || entry?.grading || null;
+  return !gradingPreferred(grading) || candidateSelectionSafeForGrading(entry, grading);
+}
+
+function candidateSelectionSafeForGrading(entry = {}, grading = null) {
+  if (!gradingPreferred(grading)) return false;
+  if (entry?.excludedFromGrading) return false;
+
+  const selectedIndex = Number(grading?.selectedCandidateIndex);
+  const candidates = Array.isArray(entry?.candidates) ? entry.candidates : [];
+  const selectedLatex = Number.isInteger(selectedIndex) && selectedIndex >= 0
+    ? String(candidates[selectedIndex]?.latex || '').trim()
+    : String(grading?.studentLatex || '').trim();
+  const topLatex = String(candidates[0]?.latex || entry?.ocrLatex || entry?.latex || '').trim();
+
+  if (!selectedLatex) return true;
+  if (!Number.isInteger(selectedIndex) || selectedIndex <= 0 || sameLatexForGrading(selectedLatex, topLatex)) {
+    return true;
+  }
+
+  if (entry?.ocrRepair?.source) return false;
+  if (latexUnsafeForAlternateGrading(entry?.ocrLatex || topLatex || entry?.latex || entry?.acceptedLatex)) return false;
+
+  if (!looksLikeCleanFinalAnswerLatex(selectedLatex)) return false;
+
+  return true;
+}
+
+function sameLatexForGrading(left = '', right = '') {
+  return compactLatexForGrading(left) === compactLatexForGrading(right);
+}
+
+function compactLatexForGrading(latex = '') {
+  return String(latex || '').replace(/\s+/g, '').trim();
+}
+
+function latexUnsafeForAlternateGrading(latex = '') {
+  const normalized = String(latex || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  return /\\pm\b|±/.test(normalized) ||
+    isSuspiciousOperationLatex(normalized) ||
+    looksLikePlainNumericLiteral(normalized) && /(?:\.|\*)\s*$/.test(normalized);
+}
+
+function selectionContextUnsafeForAlternateGrading(entry = {}) {
+  if (entry?.skipReason) return true;
+  const profiles = entry?.profiles || [];
+  if (profiles.includes('parent') || profiles.includes('row-parent') || profiles.includes('dbnet-parent')) {
+    return true;
+  }
+  return profiles.includes('projection-line') || profiles.includes('loose') || profiles.includes('temporal');
+}
+
+function looksLikeCleanFinalAnswerLatex(latex = '') {
+  const normalized = String(latex || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  const simpleNumber = /^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized.replace(/\s+/g, ''));
+  if (simpleNumber) return true;
+  const assignment = normalized.match(/^[a-zA-Z]\s*=\s*(.+)$/);
+  if (!assignment) return false;
+  const value = assignment[1].trim();
+  if (!value) return false;
+  if (/[=<>]/.test(value)) return false;
+  const withoutAllowedNames = value
+    .replace(/\\(?:frac|sqrt|pi|pm|cdot|times|div)\b/g, '')
+    .replace(/\b(?:pi|e)\b/g, '')
+    .replace(/[{}()[\]\d\s.+\-*/^]/g, '');
+  return !/[A-Za-z]/.test(withoutAllowedNames);
+}
+
 function gradingPreferred(grading = null) {
   if (!grading) return false;
   if (grading.solutionCoverage === 'full' || grading.solutionCoverage === 'partial') return true;
@@ -2892,16 +3011,62 @@ function gradingPreferred(grading = null) {
   return grading.classification === 'valid_step';
 }
 
-function gradingEvidenceBoost(grading = null) {
+function gradingEvidenceBoost(entry = {}, grading = null) {
   if (!gradingPreferred(grading)) return 0;
+  if (!candidateSelectionSafeForGrading(entry, grading)) return 0;
   if (grading.solutionCoverage === 'full') return 8;
   if (grading.solutionCoverage === 'partial') return 6;
   return 4;
 }
 
+function gradableRecognitionLines(lines = []) {
+  return (lines || []).filter((line) => !line?.excludedFromGrading);
+}
+
+function gradingPayloadCandidates(line = {}) {
+  if (!alternateCandidatesSafeForGrading(line)) return [];
+  return (line.candidates || []).slice(0, 5);
+}
+
+function alternateCandidatesSafeForGrading(line = {}) {
+  if (line?.excludedFromGrading) return false;
+  if (line?.ocrRepair?.source) return false;
+  if (selectionContextUnsafeForAlternateGrading(line)) return false;
+  const latex = line.acceptedLatex || line.latex || line.ocrLatex || '';
+  if (latexUnsafeForAlternateGrading(latex)) return false;
+  const evidenceScore = Number(line.evidenceScore);
+  return Number.isFinite(evidenceScore) && evidenceScore >= 3;
+}
+
+function safeLineGradingForAggregation(line = {}) {
+  if (line?.excludedFromGrading) {
+    return {
+      studentLatex: line.acceptedLatex || line.latex || '',
+      classification: 'other',
+      selectedCandidateIndex: null,
+      solutionCoverage: 'none',
+      matchedSolutions: [],
+      answerFinality: 'not_answer',
+      countsTowardCompletion: false
+    };
+  }
+  const grading = line.grading || line.sequentialSemantic?.grading || line.contextualSemantic?.grading || null;
+  if (!grading) return null;
+  if (!gradingPreferred(grading)) return grading;
+  if (candidateSelectionSafeForGrading(line, grading)) return grading;
+  return {
+    ...grading,
+    classification: 'other',
+    solutionCoverage: 'none',
+    matchedSolutions: [],
+    answerFinality: 'not_answer',
+    countsTowardCompletion: false
+  };
+}
+
 function buildLiveGradingResult({ problemLatex = '', answerManifest = null, lines = [] } = {}) {
   const steps = (lines || []).map((line, index) => {
-    const grading = line.grading || line.sequentialSemantic?.grading || line.contextualSemantic?.grading || null;
+    const grading = safeLineGradingForAggregation(line);
     return {
       lineIndex: line.lineIndex ?? index,
       studentLatex: line.acceptedLatex || line.latex || grading?.studentLatex || '',
@@ -3289,6 +3454,7 @@ function isUsableBaselineLineCandidate(candidate) {
   return profiles.some((profile) => (
     profile === 'dbnet-line' ||
     profile === 'fraction-stack-line' ||
+    profile === 'superscript-line' ||
     profile === 'row-line' ||
     profile === 'raw-row-line' ||
     profile === 'projection-line' ||
@@ -3332,6 +3498,7 @@ function isLineContextCandidate(entry) {
   return profiles.some((profile) => (
     profile === 'row-line' ||
     profile === 'fraction-stack-line' ||
+    profile === 'superscript-line' ||
     profile === 'dbnet-line' ||
     profile === 'strict' ||
     profile === 'loose'

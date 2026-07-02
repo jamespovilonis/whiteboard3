@@ -705,6 +705,10 @@ def grade_expression_work(
                 "final value does not match the prompt",
             )
 
+    manifest_failed = bool(manifest.get("error"))
+    if manifest_failed and first_invalid_index is not None and not found_indices:
+        first_invalid_index = None
+
     if found_indices and len(found_indices) == len(exact_values):
         status = "correct"
         breakdown_line_index = None
@@ -2012,6 +2016,7 @@ def normalize_math_text(text: str) -> str:
 
     for old, new in LATEX_COMMAND_REPLACEMENTS.items():
         output = output.replace(old, new)
+    output = normalize_inverse_trig_notation(output)
     for old, new in sorted(LATEX_FUNCTION_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
         output = output.replace(old, new)
     for old, new in sorted(LATEX_VARIABLE_COMMANDS.items(), key=lambda item: len(item[0]), reverse=True):
@@ -2026,6 +2031,19 @@ def normalize_math_text(text: str) -> str:
     if "\\" in output:
         raise GradingParseFailure("unsupported LaTeX command")
     return output
+
+
+def normalize_inverse_trig_notation(text: str) -> str:
+    """Treat sin^{-1}(x) as inverse trig, not reciprocal exponent syntax."""
+
+    def replace(match: re.Match[str]) -> str:
+        return f"arc{match.group(1)}"
+
+    return re.sub(
+        r"\\?(sin|cos|tan)\s*\^\s*(?:\{\s*-\s*1\s*\}|\(\s*-\s*1\s*\)|-\s*1)",
+        replace,
+        text,
+    )
 
 
 def normalize_log_base_application(text: str) -> str:

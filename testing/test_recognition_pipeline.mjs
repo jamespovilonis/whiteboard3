@@ -1293,7 +1293,7 @@ test('recognized single-letter variables inherit lowercase problem context', asy
     answerBox: { xMin: -5, yMin: -5, xMax: 90, yMax: 46 },
     problemLatex: '2 x + 3 = 11',
     semanticScoring: false,
-    recognizeAlternatives: false,
+    recognizeAlternatives: true,
     recognizeLine: async () => ({
       latex: '2X = 8',
       top: { latex: '2X = 8', score: 2 },
@@ -1315,7 +1315,7 @@ test('malformed quadratic formula row is repaired from problem coefficients', as
     answerBox: { xMin: -5, yMin: -5, xMax: 540, yMax: 140 },
     problemLatex: 'x ^ { 2 } + 4 x - 5 = 0',
     semanticScoring: false,
-    recognizeAlternatives: false,
+    recognizeAlternatives: true,
     recognizeLine: async () => ({
       latex: 'x = \\frac { - 1 + \\sqrt { 1 ^ { 2 } - 1 ( 1 ) - b ) } } { 2 ( 1 ) }',
       top: {
@@ -2070,41 +2070,43 @@ test('standalone operation repair treats low-semantic x as multiplication', asyn
 
 test('standalone operation repair preserves plain numeric OCR literals', async () => {
   installFakeCanvas();
-  const strokes = [stroke('a', 0, 0, 90, 70)];
+  for (const latex of ['2', '2 . 75']) {
+    const strokes = [stroke(`a-${latex}`, 0, 0, 90, 70)];
 
-  const result = await recognizeStudentWriting({
-    strokes,
-    answerBox: { xMin: -5, yMin: -5, xMax: 120, yMax: 90 },
-    problemLatex: '2 ^ { \\log _ { 4 } 1 6 \\sqrt { 8 } }',
-    recognizeAlternatives: false,
-    semanticScoring: true,
-    initialRasterHeight: 104,
-    retryRasterHeights: [],
-    semanticRetryRasterHeights: [],
-    recognizeLine: async () => ({
-      latex: '2',
-      top: { latex: '2', score: 0 },
-      candidates: [{ latex: '2', score: 0 }],
-      elapsedSeconds: 1
-    }),
-    scoreSemantics: async (request) => ({
-      candidateScores: request.candidateGroups.map((group) => ({
-        candidateId: group.candidateId,
-        lineIndex: group.lineIndex,
-        semanticScore: 0.4,
-        bestLatex: group.latex,
-        sound: false,
-        equivalentToProblem: false,
-        equivalentToPrevious: false,
-        candidateScores: [{ latex: group.latex, sound: false, score: 0.4 }]
-      })),
-      elapsedSeconds: 0.01
-    })
-  });
+    const result = await recognizeStudentWriting({
+      strokes,
+      answerBox: { xMin: -5, yMin: -5, xMax: 120, yMax: 90 },
+      problemLatex: '2 ^ { \\log _ { 4 } 1 6 \\sqrt { 8 } }',
+      recognizeAlternatives: false,
+      semanticScoring: true,
+      initialRasterHeight: 104,
+      retryRasterHeights: [],
+      semanticRetryRasterHeights: [],
+      recognizeLine: async () => ({
+        latex,
+        top: { latex, score: 0 },
+        candidates: [{ latex, score: 0 }],
+        elapsedSeconds: 1
+      }),
+      scoreSemantics: async (request) => ({
+        candidateScores: request.candidateGroups.map((group) => ({
+          candidateId: group.candidateId,
+          lineIndex: group.lineIndex,
+          semanticScore: 0.4,
+          bestLatex: group.latex,
+          sound: false,
+          equivalentToProblem: false,
+          equivalentToPrevious: false,
+          candidateScores: [{ latex: group.latex, sound: false, score: 0.4 }]
+        })),
+        elapsedSeconds: 0.01
+      })
+    });
 
-  assert.equal(result.lines[0].acceptedLatex, '2');
-  assert.equal(result.latex, '2');
-  assert.equal(result.lines[0].ocrRepair, undefined);
+    assert.equal(result.lines[0].acceptedLatex, latex);
+    assert.equal(result.latex, latex);
+    assert.equal(result.lines[0].ocrRepair, undefined);
+  }
 });
 
 test('standalone operation repair handles subscripted CoMER times annotations', async () => {
@@ -2310,27 +2312,35 @@ test('standalone operation repair normalizes detached multiplier marks', async (
   });
 
   assert.equal(result.lines[0].ocrRepair.source, 'geometry-operation-annotation');
-  assert.equal(result.latex, '\\times 4 \\times 4');
+  assert.equal(result.lines[0].excludedFromGrading, true);
+  assert.equal(result.lines[0].acceptedLatex, '\\times 4 \\times 4');
+  assert.equal(result.latex, '');
 });
 
 test('geometry operation repair tags detached fraction annotations', async () => {
   installFakeCanvas();
   const strokes = [
-    stroke('op', 10, 0, 90, 42),
-    stroke('eq', 40, 86, 360, 166),
+    stroke('op-left', 10, 0, 42, 42),
+    stroke('op-right', 58, 0, 90, 42),
+    stroke('eq-left', 40, 120, 180, 200),
+    stroke('eq-right', 200, 120, 360, 200),
   ];
 
   const result = await recognizeStudentWriting({
     strokes,
-    answerBox: { xMin: -5, yMin: -5, xMax: 390, yMax: 190 },
+    answerBox: { xMin: -5, yMin: -5, xMax: 390, yMax: 230 },
+    detections: [
+      { bbox: { xMin: 5, yMin: -5, xMax: 95, yMax: 50 } },
+      { bbox: { xMin: 35, yMin: 115, xMax: 365, yMax: 205 } },
+    ],
     problemLatex: '\\frac { x - 1 } { 2 } = \\frac { x } { 3 }',
-    recognizeAlternatives: false,
+    recognizeAlternatives: true,
     semanticScoring: true,
     initialRasterHeight: 104,
     retryRasterHeights: [],
     semanticRetryRasterHeights: [],
     recognizeLine: async (image) => {
-      const isOperation = image.strokeIds.includes('op');
+      const isOperation = image.strokeIds.some((id) => String(id).startsWith('op'));
       const latex = isOperation ? '2 .' : '\\frac { x - 1 } { 2 } = \\frac { x } { 3 }';
       return {
         latex,
@@ -2354,9 +2364,184 @@ test('geometry operation repair tags detached fraction annotations', async () =>
     })
   });
 
-  const operationLine = result.lines.find((line) => line.strokeIds.includes('op'));
+  const operationLine = result.lines.find((line) => line.strokeIds.some((id) => String(id).startsWith('op')));
   assert.equal(operationLine.ocrRepair.source, 'geometry-operation-annotation');
+  assert.equal(operationLine.excludedFromGrading, true);
   assert.equal(operationLine.acceptedLatex, '\\times 2 \\times 2');
+  assert.equal(result.latexLines.includes('\\times 2 \\times 2'), false);
+});
+
+test('lower-ranked full-answer grading candidates do not override ambiguous top OCR', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('final', 0, 0, 140, 60)];
+  const gradeRequests = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 160, yMax: 80 },
+    problemLatex: '\\frac { 1 2 } { x - 1 } = 4',
+    apiUrl: 'http://mock-grader',
+    recognizeAlternatives: false,
+    semanticScoring: true,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '4 \\pm x',
+      top: { latex: '4 \\pm x', score: 4 },
+      candidates: [
+        { latex: '4 \\pm x', score: 4 },
+        { latex: '4 = x', score: 1.5 }
+      ],
+      elapsedSeconds: 0.02
+    }),
+    scoreSemantics: async (request) => ({
+      answerManifest: {
+        cardinality: 'finite',
+        exact_set: ['4'],
+        variable: 'x'
+      },
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 5,
+        bestLatex: '4 = x',
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        grading: {
+          studentLatex: '4 = x',
+          classification: 'valid_step',
+          selectedCandidateIndex: 1,
+          solutionCoverage: 'full',
+          matchedSolutions: ['4'],
+          answerFinality: 'final',
+          countsTowardCompletion: true
+        },
+        candidateScores: [
+          { latex: group.candidates?.[0]?.latex || group.latex, sound: false, score: 0.2 },
+          { latex: '4 = x', sound: true, score: 5 }
+        ]
+      })),
+      elapsedSeconds: 0.01
+    }),
+    gradeWork: async (request) => {
+      gradeRequests.push(request);
+      return {
+        failed: false,
+        problem: { latex: request.problemLatex, cardinality: 'finite', solutionSet: ['4'], manifest: { exact_set: ['4'] } },
+        steps: [],
+        result: { problemStatus: 'incomplete', breakdownLineIndex: null, foundSolutions: [], missingSolutions: ['4'] }
+      };
+    }
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '4 \\pm x');
+  assert.equal(result.grading.result.problemStatus, 'incomplete');
+  assert.equal(gradeRequests.length, 1);
+  assert.deepEqual(gradeRequests[0].lines[0].candidates, []);
+});
+
+test('evaluate-expression candidate-selection conflict does not promote lower-ranked final answer', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('eval-final', 0, 0, 220, 70)];
+  const gradeRequests = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 240, yMax: 90 },
+    problemLatex: '\\frac { \\cos ( \\pi ) } { \\sin ( \\frac { \\pi } { 2 } ) }',
+    problemMetadata: { problemType: 'evaluate-expression' },
+    apiUrl: 'http://mock-grader',
+    recognizeAlternatives: false,
+    semanticScoring: true,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '= \\frac { 1 } { 1 } = - 1',
+      top: { latex: '= \\frac { 1 } { 1 } = - 1', score: 3 },
+      candidates: [
+        { latex: '= \\frac { 1 } { 1 } = - 1', score: 3 },
+        { latex: '= - 1 = - 1', score: 1.4 }
+      ],
+      elapsedSeconds: 0.02
+    }),
+    scoreSemantics: async (request) => ({
+      answerManifest: {
+        responseKind: 'numeric_value',
+        cardinality: 'finite',
+        exact_set: ['-1'],
+        variable: null
+      },
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 5,
+        bestLatex: '= - 1 = - 1',
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        grading: {
+          studentLatex: '= - 1 = - 1',
+          classification: 'valid_step',
+          selectedCandidateIndex: 1,
+          solutionCoverage: 'full',
+          matchedSolutions: ['-1'],
+          answerFinality: 'final',
+          countsTowardCompletion: true
+        },
+        candidateScores: [
+          { latex: group.candidates?.[0]?.latex || group.latex, sound: false, score: 0.2 },
+          { latex: '= - 1 = - 1', sound: true, score: 5 }
+        ]
+      })),
+      elapsedSeconds: 0.01
+    }),
+    gradeWork: async (request) => {
+      gradeRequests.push(request);
+      return {
+        failed: false,
+        problem: { latex: request.problemLatex, cardinality: 'finite', solutionSet: ['-1'], manifest: { exact_set: ['-1'] } },
+        steps: [],
+        result: { problemStatus: 'not_started', breakdownLineIndex: null, foundSolutions: [], missingSolutions: ['-1'] }
+      };
+    }
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '= \\frac { 1 } { 1 } = - 1');
+  assert.equal(result.grading.result.problemStatus, 'not_started');
+  assert.equal(gradeRequests.length, 1);
+  assert.deepEqual(gradeRequests[0].lines[0].candidates, []);
+});
+
+test('finalization budget skips optional retry work and returns current best result', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('slow', 0, 0, 220, 70)];
+  const calls = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 240, yMax: 90 },
+    problemLatex: 'x = 1',
+    recognizeAlternatives: false,
+    semanticScoring: false,
+    retryRasterHeights: [72, 88, 104],
+    semanticRetryRasterHeights: [48, 64],
+    chunkFallback: true,
+    finalizationBudgetMs: 0,
+    recognizeLine: async (image) => {
+      calls.push({ candidateId: image.candidateId, height: image.targetPixelHeight });
+      return {
+        latex: '',
+        top: null,
+        candidates: [],
+        failed: true,
+        elapsedSeconds: 0.01
+      };
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.timing.finalizationBudgetExceeded, true);
 });
 
 test('contextual operation repair uses previous additive constant', async () => {
@@ -4488,7 +4673,7 @@ test('incremental scheduler matches one-shot recognition on messy synthetic late
 test('student writing pipeline handles distilled real handwriting trace fixtures', async () => {
   installFakeCanvas();
   const fixtures = loadRealHandwritingFixtures();
-  assert.equal(fixtures.length, 13);
+  assert.equal(fixtures.length, 15);
 
   for (const fixture of fixtures) {
     const fakeReaders = fakeReadersForRealTrace(fixture);
@@ -5719,6 +5904,7 @@ test('VLM audit payload carries structured annotation attachments', () => {
     latex: '\\times 4 \\times 4',
     acceptedLatex: '\\times 4 \\times 4',
     ocrLatex: '4*',
+    excludedFromGrading: true,
     tightBbox: { xMin: 140, yMin: 10, xMax: 500, yMax: 70 },
     ocrRepair: {
       source: 'geometry-operation-annotation',
@@ -5747,6 +5933,7 @@ test('VLM audit payload carries structured annotation attachments', () => {
   });
 
   assert.equal(payload.promptVersion, 'recognition-audit-v2');
+  assert.equal(payload.fastResult.lines[1].excludedFromGrading, true);
   assert.equal(payload.fastResult.annotationAttachments.length, 1);
   assert.equal(payload.fastResult.annotationAttachments[0].targetLineIndex, 0);
   assert.equal(payload.fastResult.annotationAttachments[0].equationSide, 'both');
@@ -5822,6 +6009,7 @@ function auditLine(options = {}) {
       timedOut: false
     },
     ocrRepair: options.ocrRepair ?? null,
+    excludedFromGrading: Boolean(options.excludedFromGrading),
     evidenceScore: options.evidenceScore ?? 3,
     timing: { submitToFinalPredictionSeconds: 0.1 }
   };

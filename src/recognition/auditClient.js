@@ -179,6 +179,7 @@ function compactLine(line = {}) {
     latex: line.latex || '',
     acceptedLatex: line.acceptedLatex || '',
     ocrLatex: line.ocrLatex || '',
+    excludedFromGrading: Boolean(line.excludedFromGrading),
     candidates: (line.candidates || []).slice(0, 5).map(compactOcrCandidate),
     prediction: compactPrediction(line.prediction || null),
     grading: clonePlain(line.grading || null),

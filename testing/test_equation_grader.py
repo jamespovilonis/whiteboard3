@@ -21,6 +21,7 @@ from src.grading import (
     grade_equation_payload,
     grade_equation_work,
     grade_expression_payload,
+    grade_expression_work,
     grade_math_payload,
 )
 
@@ -785,6 +786,33 @@ class ExpressionGraderTests(unittest.TestCase):
 
         self.assertEqual(base_ten["exact_set"], ["2"])
         self.assertEqual(natural["exact_set"], ["1"])
+
+    def test_expression_manifest_normalizes_inverse_trig_function_style(self):
+        arccos_zero = create_expression_manifest(r"\pi - \cos^{-1}(1)")
+        arcsin_negative_one = create_expression_manifest(r"\pi - \sin^{-1}(-1)")
+
+        self.assertNotIn("error", arccos_zero)
+        self.assertEqual(arccos_zero["exact_set"], ["pi"])
+        self.assertEqual(arccos_zero["decimal_set"], [3.142])
+        self.assertNotIn("error", arcsin_negative_one)
+        self.assertEqual(arcsin_negative_one["exact_set"], ["3*pi/2"])
+        self.assertEqual(arcsin_negative_one["decimal_set"], [4.712])
+
+    def test_expression_manifest_failure_does_not_grade_partial_work_incorrect(self):
+        manifest = {
+            "problem_raw": r"\pi - \cos^{-1}(1)",
+            "responseKind": "numeric_value",
+            "cardinality": "finite",
+            "exact_set": [],
+            "decimal_set": [],
+            "tolerance": 0.005,
+            "error": "could not parse expression",
+        }
+
+        result = grade_expression_work(manifest, [{"latex": r"\pi -"}])
+
+        self.assertIn(result["result"]["problemStatus"], {"not_started", "incomplete"})
+        self.assertNotEqual(result["result"]["problemStatus"], "incorrect")
 
     def test_expression_accepts_final_numeric_answer(self):
         result = grade_expression_payload({

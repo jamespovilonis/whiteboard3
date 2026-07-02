@@ -98,6 +98,12 @@ export function segmentMathLines(strokes, options = {}) {
           parentCandidateId: groupCandidate.candidateId
         });
       }
+      for (const superscriptLine of buildSuperscriptLineGroups(rawRows, config)) {
+        addCandidate(superscriptLine.strokes, 'superscript-line', {
+          sources: ['superscript-line'],
+          parentCandidateId: groupCandidate.candidateId
+        });
+      }
     }
     const rows = splitCandidateIntoRows(groupCandidate, config);
     if (rows.length > 1) {
@@ -295,9 +301,12 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
   const compactFractionLine = !parentLikeCandidateProfiles(profiles) &&
     bboxHeight(candidate.tightBbox) <= 140 &&
     hasCompactFractionStructure(candidate);
+  const superscriptStructural = profiles.includes('superscript-line') &&
+    hasSuperscriptStructure(rawRows, medianHeight);
   const fractionStructural = fractionBridge || compactFractionLine || builtTallFractionStack;
   const structural = fractionBridge ||
     compactFractionLine ||
+    superscriptStructural ||
     plusMinusStructure ||
     structuralRows.some((row) => rowHasTallOperatorStroke(row, rowMedianHeight(row)));
   const parentLike = profiles.includes('parent') || profiles.includes('dbnet-parent') || profiles.includes('row-parent');
@@ -319,6 +328,7 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
   }
   if (compactFractionLine) score += 4.2;
   if (profiles.includes('fraction-stack-line') && fractionStructural) score += 3.2;
+  if (superscriptStructural) score += 9.7;
   if (builtTallFractionStack) score += 27.5;
   if (plusMinusStructure) score += 6.8;
   score += inlineFragmentContinuityBonus(candidate, allCandidates, { medianHeight });
@@ -419,6 +429,7 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
   score -= adjacentLineIntrusionPenalty(candidate, allCandidates, { medianHeight });
   score -= dbnetLineBoundaryIntrusionPenalty(candidate, allCandidates);
   score -= dbnetBoundaryStrokeIntrusionPenalty(candidate, allCandidates, { medianHeight });
+  score -= superscriptSplitChildPenalty(candidate, allCandidates);
   score -= annotationPenalty(candidate);
 
   return score;
@@ -601,6 +612,7 @@ function isEvidenceLineCandidate(candidate) {
   return profiles.some((profile) => (
     profile === 'dbnet-line' ||
     profile === 'fraction-stack-line' ||
+    profile === 'superscript-line' ||
     profile === 'row-line' ||
     profile === 'raw-row-line' ||
     profile === 'projection-line' ||
@@ -615,6 +627,7 @@ function isLineLikeCandidate(candidate) {
   return profiles.some((profile) => (
     profile === 'dbnet-line' ||
     profile === 'fraction-stack-line' ||
+    profile === 'superscript-line' ||
     profile === 'row-line' ||
     profile === 'raw-row-line' ||
     profile === 'projection-line' ||
@@ -648,6 +661,7 @@ function isNonProjectionLineCandidate(candidate) {
   return profiles.some((profile) => (
     profile === 'dbnet-line' ||
     profile === 'fraction-stack-line' ||
+    profile === 'superscript-line' ||
     profile === 'row-line' ||
     profile === 'raw-row-line' ||
     profile === 'strict' ||
@@ -661,6 +675,7 @@ function isIndependentLineChildCandidate(candidate) {
   return profiles.some((profile) => (
     profile === 'dbnet-line' ||
     profile === 'fraction-stack-line' ||
+    profile === 'superscript-line' ||
     profile === 'row-line' ||
     profile === 'raw-row-line' ||
     profile === 'projection-line' ||
@@ -674,6 +689,7 @@ function isPreferredChildLineCandidate(candidate) {
   return profiles.some((profile) => (
     profile === 'dbnet-line' ||
     profile === 'fraction-stack-line' ||
+    profile === 'superscript-line' ||
     profile === 'row-line' ||
     profile === 'raw-row-line' ||
     profile === 'strict'
@@ -1294,6 +1310,132 @@ function buildTallFractionStackGroups(rows, config) {
     }
   }
   return groups;
+}
+
+function buildSuperscriptLineGroups(rows, config) {
+  const sorted = (rows || [])
+    .filter((row) => row?.bbox && row.strokes?.length)
+    .slice()
+    .sort(compareRows);
+  if (sorted.length < 2) return [];
+
+  const groups = [];
+  const seen = new Set();
+  for (const base of sorted) {
+    const attached = sorted.filter((row) => row !== base && superscriptRowsCanAttach(base, row, sorted, config));
+    if (!attached.length) continue;
+    const strokes = uniqueStrokes([
+      ...(base.strokes || []),
+      ...attached.flatMap((row) => row.strokes || [])
+    ]);
+    if (strokes.length <= base.strokes.length) continue;
+    const key = strokeSetKeyFor(strokes);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    groups.push({
+      strokes,
+      baseRow: base,
+      exponentRows: attached
+    });
+  }
+  return groups;
+}
+
+function hasSuperscriptStructure(rows, medianHeight = 1) {
+  const sorted = (rows || []).filter((row) => row?.bbox && row.strokes?.length);
+  if (sorted.length < 2) return false;
+  const config = {
+    ...DEFAULT_CONFIG,
+    rowCenterThresholdRatio: Math.max(
+      DEFAULT_CONFIG.rowCenterThresholdRatio,
+      Number(medianHeight) > 0 ? 0.82 : DEFAULT_CONFIG.rowCenterThresholdRatio
+    )
+  };
+  return sorted.some((base) => sorted.some((row) => (
+    row !== base && superscriptRowsCanAttach(base, row, sorted, config)
+  )));
+}
+
+function superscriptRowsCanAttach(base, exponent, rows, config = DEFAULT_CONFIG) {
+  if (!base?.bbox || !exponent?.bbox) return false;
+  if ((base.strokes || []).length > 5) return false;
+  if (!rowHasSuperscriptBaseInk(base)) return false;
+  if (centerY(exponent.bbox) >= centerY(base.bbox)) return false;
+
+  const baseHeight = bboxHeight(base.bbox);
+  const exponentHeight = bboxHeight(exponent.bbox);
+  const medianHeight = median([
+    ...(base.strokes || []).map(strokeHeight),
+    ...(exponent.strokes || []).map(strokeHeight)
+  ]) || Math.max(baseHeight, exponentHeight, 1);
+  const gap = verticalGap(base.bbox, exponent.bbox);
+  const centerDeltaY = centerY(base.bbox) - centerY(exponent.bbox);
+  const closeVertically = gap <= Math.max(24, medianHeight * 1.15) &&
+    centerDeltaY <= Math.max(62, medianHeight * 2.65);
+  if (!closeVertically) return false;
+
+  const baseWidth = bboxWidth(base.bbox);
+  const exponentWidth = bboxWidth(exponent.bbox);
+  const rightOfBaseStart = exponent.bbox.xMax >= base.bbox.xMin + Math.min(34, baseWidth * 0.28);
+  const notFarLeft = exponent.bbox.xMin >= base.bbox.xMin - Math.max(18, medianHeight * 0.8);
+  const closeHorizontally = horizontalGap(base.bbox, exponent.bbox) <= Math.max(175, medianHeight * 6, baseWidth * 1.4);
+  if (!rightOfBaseStart || !notFarLeft || !closeHorizontally) return false;
+
+  const baseLooksCompact = baseWidth <= Math.min(140, Math.max(100, medianHeight * 4.2));
+  const exponentLooksUpperRight = centerX(exponent.bbox) >= base.bbox.xMin + Math.min(22, baseWidth * 0.2);
+  const baseLooksLikeEquation = rowLooksLikeEquationWithEquals(base);
+  if ((!baseLooksCompact && !baseLooksLikeEquation) || !exponentLooksUpperRight) return false;
+  if (!baseLooksCompact && gap > Math.max(16, medianHeight * 0.45)) return false;
+
+  if (
+    exponentWidth > Math.max(620, baseWidth * 3.4) &&
+    exponent.bbox.xMin < base.bbox.xMin + Math.max(28, baseWidth * 0.18)
+  ) {
+    return false;
+  }
+
+  const interveningRows = (rows || []).filter((row) => (
+    row !== base &&
+    row !== exponent &&
+    row?.bbox &&
+    centerY(row.bbox) > centerY(exponent.bbox) &&
+    centerY(row.bbox) < centerY(base.bbox) &&
+    horizontalOverlapRatio(row.bbox, base.bbox) >= 0.2
+  ));
+  return interveningRows.length === 0;
+}
+
+function rowHasSuperscriptBaseInk(row) {
+  const strokes = (row?.strokes || []).filter((stroke) => stroke?.canvasBbox);
+  if (!strokes.length) return false;
+  const medianHeight = rowMedianHeight(row) || 1;
+  return strokes.some((stroke) => {
+    const box = stroke.canvasBbox;
+    if (isHorizontalStroke(stroke)) return false;
+    const height = bboxHeight(box);
+    const width = bboxWidth(box);
+    return height >= Math.max(12, medianHeight * 0.45) || height >= width * 0.55;
+  });
+}
+
+function superscriptSplitChildPenalty(candidate, allCandidates = []) {
+  const profiles = candidate?.profiles || [];
+  if (!profiles.some((profile) => (
+    profile === 'row-line' ||
+    profile === 'raw-row-line' ||
+    profile === 'strict' ||
+    profile === 'loose'
+  ))) {
+    return 0;
+  }
+  const parent = (allCandidates || []).find((other) => (
+    other !== candidate &&
+    other?.profiles?.includes('superscript-line') &&
+    (other.strokeIds || []).length > (candidate.strokeIds || []).length &&
+    strokeSetContains(other, candidate) &&
+    hasSuperscriptStructure(clusterStrokeRows(other, DEFAULT_CONFIG), rowMedianHeight(candidate) || 1)
+  ));
+  return parent ? 4.8 : 0;
 }
 
 function bottomRowFallsBelowFractionStack(rows, candidate) {
