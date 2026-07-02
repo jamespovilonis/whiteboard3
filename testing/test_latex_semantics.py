@@ -179,6 +179,28 @@ class LatexSemanticsTests(unittest.TestCase):
         self.assertEqual(score["grading"]["classification"], "valid_step")
         self.assertEqual(score["grading"]["answerFinality"], "final")
 
+    def test_semantic_payload_regenerates_stale_manifest_for_evaluate_problems(self):
+        payload = score_semantic_payload({
+            "problemMetadata": {"problemType": "evaluate-expression"},
+            "problemLatex": "0.9 - 0.1",
+            "answerManifest": {
+                "problem_raw": "0.9 - 0.1",
+                "responseKind": "solution_set",
+                "error": "problem must be an equation",
+                "exact_set": [],
+            },
+            "candidateGroups": [{
+                "candidateId": "line-1",
+                "latex": "0.8",
+                "candidates": [{"latex": "0.8", "score": 1.0}],
+            }],
+        })
+
+        self.assertEqual(payload["answerManifest"]["responseKind"], "numeric_value")
+        score = payload["candidateScores"][0]
+        self.assertEqual(score["grading"]["classification"], "valid_step")
+        self.assertEqual(score["grading"]["matchedSolutions"], ["0.8"])
+
     def test_scores_transformed_first_student_line_against_explicit_prompt(self):
         scored = score_ocr_predictions(
             [

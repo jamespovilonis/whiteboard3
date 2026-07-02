@@ -739,10 +739,25 @@ class ExpressionGraderTests(unittest.TestCase):
             "problemLatex": r"\frac { 1 } { 4 } + \frac { 1 } { 4 }",
             "lines": [{"latex": r"\frac { 2 } { 4 }"}],
         })
+        negative_prefix = grade_expression_payload({
+            "problemLatex": r"\frac{1}{2} - 1",
+            "lines": [{"latex": r"- \frac { 1 } { 2 }"}],
+        })
+        negative_log_fraction = grade_math_payload({
+            "problemType": "evaluate-expression",
+            "problemLatex": r"\frac{\log_2(16)}{-8}",
+            "lines": [{"latex": r"- \frac{1}{2}"}],
+        })
 
         self.assertEqual(correct["result"]["problemStatus"], "correct")
         self.assertEqual(incomplete["steps"][0]["answerFinality"], "unsimplified")
         self.assertEqual(incomplete["result"]["problemStatus"], "incomplete")
+        self.assertEqual(negative_prefix["steps"][0]["answerFinality"], "final")
+        self.assertEqual(negative_prefix["result"]["problemStatus"], "correct")
+        self.assertEqual(negative_prefix["result"]["foundSolutions"], ["-1/2"])
+        self.assertEqual(negative_log_fraction["steps"][0]["answerFinality"], "final")
+        self.assertEqual(negative_log_fraction["result"]["problemStatus"], "correct")
+        self.assertEqual(negative_log_fraction["result"]["foundSolutions"], ["-1/2"])
 
     def test_expression_accepts_horizontal_equality_chain(self):
         result = grade_expression_payload({
@@ -831,6 +846,63 @@ class ExpressionGraderTests(unittest.TestCase):
 
         self.assertEqual(result["problem"]["manifest"]["responseKind"], "numeric_value")
         self.assertEqual(result["result"]["problemStatus"], "correct")
+
+    def test_grade_math_payload_regenerates_stale_equation_manifest_for_evaluation(self):
+        stale_manifest = create_answer_manifest("0.9 - 0.1")
+        result = grade_math_payload({
+            "problemType": "evaluate-expression",
+            "problemLatex": "0.9 - 0.1",
+            "manifest": stale_manifest,
+            "lines": [{"latex": "0.8"}],
+        })
+
+        self.assertEqual(stale_manifest["responseKind"], "solution_set")
+        self.assertEqual(result["problem"]["manifestResponseKind"], "numeric_value")
+        self.assertEqual(result["problem"]["manifestSource"], "generated")
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+
+    def test_grade_math_payload_infers_numeric_expression_without_equals(self):
+        result = grade_math_payload({
+            "problemLatex": "10 - 3",
+            "problemMetadata": {"problemType": "equation-solving"},
+            "lines": [{"latex": "7"}],
+        })
+
+        self.assertEqual(result["problem"]["resolvedProblemType"], "evaluate-expression")
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+
+    def test_expression_manifest_accepts_compact_latex_fractions(self):
+        half_plus_eight = create_expression_manifest(r"\frac12 + 8")
+        three_halves = create_expression_manifest(r"\frac{3}2")
+        four_plus_half = grade_math_payload({
+            "problemType": "evaluate-expression",
+            "problemLatex": r"4 + \frac12",
+            "lines": [
+                {"lineIndex": 0, "latex": r"\frac{8}{2} + \frac{1}{2}"},
+                {"lineIndex": 1, "latex": r"\frac{9}{2}"},
+            ],
+        })
+        six_plus_half = grade_math_payload({
+            "problemType": "evaluate-expression",
+            "problemLatex": r"6+\frac12",
+            "lines": [
+                {"lineIndex": 0, "latex": r"\frac{12}{2}+\frac{1}{2}"},
+                {"lineIndex": 1, "latex": r"\frac{13}{2}"},
+            ],
+        })
+        mixed_zero = grade_math_payload({
+            "problemType": "evaluate-expression",
+            "problemLatex": r"0.5 - \frac12",
+            "lines": [{"latex": "0"}],
+        })
+
+        self.assertEqual(half_plus_eight["exact_set"], ["17/2"])
+        self.assertEqual(three_halves["exact_set"], ["3/2"])
+        self.assertEqual(four_plus_half["result"]["problemStatus"], "correct")
+        self.assertEqual(four_plus_half["result"]["foundSolutions"], ["9/2"])
+        self.assertEqual(six_plus_half["result"]["problemStatus"], "correct")
+        self.assertEqual(six_plus_half["result"]["foundSolutions"], ["13/2"])
+        self.assertEqual(mixed_zero["result"]["problemStatus"], "correct")
 
 
 if __name__ == "__main__":

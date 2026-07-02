@@ -1,0 +1,887 @@
+{
+  "title": "Whiteboard Package Workflow Map",
+  "description": "Interactive documentation of how frontend components, hooks, state modules, recognition clients, and backend packages collaborate during whiteboard actions.",
+  "canvas": {
+    "width": 1520,
+    "height": 1120
+  },
+  "groups": [
+    {
+      "id": "react-shell",
+      "label": "React Shell",
+      "color": "#2563eb"
+    },
+    {
+      "id": "state-hooks",
+      "label": "State + Hooks",
+      "color": "#0891b2"
+    },
+    {
+      "id": "whiteboard",
+      "label": "Whiteboard Engine",
+      "color": "#16a34a"
+    },
+    {
+      "id": "recognition",
+      "label": "Recognition Pipeline",
+      "color": "#d97706"
+    },
+    {
+      "id": "backend",
+      "label": "FastAPI + Python",
+      "color": "#7c3aed"
+    },
+    {
+      "id": "support",
+      "label": "Support + Tests",
+      "color": "#64748b"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "app",
+      "label": "App",
+      "kind": "component",
+      "group": "react-shell",
+      "x": 48,
+      "y": 92,
+      "summary": "Top-level composition point. Owns shell state, wires callbacks, holds engineRef, tracks audit status, and passes flow state into UI components.",
+      "files": ["src/App.jsx"]
+    },
+    {
+      "id": "toolbar",
+      "label": "Toolbar",
+      "kind": "component",
+      "group": "react-shell",
+      "x": 48,
+      "y": 236,
+      "summary": "Drawing control surface for tool selection, pen color, brush size, undo, redo, and clear.",
+      "files": ["src/components/Toolbar.jsx"]
+    },
+    {
+      "id": "model-shell",
+      "label": "ModelShell",
+      "kind": "component",
+      "group": "react-shell",
+      "x": 48,
+      "y": 380,
+      "summary": "Right-side response and debug panel. Emits Submit and Next Problem actions and displays recognition, audit, and grading details.",
+      "files": ["src/components/ModelShell.jsx", "src/components/problemStatusDisplay.js"]
+    },
+    {
+      "id": "latex-dialog",
+      "label": "LatexEquationDialog",
+      "kind": "component",
+      "group": "react-shell",
+      "x": 48,
+      "y": 548,
+      "summary": "Custom problem entry surface shown when the flow is waiting for an equation.",
+      "files": ["src/components/LatexEquationDialog.jsx"]
+    },
+    {
+      "id": "whiteboard-stage",
+      "label": "WhiteboardStage",
+      "kind": "component",
+      "group": "react-shell",
+      "x": 48,
+      "y": 692,
+      "summary": "Canvas host that creates CanvasStrokeEngine, forwards viewport/tool updates, and renders the problem overlay.",
+      "files": ["src/components/WhiteboardStage.jsx"]
+    },
+    {
+      "id": "problem-layer",
+      "label": "ProblemLayer",
+      "kind": "component",
+      "group": "react-shell",
+      "x": 48,
+      "y": 860,
+      "summary": "DOM overlay for problem prompts, answer boxes, submitted boxes, and debug rectangles.",
+      "files": ["src/components/ProblemLayer.jsx"]
+    },
+    {
+      "id": "flow-controller",
+      "label": "useProblemFlowController",
+      "kind": "hook",
+      "group": "state-hooks",
+      "x": 332,
+      "y": 92,
+      "summary": "Main orchestration hook. Owns problemFlow, scheduler lifecycle, recognition updates, grading bootstrap, submit, next, and custom problem actions.",
+      "files": ["src/hooks/useProblemFlowController.js"]
+    },
+    {
+      "id": "viewport-controller",
+      "label": "useViewportController",
+      "kind": "hook",
+      "group": "state-hooks",
+      "x": 332,
+      "y": 236,
+      "summary": "Owns current viewport, reset visibility, home movement, and animated viewport transitions.",
+      "files": ["src/hooks/useViewportController.js"]
+    },
+    {
+      "id": "toolbar-collapse",
+      "label": "useToolbarCollapse",
+      "kind": "hook",
+      "group": "state-hooks",
+      "x": 332,
+      "y": 380,
+      "summary": "Controls active drawing tool and automatic toolbar collapse while drawing.",
+      "files": ["src/hooks/useToolbarCollapse.js"]
+    },
+    {
+      "id": "shortcuts",
+      "label": "useWhiteboardShortcuts",
+      "kind": "hook",
+      "group": "state-hooks",
+      "x": 332,
+      "y": 524,
+      "summary": "Keyboard shortcut bridge for tool changes and debug box toggling.",
+      "files": ["src/hooks/useWhiteboardShortcuts.js"]
+    },
+    {
+      "id": "e2e-bridge",
+      "label": "useE2ETestBridge",
+      "kind": "hook",
+      "group": "state-hooks",
+      "x": 332,
+      "y": 668,
+      "summary": "Test-only browser bridge for pausing recognition, inspecting app state, and collecting recorded events.",
+      "files": ["src/hooks/useE2ETestBridge.js"]
+    },
+    {
+      "id": "problem-flow",
+      "label": "problemFlow state",
+      "kind": "state",
+      "group": "state-hooks",
+      "x": 332,
+      "y": 812,
+      "summary": "Pure state module for problem sessions, answer boxes, submission state, recognition progress, next-problem positioning, and custom problem creation.",
+      "files": ["src/state/problemFlow.js"]
+    },
+    {
+      "id": "problem-source",
+      "label": "equationProblemSource",
+      "kind": "state",
+      "group": "state-hooks",
+      "x": 332,
+      "y": 980,
+      "summary": "Optional E2E problem source loader for dynamic problem catalogs.",
+      "files": ["src/state/equationProblemSource.js"]
+    },
+    {
+      "id": "canvas-engine",
+      "label": "CanvasStrokeEngine",
+      "kind": "package",
+      "group": "whiteboard",
+      "x": 632,
+      "y": 92,
+      "summary": "Pointer, drawing, panning, erasing, history, and callback engine for the foreground/background canvases.",
+      "files": ["src/whiteboard/CanvasStrokeEngine.js"]
+    },
+    {
+      "id": "stroke-store",
+      "label": "StrokeStore",
+      "kind": "package",
+      "group": "whiteboard",
+      "x": 632,
+      "y": 236,
+      "summary": "Mutable stroke collection and history backing undo, redo, clear, and stroke reads.",
+      "files": ["src/whiteboard/StrokeStore.js"]
+    },
+    {
+      "id": "canvas-renderer",
+      "label": "CanvasRenderer",
+      "kind": "package",
+      "group": "whiteboard",
+      "x": 632,
+      "y": 380,
+      "summary": "Canvas drawing and redraw routines for persisted strokes and active stroke previews.",
+      "files": ["src/whiteboard/CanvasRenderer.js"]
+    },
+    {
+      "id": "stroke-smoother",
+      "label": "StrokeSmoother",
+      "kind": "package",
+      "group": "whiteboard",
+      "x": 632,
+      "y": 524,
+      "summary": "Normalizes and smooths pointer samples into renderable whiteboard strokes.",
+      "files": ["src/whiteboard/StrokeSmoother.js"]
+    },
+    {
+      "id": "whiteboard-math",
+      "label": "viewport + geometry + constants",
+      "kind": "package",
+      "group": "whiteboard",
+      "x": 632,
+      "y": 668,
+      "summary": "Shared board geometry, bounding-box helpers, viewport math, board size, and styling constants.",
+      "files": ["src/whiteboard/viewport.js", "src/whiteboard/geometry.js", "src/whiteboard/constants.js"]
+    },
+    {
+      "id": "scheduler",
+      "label": "IncrementalRecognitionScheduler",
+      "kind": "package",
+      "group": "recognition",
+      "x": 924,
+      "y": 92,
+      "summary": "Debounced recognition coordinator. Tracks input signatures, segments strokes, runs line/full-answer recognition, emits snapshots, and aborts stale runs.",
+      "files": ["src/recognition/incrementalRecognitionScheduler.js"]
+    },
+    {
+      "id": "line-segmentation",
+      "label": "lineSegmentation",
+      "kind": "package",
+      "group": "recognition",
+      "x": 924,
+      "y": 236,
+      "summary": "Builds candidate math lines from answer strokes, boxes, overlaps, detections, and problem context.",
+      "files": ["src/recognition/lineSegmentation.js"]
+    },
+    {
+      "id": "student-pipeline",
+      "label": "studentWritingPipeline",
+      "kind": "package",
+      "group": "recognition",
+      "x": 924,
+      "y": 380,
+      "summary": "Full recognition pipeline: detection, segmentation, rasterization, OCR, semantic scoring, grading, candidate selection, retries, and final lines.",
+      "files": ["src/recognition/studentWritingPipeline.js"]
+    },
+    {
+      "id": "line-rasterizer",
+      "label": "lineRasterizer",
+      "kind": "package",
+      "group": "recognition",
+      "x": 924,
+      "y": 524,
+      "summary": "Converts stroke candidates into line image data URLs for OCR.",
+      "files": ["src/recognition/lineRasterizer.js"]
+    },
+    {
+      "id": "recognition-clients",
+      "label": "OCR + segmentation clients",
+      "kind": "client",
+      "group": "recognition",
+      "x": 924,
+      "y": 668,
+      "summary": "Browser fetch clients for /recognize and /segment-lines via the local recognition API.",
+      "files": ["src/recognition/ocrClient.js", "src/recognition/segmentationClient.js", "src/recognition/config.js", "src/recognition/fetchErrors.js"]
+    },
+    {
+      "id": "semantic-client",
+      "label": "semanticClient",
+      "kind": "client",
+      "group": "recognition",
+      "x": 924,
+      "y": 812,
+      "summary": "Browser fetch client for /score-latex-candidates.",
+      "files": ["src/recognition/semanticClient.js"]
+    },
+    {
+      "id": "audit-client",
+      "label": "auditClient",
+      "kind": "client",
+      "group": "recognition",
+      "x": 924,
+      "y": 980,
+      "summary": "Decides when recognition needs VLM audit, compacts payloads, enqueues audit jobs, and polls audit status.",
+      "files": ["src/recognition/auditClient.js"]
+    },
+    {
+      "id": "grading-client",
+      "label": "gradingClient",
+      "kind": "client",
+      "group": "recognition",
+      "x": 1204,
+      "y": 92,
+      "summary": "Browser fetch client for /grade-math-work and /grade-equation-work.",
+      "files": ["src/grading/gradingClient.js"]
+    },
+    {
+      "id": "fastapi-app",
+      "label": "FastAPI app",
+      "kind": "service",
+      "group": "backend",
+      "x": 1204,
+      "y": 236,
+      "summary": "Creates the recognition API, CORS middleware, scorer wiring, audit service, and route registration.",
+      "files": ["src/server/app.py", "src/server/config.py"]
+    },
+    {
+      "id": "recognition-routes",
+      "label": "recognition routes",
+      "kind": "route",
+      "group": "backend",
+      "x": 1204,
+      "y": 380,
+      "summary": "Proxies /recognize, /segment-lines, and upstream /health to the configured CoMER/DBNet service.",
+      "files": ["src/server/routes/recognition.py", "src/server/services/proxy.py"]
+    },
+    {
+      "id": "grading-routes",
+      "label": "grading routes",
+      "kind": "route",
+      "group": "backend",
+      "x": 1204,
+      "y": 524,
+      "summary": "Runs semantic scoring and Python grading with timeouts for /score-latex-candidates, /grade-equation-work, and /grade-math-work.",
+      "files": ["src/server/routes/grading.py", "src/server/services/scoring.py"]
+    },
+    {
+      "id": "python-grading",
+      "label": "Python grading",
+      "kind": "package",
+      "group": "backend",
+      "x": 1204,
+      "y": 668,
+      "summary": "Equation and answer grading implementation used by the FastAPI scoring routes.",
+      "files": ["src/grading/equation_grader.py", "src/grading/answer_grader.py", "src/grading/__init__.py"]
+    },
+    {
+      "id": "audit-routes",
+      "label": "audit routes + service",
+      "kind": "route",
+      "group": "backend",
+      "x": 1204,
+      "y": 812,
+      "summary": "Accepts audit jobs, calls/stores VLM audit work, and exposes audit job status.",
+      "files": ["src/server/routes/audit.py", "src/server/services/audit.py"]
+    },
+    {
+      "id": "health-route",
+      "label": "health route",
+      "kind": "route",
+      "group": "backend",
+      "x": 1204,
+      "y": 980,
+      "summary": "Local server health endpoint.",
+      "files": ["src/server/routes/health.py"]
+    },
+    {
+      "id": "styles",
+      "label": "styles",
+      "kind": "support",
+      "group": "support",
+      "x": 632,
+      "y": 812,
+      "summary": "CSS for shell layout, toolbar, model panel, and whiteboard surfaces.",
+      "files": ["src/styles.css", "src/styles/base.css", "src/styles/model-shell.css", "src/styles/toolbar.css", "src/styles/whiteboard.css"]
+    },
+    {
+      "id": "tests",
+      "label": "E2E + testing",
+      "kind": "support",
+      "group": "support",
+      "x": 632,
+      "y": 980,
+      "summary": "Playwright flows, mocked recognition helpers, live recognition matrix, and Python/Node test coverage.",
+      "files": ["e2e", "testing"]
+    }
+  ],
+  "flows": [
+    {
+      "id": "submit-answer",
+      "label": "Submit Answer",
+      "trigger": "ModelShell Submit button",
+      "summary": "Freezes the active problem, marks it submitted, flushes any pending recognition, and lets recognition/audit updates continue into the debug panel.",
+      "steps": [
+        {
+          "from": "model-shell",
+          "to": "app",
+          "verb": "onSubmitAnswer",
+          "payload": "click event",
+          "note": "Submit is enabled only while the active problem is solving."
+        },
+        {
+          "from": "app",
+          "to": "flow-controller",
+          "verb": "submitAnswer()",
+          "payload": "activeProblem + engineRef",
+          "note": "App records an E2E submit-answer event before delegating."
+        },
+        {
+          "from": "flow-controller",
+          "to": "canvas-engine",
+          "verb": "getStrokes()",
+          "payload": "current stroke list",
+          "note": "The controller reads the latest engine strokes for event details."
+        },
+        {
+          "from": "flow-controller",
+          "to": "problem-flow",
+          "verb": "submitActiveProblem()",
+          "payload": "flow + viewportWidth",
+          "note": "Pure state update sets status=submitted, freezes the answer box, and updates recognition status."
+        },
+        {
+          "from": "problem-flow",
+          "to": "app",
+          "verb": "setProblemFlow",
+          "payload": "submitted flow",
+          "note": "React re-renders problem overlays and shell button state."
+        },
+        {
+          "from": "flow-controller",
+          "to": "scheduler",
+          "verb": "flushNow()",
+          "payload": "latest input signature",
+          "note": "Pending recognition is forced immediately instead of waiting for debounce."
+        },
+        {
+          "from": "scheduler",
+          "to": "student-pipeline",
+          "verb": "recognizeStudentWriting()",
+          "payload": "answer strokes + answerBox + problemLatex",
+          "note": "The final answer pass produces selected lines, LaTeX, semantic data, and grading."
+        },
+        {
+          "from": "scheduler",
+          "to": "flow-controller",
+          "verb": "onStateChange(snapshot)",
+          "payload": "status + result + realtime metadata",
+          "note": "Snapshots are accepted for solving/submitted problems and merged into problem state."
+        },
+        {
+          "from": "flow-controller",
+          "to": "audit-client",
+          "verb": "maybeEnqueueRecognitionAudit",
+          "payload": "problem + result + strokes + inputSignature",
+          "note": "Audits are triggered for grading misses, OCR failures, low confidence, conflicts, or sampling."
+        },
+        {
+          "from": "audit-client",
+          "to": "audit-routes",
+          "verb": "POST /audit-recognition",
+          "payload": "compact audit payload",
+          "note": "The backend accepts the job and later exposes status by auditId."
+        },
+        {
+          "from": "flow-controller",
+          "to": "model-shell",
+          "verb": "recognitionResults + auditByProblemId",
+          "payload": "debug rows + status text",
+          "note": "The shell displays submitted status, recognition output, grading, and audit state."
+        }
+      ]
+    },
+    {
+      "id": "next-problem",
+      "label": "Next Problem",
+      "trigger": "ModelShell Next Problem button",
+      "summary": "Creates or selects the next problem session, moves the viewport to the new board position, and updates the prompt and answer region.",
+      "steps": [
+        {
+          "from": "model-shell",
+          "to": "app",
+          "verb": "onNextProblem",
+          "payload": "click event",
+          "note": "The button is enabled only when the active problem is ready for next."
+        },
+        {
+          "from": "app",
+          "to": "flow-controller",
+          "verb": "goToNextProblem()",
+          "payload": "current problemFlow",
+          "note": "App delegates directly to the controller."
+        },
+        {
+          "from": "flow-controller",
+          "to": "problem-flow",
+          "verb": "requestNextProblem()",
+          "payload": "flow + viewportWidth",
+          "note": "State decides whether to append a problem, finish the catalog, or await custom equation entry."
+        },
+        {
+          "from": "problem-flow",
+          "to": "whiteboard-math",
+          "verb": "viewportForProblemPosition",
+          "payload": "boardPosition + viewportWidth",
+          "note": "The next problem is placed below the frozen answer with a fixed gap."
+        },
+        {
+          "from": "flow-controller",
+          "to": "viewport-controller",
+          "verb": "moveHomeViewport()",
+          "payload": "targetViewport + 420ms",
+          "note": "The board animates so the new problem lands in the working area."
+        },
+        {
+          "from": "problem-flow",
+          "to": "app",
+          "verb": "setProblemFlow",
+          "payload": "flow with activeProblemId",
+          "note": "The active problem id, completed count, and awaitingEquation state drive the next render."
+        },
+        {
+          "from": "app",
+          "to": "whiteboard-stage",
+          "verb": "problems + viewport",
+          "payload": "new problem array",
+          "note": "The stage receives updated problem geometry and viewport."
+        },
+        {
+          "from": "whiteboard-stage",
+          "to": "problem-layer",
+          "verb": "render overlay",
+          "payload": "problemBox + answerBox",
+          "note": "The new prompt and answer catchment appear on the board."
+        },
+        {
+          "from": "app",
+          "to": "model-shell",
+          "verb": "response + activeProblem",
+          "payload": "modelResponse for next problem",
+          "note": "The shell updates the displayed equation and action availability."
+        },
+        {
+          "from": "flow-controller",
+          "to": "scheduler",
+          "verb": "update() effect",
+          "payload": "problemId + empty/new strokes + answerBox",
+          "note": "Recognition is reattached to the new active solving problem."
+        }
+      ]
+    },
+    {
+      "id": "write-stroke",
+      "label": "Write Stroke",
+      "trigger": "Pointer input on the whiteboard canvas",
+      "summary": "Captures pen movement, stores strokes, updates answer-box geometry, and starts the debounced recognition pipeline.",
+      "steps": [
+        {
+          "from": "whiteboard-stage",
+          "to": "canvas-engine",
+          "verb": "pointer events",
+          "payload": "canvas coordinates + tool settings",
+          "note": "The stage owns the canvases; the engine handles low-level drawing and gestures."
+        },
+        {
+          "from": "canvas-engine",
+          "to": "stroke-smoother",
+          "verb": "smooth samples",
+          "payload": "pointer samples",
+          "note": "Raw pointer samples become a stable stroke shape."
+        },
+        {
+          "from": "canvas-engine",
+          "to": "stroke-store",
+          "verb": "commit stroke",
+          "payload": "stroke id + points + canvasBbox",
+          "note": "The store keeps the stroke list and history."
+        },
+        {
+          "from": "canvas-engine",
+          "to": "canvas-renderer",
+          "verb": "draw/redraw",
+          "payload": "stroke paths + viewport",
+          "note": "The visible canvas updates immediately."
+        },
+        {
+          "from": "canvas-engine",
+          "to": "app",
+          "verb": "onPenStrokeStart / onStrokesChanged",
+          "payload": "stroke list + reason",
+          "note": "App records E2E events and collapses the toolbar while drawing."
+        },
+        {
+          "from": "app",
+          "to": "toolbar-collapse",
+          "verb": "collapseToolbarForDrawing()",
+          "payload": "drawing state",
+          "note": "Toolbar state reacts to active pen input."
+        },
+        {
+          "from": "app",
+          "to": "flow-controller",
+          "verb": "reconcileStrokes(strokes)",
+          "payload": "all strokes",
+          "note": "The controller stores latest strokes and reconciles them with the active problem."
+        },
+        {
+          "from": "flow-controller",
+          "to": "problem-flow",
+          "verb": "reconcileProblemFlowWithStrokes()",
+          "payload": "flow + strokes",
+          "note": "Answer stroke ids, content bbox, and active answer box are recalculated."
+        },
+        {
+          "from": "flow-controller",
+          "to": "scheduler",
+          "verb": "update() effect",
+          "payload": "problemId + strokes + answerBox + problemLatex",
+          "note": "The scheduler builds a new input signature and schedules a debounced flush."
+        },
+        {
+          "from": "scheduler",
+          "to": "line-segmentation",
+          "verb": "segmentMathLines()",
+          "payload": "answer strokes + boxes",
+          "note": "Candidate line groups are created for recognition."
+        },
+        {
+          "from": "scheduler",
+          "to": "student-pipeline",
+          "verb": "recognizeStudentWriting()",
+          "payload": "candidate strokes + context",
+          "note": "A final/full-answer recognition pass selects the best line sequence."
+        },
+        {
+          "from": "student-pipeline",
+          "to": "line-rasterizer",
+          "verb": "rasterizeLineCandidate()",
+          "payload": "candidate stroke group",
+          "note": "Each candidate becomes image data for OCR."
+        },
+        {
+          "from": "student-pipeline",
+          "to": "recognition-clients",
+          "verb": "recognizeLineImage()",
+          "payload": "line.png FormData",
+          "note": "OCR requests are sent through the local API."
+        },
+        {
+          "from": "recognition-clients",
+          "to": "recognition-routes",
+          "verb": "POST /recognize",
+          "payload": "model + timeout + image",
+          "note": "FastAPI proxies OCR to the configured upstream model service."
+        },
+        {
+          "from": "student-pipeline",
+          "to": "semantic-client",
+          "verb": "scoreLatexCandidates()",
+          "payload": "candidate LaTeX + problem context",
+          "note": "Semantic scores help select the best candidate line cover."
+        },
+        {
+          "from": "semantic-client",
+          "to": "grading-routes",
+          "verb": "POST /score-latex-candidates",
+          "payload": "semantic scoring payload",
+          "note": "The backend runs the configured semantic scorer with a timeout."
+        },
+        {
+          "from": "student-pipeline",
+          "to": "grading-client",
+          "verb": "gradeMathWork()",
+          "payload": "problemLatex + selected lines",
+          "note": "Grading evidence boosts final candidate selection and debug status."
+        },
+        {
+          "from": "grading-client",
+          "to": "grading-routes",
+          "verb": "POST /grade-math-work",
+          "payload": "grading request",
+          "note": "Python grading returns solution coverage, classifications, and problem status."
+        },
+        {
+          "from": "grading-routes",
+          "to": "python-grading",
+          "verb": "grade_math_payload",
+          "payload": "normalized math work",
+          "note": "The equation/answer grader classifies the student's work."
+        },
+        {
+          "from": "scheduler",
+          "to": "flow-controller",
+          "verb": "onStateChange(snapshot)",
+          "payload": "pending/complete/error snapshot",
+          "note": "The controller merges recognition progress into problem state."
+        },
+        {
+          "from": "flow-controller",
+          "to": "model-shell",
+          "verb": "recognitionResults",
+          "payload": "debug inspector data",
+          "note": "Debug mode exposes candidates, lines, grading, and audit state."
+        }
+      ]
+    },
+    {
+      "id": "custom-problem",
+      "label": "Create Custom Problem",
+      "trigger": "LatexEquationDialog submit",
+      "summary": "Turns user-entered LaTeX into a new problem session, places it on the board, and connects recognition to it.",
+      "steps": [
+        {
+          "from": "latex-dialog",
+          "to": "app",
+          "verb": "onSubmit(latex)",
+          "payload": "LaTeX input",
+          "note": "The dialog is mounted only while problemFlow.awaitingEquation is true."
+        },
+        {
+          "from": "app",
+          "to": "flow-controller",
+          "verb": "createCustomProblem(latex)",
+          "payload": "normalized equation text",
+          "note": "The controller delegates validation and session creation to pure state."
+        },
+        {
+          "from": "flow-controller",
+          "to": "problem-flow",
+          "verb": "startCustomProblem()",
+          "payload": "flow + latex + viewportWidth",
+          "note": "A user-latex problem definition is created with problem metadata."
+        },
+        {
+          "from": "problem-flow",
+          "to": "whiteboard-math",
+          "verb": "getInitialProblemPosition / viewportForProblemPosition",
+          "payload": "last problem + board gap",
+          "note": "The custom problem is placed at the initial position or below the previous submitted problem."
+        },
+        {
+          "from": "flow-controller",
+          "to": "viewport-controller",
+          "verb": "moveHomeViewport()",
+          "payload": "target viewport",
+          "note": "The viewport moves to the new problem when needed."
+        },
+        {
+          "from": "problem-flow",
+          "to": "app",
+          "verb": "setProblemFlow",
+          "payload": "flow with custom problem",
+          "note": "awaitingEquation becomes false and activeProblemId points at the new session."
+        },
+        {
+          "from": "app",
+          "to": "problem-layer",
+          "verb": "problems prop",
+          "payload": "problemBox + answerBox + latex",
+          "note": "The custom equation appears on the board."
+        },
+        {
+          "from": "app",
+          "to": "model-shell",
+          "verb": "activeProblem + response",
+          "payload": "custom model response",
+          "note": "The shell shows the new problem and enables solving actions."
+        },
+        {
+          "from": "flow-controller",
+          "to": "scheduler",
+          "verb": "update() effect",
+          "payload": "new problemId + answerBox",
+          "note": "Recognition is now attached to the custom problem."
+        }
+      ]
+    },
+    {
+      "id": "recognition-audit",
+      "label": "Recognition Audit",
+      "trigger": "Recognition complete snapshot",
+      "summary": "Compacts recognition evidence, decides whether VLM review is needed, queues the audit, polls status, and shows the result in debug mode.",
+      "steps": [
+        {
+          "from": "scheduler",
+          "to": "flow-controller",
+          "verb": "complete snapshot",
+          "payload": "result + inputSignature",
+          "note": "Only new completed signatures are considered for audit."
+        },
+        {
+          "from": "flow-controller",
+          "to": "audit-client",
+          "verb": "getRecognitionAuditDecision()",
+          "payload": "grading + OCR + semantic signals",
+          "note": "Hard triggers include failed grading, unread lines, OCR failures, low confidence, and candidate conflicts."
+        },
+        {
+          "from": "audit-client",
+          "to": "audit-client",
+          "verb": "buildRecognitionAuditPayload()",
+          "payload": "problem + strokes + compact result",
+          "note": "The payload strips bulky image data and records previous audit id when available."
+        },
+        {
+          "from": "audit-client",
+          "to": "audit-routes",
+          "verb": "POST /audit-recognition",
+          "payload": "attemptId + triggerReasons + fastResult",
+          "note": "The API returns an audit id with HTTP 202."
+        },
+        {
+          "from": "audit-routes",
+          "to": "audit-routes",
+          "verb": "RecognitionAuditService.enqueue",
+          "payload": "job record",
+          "note": "The service writes/logs audit work according to server settings."
+        },
+        {
+          "from": "audit-client",
+          "to": "audit-routes",
+          "verb": "GET /audit-recognition/{auditId}",
+          "payload": "audit id",
+          "note": "Status polling updates queued, processing, logged, disabled, or error state."
+        },
+        {
+          "from": "flow-controller",
+          "to": "app",
+          "verb": "onRecognitionEvent()",
+          "payload": "recognition-audit-* event",
+          "note": "App stores audit status by problem id."
+        },
+        {
+          "from": "app",
+          "to": "model-shell",
+          "verb": "auditByProblemId",
+          "payload": "audit label + details",
+          "note": "The debug panel shows whether audit was queued, logged, skipped, or failed."
+        }
+      ]
+    },
+    {
+      "id": "initial-grading",
+      "label": "Initial Grading",
+      "trigger": "New active problem with LaTeX",
+      "summary": "Generates a baseline grading/solution payload for a problem before the student writes an answer.",
+      "steps": [
+        {
+          "from": "problem-flow",
+          "to": "flow-controller",
+          "verb": "activeProblem changed",
+          "payload": "problem id + latex + metadata",
+          "note": "The effect runs once per problem id."
+        },
+        {
+          "from": "flow-controller",
+          "to": "grading-client",
+          "verb": "gradeMathWork()",
+          "payload": "problemLatex + metadata + empty lines",
+          "note": "This is a non-blocking solution-generation call."
+        },
+        {
+          "from": "grading-client",
+          "to": "grading-routes",
+          "verb": "POST /grade-math-work",
+          "payload": "empty student work",
+          "note": "The server calls the configured math grading scorer."
+        },
+        {
+          "from": "grading-routes",
+          "to": "python-grading",
+          "verb": "grade_math_payload",
+          "payload": "problem statement",
+          "note": "The grader returns solution-set metadata and problem-level status."
+        },
+        {
+          "from": "flow-controller",
+          "to": "problem-flow",
+          "verb": "applyProblemGradingProgress()",
+          "payload": "grading result + source=python-grader",
+          "note": "The active problem stores baseline grading details when the call succeeds."
+        },
+        {
+          "from": "problem-flow",
+          "to": "model-shell",
+          "verb": "problemStatusDisplay()",
+          "payload": "grading-aware active problem",
+          "note": "The shell can show richer status/debug information from the precomputed grading."
+        }
+      ]
+    }
+  ]
+}

@@ -568,7 +568,6 @@ export async function recognizeStudentWriting(options = {}) {
       const pythonGrading = await gradeWork({
         problemLatex,
         problemMetadata,
-        manifest: answerManifest,
         lines: recognizedLines.map((line) => ({
           lineIndex: line.lineIndex,
           latex: line.acceptedLatex || line.latex || '',

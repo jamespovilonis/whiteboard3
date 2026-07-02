@@ -17,13 +17,15 @@ import urllib.request
 
 from PIL import Image, ImageDraw
 
-from src.grading import grade_equation_payload
+from src.grading import grade_math_payload
 from src.server.config import ServerSettings
 
 
 JSON_HEADERS = {"Content-Type": "application/json"}
 MAX_RENDER_SIDE = 1800
 RENDER_PADDING = 80
+VLM_TIMEOUT_CIRCUIT_FAILURES = 2
+VLM_TIMEOUT_CIRCUIT_SECONDS = 300.0
 
 
 class AuditSchemaError(ValueError):
@@ -91,7 +93,7 @@ class RecognitionAuditService:
         settings: ServerSettings,
         *,
         vlm_client: Optional[OpenAICompatibleVlmClient] = None,
-        grader: Callable[[dict[str, Any]], dict[str, Any]] = grade_equation_payload,
+        grader: Callable[[dict[str, Any]], dict[str, Any]] = grade_math_payload,
     ):
         self.settings = settings
         self.log_dir = Path(settings.audit_log_dir).expanduser()
@@ -104,6 +106,9 @@ class RecognitionAuditService:
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="whiteboard-audit")
         self._status_lock = Lock()
         self._statuses: dict[str, dict[str, Any]] = {}
+        self._vlm_health_lock = Lock()
+        self._consecutive_vlm_timeouts = 0
+        self._vlm_circuit_open_until = 0.0
 
     def enqueue(self, payload: dict[str, Any]) -> dict[str, Any]:
         audit_id = build_audit_id(payload)
@@ -176,12 +181,14 @@ class RecognitionAuditService:
             crops = {key: path for key, path in rendered.items() if isinstance(path, Path)}
             artifact_paths.update({key: str(path) for key, path in crops.items()})
             prompt = build_vlm_prompt(payload)
+            self._raise_if_vlm_circuit_open()
             raw_vlm, normalized = self._complete_and_normalize_vlm(
                 prompt=prompt,
                 image_paths=[crops["problemCrop"], crops["answerCrop"]],
                 audit_dir=audit_dir,
                 attempts=audit_attempts,
             )
+            self._record_vlm_success()
             write_json(audit_dir / "vlm_raw.json", raw_vlm)
 
             write_json(audit_dir / "vlm_normalized.json", normalized)
@@ -189,7 +196,6 @@ class RecognitionAuditService:
             vlm_grading = self.grader({
                 "problemLatex": payload.get("problemLatex") or "",
                 "problemMetadata": payload.get("problemMetadata") or {},
-                "manifest": fast_result.get("grading", {}).get("problem", {}).get("manifest"),
                 "lines": [
                     {"lineIndex": index, "latex": latex}
                     for index, latex in enumerate(normalized.get("latexLines") or [])
@@ -204,6 +210,7 @@ class RecognitionAuditService:
             write_json(audit_dir / "vlm_raw.json", raw_vlm or {"error": str(exc)})
         except Exception as exc:
             failure_kind = "vlm_unavailable"
+            self._record_vlm_unavailable(str(exc))
             comparison = failure_comparison("vlm_unavailable", str(exc), fast_result)
             write_json(audit_dir / "vlm_raw.json", {"error": str(exc)})
 
@@ -245,6 +252,29 @@ class RecognitionAuditService:
             "failureKind": failure_kind,
         })
         return summary
+
+    def _raise_if_vlm_circuit_open(self) -> None:
+        now = time.monotonic()
+        with self._vlm_health_lock:
+            remaining = self._vlm_circuit_open_until - now
+        if remaining > 0:
+            raise RuntimeError(f"VLM audit circuit open after repeated timeouts; retry in {remaining:.0f}s")
+
+    def _record_vlm_success(self) -> None:
+        with self._vlm_health_lock:
+            self._consecutive_vlm_timeouts = 0
+            self._vlm_circuit_open_until = 0.0
+
+    def _record_vlm_unavailable(self, error: str) -> None:
+        normalized_error = str(error).lower()
+        if "circuit open" in normalized_error:
+            return
+        if "timeout" not in normalized_error and "timed out" not in normalized_error:
+            return
+        with self._vlm_health_lock:
+            self._consecutive_vlm_timeouts += 1
+            if self._consecutive_vlm_timeouts >= VLM_TIMEOUT_CIRCUIT_FAILURES:
+                self._vlm_circuit_open_until = time.monotonic() + VLM_TIMEOUT_CIRCUIT_SECONDS
 
     def _complete_and_normalize_vlm(
         self,
@@ -480,6 +510,7 @@ def compare_audit_results(
     vlm_grading: dict[str, Any],
 ) -> dict[str, Any]:
     discrepancies: list[dict[str, Any]] = []
+    observations: list[dict[str, Any]] = []
     fast_grading = fast_result.get("grading") or {}
     fast_status = nested_get(fast_grading, ["result", "problemStatus"])
     vlm_status = nested_get(vlm_grading, ["result", "problemStatus"])
@@ -522,7 +553,7 @@ def compare_audit_results(
 
     visual_marks = normalized_vlm.get("visualMarks") or []
     if visual_marks:
-        discrepancies.append({
+        observations.append({
             "type": "visual_intent_observed",
             "description": f"VLM observed {len(visual_marks)} visual mark(s).",
             "visualMarks": visual_marks,
@@ -540,6 +571,7 @@ def compare_audit_results(
         "fastProblemStatus": fast_status,
         "vlmProblemStatus": vlm_status,
         "discrepancies": discrepancies,
+        "observations": observations,
         "description": describe_discrepancies(discrepancies),
     }
 
@@ -570,6 +602,7 @@ def build_event_summary(
     failure_kind: Optional[str],
 ) -> dict[str, Any]:
     discrepancies = comparison.get("discrepancies") or []
+    observations = comparison.get("observations") or []
     return {
         "auditId": audit_id,
         "createdAt": created_at.isoformat().replace("+00:00", "Z"),
@@ -582,6 +615,8 @@ def build_event_summary(
         "failureKind": failure_kind,
         "discrepancyCount": len(discrepancies),
         "discrepancyTypes": [item.get("type") for item in discrepancies if isinstance(item, dict)],
+        "observationCount": len(observations),
+        "observationTypes": [item.get("type") for item in observations if isinstance(item, dict)],
         "description": comparison.get("description") or "",
         "auditDir": str(audit_dir),
         "artifacts": artifact_paths,
@@ -616,6 +651,7 @@ def build_audit_metadata(
         ),
         "failureKind": failure_kind,
         "comparisonStatus": comparison.get("status"),
+        "observations": comparison.get("observations") or [],
         "problemId": payload.get("problemId"),
         "inputSignature": payload.get("inputSignature"),
         "attemptId": payload.get("attemptId"),
@@ -738,7 +774,16 @@ def describe_discrepancies(discrepancies: list[dict[str, Any]]) -> str:
 
 
 def normalize_latex_for_compare(value: str) -> str:
-    return re.sub(r"\s+", "", str(value or "")).lower()
+    normalized = str(value or "").lower()
+    previous = None
+    while previous != normalized:
+        previous = normalized
+        normalized = normalized.replace(r"\\", "\\")
+    normalized = re.sub(r"\s+", "", normalized)
+    normalized = re.sub(r"\^\{([^{}])\}", r"^\1", normalized)
+    normalized = re.sub(r"_\{([^{}])\}", r"_\1", normalized)
+    normalized = normalized.replace(r"\left", "").replace(r"\right", "")
+    return normalized
 
 
 def nested_get(value: Any, keys: list[str], default: Any = None) -> Any:

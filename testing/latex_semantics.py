@@ -29,7 +29,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.grading import create_answer_manifest, create_expression_manifest, grade_candidate_group
+from src.grading import (
+    create_answer_manifest,
+    create_expression_manifest,
+    grade_candidate_group,
+    manifest_is_usable_for_problem_type,
+    resolve_math_problem_type,
+)
 
 
 TRANSFORMATIONS = standard_transformations + (
@@ -3162,15 +3168,20 @@ def score_semantic_payload(payload: dict[str, Any]) -> dict[str, Any]:
     previous_latex = [str(item) for item in payload.get("previousLatex") or []]
     groups = payload.get("candidateGroups") or payload.get("candidates") or []
     problem_metadata = payload.get("problemMetadata") if isinstance(payload.get("problemMetadata"), dict) else {}
+    problem_type = resolve_math_problem_type({
+        "problemLatex": problem_latex,
+        "problemMetadata": problem_metadata,
+        "problemType": payload.get("problemType"),
+    })
     answer_manifest = payload.get("answerManifest") if isinstance(payload.get("answerManifest"), dict) else None
+    if not manifest_is_usable_for_problem_type(
+        answer_manifest,
+        problem_type=problem_type,
+        problem_raw=problem_latex,
+    ):
+        answer_manifest = None
     if answer_manifest is None:
-        problem_type = str(
-            payload.get("problemType") or
-            problem_metadata.get("problemType") or
-            problem_metadata.get("kind") or
-            "equation-solving"
-        )
-        if problem_type in {"evaluate-expression", "expression-evaluation", "numeric-expression"}:
+        if problem_type == "evaluate-expression":
             answer_manifest = create_expression_manifest(problem_latex)
         else:
             answer_manifest = create_answer_manifest(

@@ -9,6 +9,8 @@ from .equation_grader import (
     grade_expression_payload,
     grade_expression_work,
     grade_math_payload,
+    manifest_is_usable_for_problem_type,
+    resolve_math_problem_type,
 )
 
 __all__ = [
@@ -20,4 +22,6 @@ __all__ = [
     "grade_expression_payload",
     "grade_expression_work",
     "grade_math_payload",
+    "manifest_is_usable_for_problem_type",
+    "resolve_math_problem_type",
 ]

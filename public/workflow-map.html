@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Whiteboard Workflow Map</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --ink: #111827;
+      --muted: #5b6475;
+      --faint: #d9dee8;
+      --line: #c8d0df;
+      --active: #0f766e;
+      --active-2: #14b8a6;
+      --shadow: 0 16px 40px rgba(31, 41, 55, 0.12);
+      --radius: 8px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, rgba(247, 248, 251, 0.97), rgba(237, 241, 247, 0.98)),
+        repeating-linear-gradient(0deg, transparent 0, transparent 35px, rgba(148, 163, 184, 0.11) 36px),
+        repeating-linear-gradient(90deg, transparent 0, transparent 35px, rgba(148, 163, 184, 0.11) 36px);
+      color: var(--ink);
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 390px;
+      gap: 18px;
+      min-height: 100vh;
+      padding: 18px;
+    }
+
+    .workspace,
+    .inspector {
+      min-width: 0;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      box-shadow: var(--shadow);
+    }
+
+    .workspace {
+      display: flex;
+      flex-direction: column;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(260px, 0.8fr) minmax(360px, 1.2fr);
+      gap: 18px;
+      align-items: end;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--faint);
+      background: rgba(255, 255, 255, 0.94);
+    }
+
+    .title-block h1 {
+      margin: 0 0 7px;
+      font-size: 1.3rem;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .title-block p {
+      margin: 0;
+      max-width: 78ch;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 0.91rem;
+    }
+
+    .action-strip {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .action-btn {
+      min-height: 36px;
+      border: 1px solid #cbd5e1;
+      border-radius: var(--radius);
+      padding: 7px 11px;
+      color: #243044;
+      background: #f8fafc;
+      cursor: pointer;
+      transition: transform 130ms ease, border-color 130ms ease, background 130ms ease, color 130ms ease;
+    }
+
+    .action-btn:hover {
+      transform: translateY(-1px);
+      border-color: #94a3b8;
+      background: #fff;
+    }
+
+    .action-btn.active {
+      color: white;
+      border-color: var(--active);
+      background: var(--active);
+    }
+
+    .map-scroll {
+      position: relative;
+      flex: 1;
+      overflow: auto;
+      background: rgba(248, 250, 252, 0.9);
+    }
+
+    .map {
+      position: relative;
+      min-width: 1520px;
+      min-height: 1120px;
+    }
+
+    .group-band {
+      position: absolute;
+      width: 244px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.42);
+      pointer-events: none;
+    }
+
+    .group-band-label {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #334155;
+      font-size: 0.74rem;
+      font-weight: 760;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .group-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--group-color);
+    }
+
+    .edges {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      overflow: visible;
+    }
+
+    .edge-path {
+      fill: none;
+      stroke: rgba(15, 118, 110, 0.9);
+      stroke-width: 4;
+      stroke-linecap: round;
+      filter: drop-shadow(0 4px 6px rgba(15, 118, 110, 0.14));
+    }
+
+    .edge-path.backbone {
+      stroke: rgba(148, 163, 184, 0.55);
+      stroke-width: 1.5;
+      filter: none;
+    }
+
+    .annotation {
+      position: absolute;
+      z-index: 3;
+      width: 184px;
+      padding: 8px 9px;
+      border: 1px solid rgba(15, 118, 110, 0.28);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }
+
+    .annotation strong {
+      display: block;
+      color: var(--active);
+      font-size: 0.72rem;
+      line-height: 1.2;
+      margin-bottom: 3px;
+    }
+
+    .annotation span {
+      display: block;
+      color: #475569;
+      font-size: 0.7rem;
+      line-height: 1.25;
+    }
+
+    .node {
+      position: absolute;
+      z-index: 2;
+      width: 220px;
+      min-height: 92px;
+      padding: 12px;
+      border: 1px solid #ccd5e3;
+      border-left: 5px solid var(--group-color);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.95);
+      box-shadow: 0 10px 20px rgba(31, 41, 55, 0.08);
+      cursor: pointer;
+      transition: transform 150ms ease, opacity 150ms ease, border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
+    }
+
+    .node:hover {
+      transform: translateY(-2px);
+      border-color: #94a3b8;
+    }
+
+    .node.active {
+      border-color: var(--active);
+      background: #f0fdfa;
+      box-shadow: 0 16px 30px rgba(15, 118, 110, 0.18);
+    }
+
+    .node.dimmed {
+      opacity: 0.42;
+      box-shadow: none;
+    }
+
+    .node-title {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .node-title strong {
+      line-height: 1.16;
+      font-size: 0.95rem;
+    }
+
+    .node-kind {
+      flex: 0 0 auto;
+      padding: 3px 6px;
+      border-radius: 999px;
+      color: #475569;
+      background: #eef2f7;
+      font-size: 0.65rem;
+      font-weight: 760;
+      text-transform: uppercase;
+    }
+
+    .node p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.74rem;
+      line-height: 1.32;
+    }
+
+    .inspector {
+      position: sticky;
+      top: 18px;
+      align-self: start;
+      max-height: calc(100vh - 36px);
+      display: flex;
+      flex-direction: column;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .inspector-head {
+      padding: 18px;
+      border-bottom: 1px solid var(--faint);
+      background: #fff;
+    }
+
+    .flow-kicker {
+      margin: 0 0 8px;
+      color: var(--active);
+      font-size: 0.73rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .inspector h2 {
+      margin: 0;
+      font-size: 1.2rem;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .trigger {
+      margin: 10px 0 0;
+      color: #334155;
+      font-size: 0.88rem;
+      line-height: 1.35;
+    }
+
+    .summary {
+      margin: 9px 0 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+    }
+
+    .inspector-body {
+      overflow: auto;
+      padding: 14px 18px 18px;
+    }
+
+    .steps {
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: steps;
+    }
+
+    .step {
+      counter-increment: steps;
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      gap: 10px;
+      padding: 11px;
+      border: 1px solid #d8e0eb;
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .step::before {
+      content: counter(steps);
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: white;
+      background: var(--active);
+      font-size: 0.8rem;
+      font-weight: 800;
+    }
+
+    .step-route {
+      color: #0f172a;
+      font-size: 0.84rem;
+      font-weight: 760;
+      line-height: 1.25;
+    }
+
+    .step-verb {
+      margin-top: 4px;
+      color: var(--active);
+      font-size: 0.78rem;
+      font-weight: 760;
+      line-height: 1.25;
+    }
+
+    .step-payload {
+      margin-top: 6px;
+      color: #334155;
+      font-size: 0.78rem;
+      line-height: 1.35;
+    }
+
+    .step-note {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 0.76rem;
+      line-height: 1.4;
+    }
+
+    .node-detail {
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--faint);
+    }
+
+    .node-detail h3 {
+      margin: 0 0 8px;
+      font-size: 0.98rem;
+      line-height: 1.25;
+    }
+
+    .node-detail p {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.42;
+    }
+
+    .file-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .file-list li {
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      padding: 4px 7px;
+      border: 1px solid #d7deea;
+      border-radius: 999px;
+      color: #334155;
+      background: #f8fafc;
+      font-size: 0.72rem;
+    }
+
+    .loading,
+    .error {
+      padding: 24px;
+      color: var(--muted);
+    }
+
+    .error {
+      color: #991b1b;
+    }
+
+    @media (max-width: 1180px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      .inspector {
+        position: relative;
+        top: 0;
+        max-height: none;
+      }
+
+      .topbar {
+        grid-template-columns: 1fr;
+      }
+
+      .action-strip {
+        justify-content: flex-start;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .shell {
+        padding: 10px;
+      }
+
+      .topbar {
+        padding: 14px;
+      }
+
+      .action-btn {
+        flex: 1 1 150px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="workspace" aria-label="Workflow map">
+      <header class="topbar">
+        <div class="title-block">
+          <h1 id="page-title">Whiteboard Workflow Map</h1>
+          <p id="page-description">Loading workflow data...</p>
+        </div>
+        <nav id="action-strip" class="action-strip" aria-label="Workflow actions"></nav>
+      </header>
+      <div class="map-scroll">
+        <div id="map" class="map">
+          <div class="loading">Loading workflow map...</div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="inspector" aria-label="Selected workflow details">
+      <div class="inspector-head">
+        <p class="flow-kicker">Selected action</p>
+        <h2 id="flow-title">Loading</h2>
+        <p id="flow-trigger" class="trigger"></p>
+        <p id="flow-summary" class="summary"></p>
+      </div>
+      <div class="inspector-body">
+        <ol id="step-list" class="steps"></ol>
+        <section id="node-detail" class="node-detail" aria-live="polite"></section>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const state = {
+      data: null,
+      activeFlowId: null,
+      selectedNodeId: null,
+      nodeById: new Map(),
+      groupById: new Map()
+    };
+
+    const elements = {
+      title: document.getElementById('page-title'),
+      description: document.getElementById('page-description'),
+      actions: document.getElementById('action-strip'),
+      map: document.getElementById('map'),
+      flowTitle: document.getElementById('flow-title'),
+      flowTrigger: document.getElementById('flow-trigger'),
+      flowSummary: document.getElementById('flow-summary'),
+      stepList: document.getElementById('step-list'),
+      nodeDetail: document.getElementById('node-detail')
+    };
+
+    loadWorkflowData();
+
+    async function loadWorkflowData() {
+      try {
+        const response = await fetch('workflows.json', { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`Unable to load workflows.json (${response.status})`);
+        }
+        const data = await response.json();
+        initialize(data);
+      } catch (error) {
+        elements.map.innerHTML = `<div class="error">${escapeHtml(error.message)}. Serve this page through Vite or another local web server so it can fetch the JSON document.</div>`;
+        elements.flowTitle.textContent = 'Workflow data unavailable';
+        elements.flowSummary.textContent = 'The page renderer is ready, but the JSON document could not be fetched.';
+      }
+    }
+
+    function initialize(data) {
+      state.data = data;
+      state.nodeById = new Map(data.nodes.map((node) => [node.id, node]));
+      state.groupById = new Map(data.groups.map((group) => [group.id, group]));
+      elements.title.textContent = data.title || 'Workflow Map';
+      elements.description.textContent = data.description || '';
+      elements.map.style.minWidth = `${data.canvas?.width || 1520}px`;
+      elements.map.style.minHeight = `${data.canvas?.height || 1120}px`;
+      state.activeFlowId = flowFromHash() || data.flows[0]?.id || null;
+      renderActions();
+      renderMapShell();
+      selectFlow(state.activeFlowId);
+      window.addEventListener('hashchange', () => {
+        const next = flowFromHash();
+        if (next && next !== state.activeFlowId) selectFlow(next, { updateHash: false });
+      });
+    }
+
+    function flowFromHash() {
+      const id = decodeURIComponent((window.location.hash || '').replace(/^#/, ''));
+      return state.data?.flows.some((flow) => flow.id === id) ? id : null;
+    }
+
+    function renderActions() {
+      elements.actions.innerHTML = '';
+      for (const flow of state.data.flows) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'action-btn';
+        button.dataset.flowId = flow.id;
+        button.textContent = flow.label;
+        button.addEventListener('click', () => selectFlow(flow.id));
+        elements.actions.append(button);
+      }
+    }
+
+    function renderMapShell() {
+      elements.map.innerHTML = '';
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', 'edges');
+      svg.setAttribute('width', state.data.canvas?.width || 1520);
+      svg.setAttribute('height', state.data.canvas?.height || 1120);
+      svg.innerHTML = `
+        <defs>
+          <marker id="arrow-active" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L0,6 L8,3 z" fill="#0f766e"></path>
+          </marker>
+        </defs>
+      `;
+      elements.map.append(svg);
+
+      renderGroupBands();
+      renderNodes();
+    }
+
+    function renderGroupBands() {
+      const groupPositions = new Map();
+      for (const group of state.data.groups) {
+        const nodes = state.data.nodes.filter((node) => node.group === group.id);
+        if (!nodes.length) continue;
+        const minX = Math.min(...nodes.map((node) => node.x));
+        const maxX = Math.max(...nodes.map((node) => node.x + 220));
+        const minY = Math.min(...nodes.map((node) => node.y));
+        const maxY = Math.max(...nodes.map((node) => node.y + 92));
+        groupPositions.set(group.id, { minX, maxX });
+
+        const band = document.createElement('div');
+        band.className = 'group-band';
+        band.style.left = `${minX - 14}px`;
+        band.style.top = `${Math.max(22, minY - 70)}px`;
+        band.style.width = `${maxX - minX + 28}px`;
+        band.style.height = `${maxY - minY + 118}px`;
+        band.style.setProperty('--group-color', group.color);
+        band.innerHTML = `
+          <div class="group-band-label">
+            <span class="group-dot"></span>
+            <span>${escapeHtml(group.label)}</span>
+          </div>
+        `;
+        elements.map.append(band);
+      }
+    }
+
+    function renderNodes() {
+      for (const node of state.data.nodes) {
+        const group = state.groupById.get(node.group) || {};
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'node';
+        card.dataset.nodeId = node.id;
+        card.style.left = `${node.x}px`;
+        card.style.top = `${node.y}px`;
+        card.style.setProperty('--group-color', group.color || '#64748b');
+        card.innerHTML = `
+          <div class="node-title">
+            <strong>${escapeHtml(node.label)}</strong>
+            <span class="node-kind">${escapeHtml(node.kind)}</span>
+          </div>
+          <p>${escapeHtml(node.summary)}</p>
+        `;
+        card.addEventListener('click', () => selectNode(node.id));
+        elements.map.append(card);
+      }
+    }
+
+    function selectFlow(flowId, options = {}) {
+      const flow = state.data.flows.find((item) => item.id === flowId) || state.data.flows[0];
+      if (!flow) return;
+      state.activeFlowId = flow.id;
+      state.selectedNodeId = null;
+      if (options.updateHash !== false) {
+        history.replaceState(null, '', `#${encodeURIComponent(flow.id)}`);
+      }
+      for (const button of elements.actions.querySelectorAll('.action-btn')) {
+        button.classList.toggle('active', button.dataset.flowId === flow.id);
+      }
+      renderFlowDetails(flow);
+      renderActivePath(flow);
+      renderSelectedNodeDetail(null);
+    }
+
+    function selectNode(nodeId) {
+      state.selectedNodeId = nodeId;
+      renderNodeClasses(activeNodeIdsForFlow(currentFlow()));
+      renderSelectedNodeDetail(state.nodeById.get(nodeId));
+    }
+
+    function currentFlow() {
+      return state.data.flows.find((flow) => flow.id === state.activeFlowId) || null;
+    }
+
+    function renderFlowDetails(flow) {
+      elements.flowTitle.textContent = flow.label;
+      elements.flowTrigger.innerHTML = `<strong>Trigger:</strong> ${escapeHtml(flow.trigger)}`;
+      elements.flowSummary.textContent = flow.summary;
+      elements.stepList.innerHTML = '';
+      flow.steps.forEach((step) => {
+        const from = state.nodeById.get(step.from);
+        const to = state.nodeById.get(step.to);
+        const item = document.createElement('li');
+        item.className = 'step';
+        item.innerHTML = `
+          <div>
+            <div class="step-route">${escapeHtml(from?.label || step.from)} to ${escapeHtml(to?.label || step.to)}</div>
+            <div class="step-verb">${escapeHtml(step.verb)}</div>
+            <div class="step-payload"><strong>Passes:</strong> ${escapeHtml(step.payload)}</div>
+            <div class="step-note">${escapeHtml(step.note)}</div>
+          </div>
+        `;
+        elements.stepList.append(item);
+      });
+    }
+
+    function renderActivePath(flow) {
+      const activeNodeIds = activeNodeIdsForFlow(flow);
+      renderNodeClasses(activeNodeIds);
+      clearEdgesAndAnnotations();
+      renderBackboneEdges();
+      flow.steps.forEach((step, index) => drawFlowStep(step, index));
+    }
+
+    function activeNodeIdsForFlow(flow) {
+      const ids = new Set();
+      if (!flow) return ids;
+      for (const step of flow.steps) {
+        ids.add(step.from);
+        ids.add(step.to);
+      }
+      return ids;
+    }
+
+    function renderNodeClasses(activeNodeIds) {
+      for (const nodeEl of elements.map.querySelectorAll('.node')) {
+        const nodeId = nodeEl.dataset.nodeId;
+        nodeEl.classList.toggle('active', activeNodeIds.has(nodeId) || nodeId === state.selectedNodeId);
+        nodeEl.classList.toggle('dimmed', activeNodeIds.size > 0 && !activeNodeIds.has(nodeId) && nodeId !== state.selectedNodeId);
+      }
+    }
+
+    function clearEdgesAndAnnotations() {
+      const svg = elements.map.querySelector('.edges');
+      for (const path of svg.querySelectorAll('path.edge-path')) path.remove();
+      for (const annotation of elements.map.querySelectorAll('.annotation')) annotation.remove();
+    }
+
+    function renderBackboneEdges() {
+      const pairs = [
+        ['app', 'flow-controller'],
+        ['app', 'whiteboard-stage'],
+        ['app', 'model-shell'],
+        ['whiteboard-stage', 'canvas-engine'],
+        ['flow-controller', 'problem-flow'],
+        ['flow-controller', 'scheduler'],
+        ['scheduler', 'student-pipeline'],
+        ['student-pipeline', 'recognition-clients'],
+        ['student-pipeline', 'semantic-client'],
+        ['student-pipeline', 'grading-client'],
+        ['recognition-clients', 'recognition-routes'],
+        ['semantic-client', 'grading-routes'],
+        ['grading-client', 'grading-routes'],
+        ['grading-routes', 'python-grading'],
+        ['audit-client', 'audit-routes']
+      ];
+      for (const [from, to] of pairs) {
+        drawPath(from, to, 'edge-path backbone', null);
+      }
+    }
+
+    function drawFlowStep(step, index) {
+      const path = drawPath(step.from, step.to, 'edge-path', 'url(#arrow-active)');
+      if (path) {
+        path.style.strokeDasharray = `${Math.max(0, index - 1) * 2} 0`;
+      }
+      const midpoint = midpointBetween(step.from, step.to);
+      if (!midpoint) return;
+      const annotation = document.createElement('div');
+      annotation.className = 'annotation';
+      annotation.style.left = `${midpoint.x}px`;
+      annotation.style.top = `${midpoint.y + annotationOffset(index)}px`;
+      annotation.innerHTML = `
+        <strong>${index + 1}. ${escapeHtml(step.verb)}</strong>
+        <span>${escapeHtml(step.payload)}</span>
+      `;
+      elements.map.append(annotation);
+    }
+
+    function drawPath(fromId, toId, className, markerEnd) {
+      const from = state.nodeById.get(fromId);
+      const to = state.nodeById.get(toId);
+      if (!from || !to) return null;
+      const start = centerOf(from);
+      const end = centerOf(to);
+      const dx = Math.max(70, Math.abs(end.x - start.x) * 0.45);
+      const direction = end.x >= start.x ? 1 : -1;
+      const c1 = { x: start.x + dx * direction, y: start.y };
+      const c2 = { x: end.x - dx * direction, y: end.y };
+      const d = `M ${start.x} ${start.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.x} ${end.y}`;
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('class', className);
+      path.setAttribute('d', d);
+      if (markerEnd) path.setAttribute('marker-end', markerEnd);
+      elements.map.querySelector('.edges').append(path);
+      return path;
+    }
+
+    function centerOf(node) {
+      return {
+        x: Number(node.x) + 110,
+        y: Number(node.y) + 46
+      };
+    }
+
+    function midpointBetween(fromId, toId) {
+      const from = state.nodeById.get(fromId);
+      const to = state.nodeById.get(toId);
+      if (!from || !to) return null;
+      const a = centerOf(from);
+      const b = centerOf(to);
+      return {
+        x: (a.x + b.x) / 2,
+        y: (a.y + b.y) / 2
+      };
+    }
+
+    function annotationOffset(index) {
+      const offsets = [-24, 24, 0, -46, 46, -70, 70];
+      return offsets[index % offsets.length];
+    }
+
+    function renderSelectedNodeDetail(node) {
+      if (!node) {
+        elements.nodeDetail.innerHTML = `
+          <h3>Package details</h3>
+          <p>Click any package or component card to inspect its source files while keeping the selected flow highlighted.</p>
+        `;
+        return;
+      }
+      const group = state.groupById.get(node.group);
+      elements.nodeDetail.innerHTML = `
+        <h3>${escapeHtml(node.label)}</h3>
+        <p><strong>${escapeHtml(group?.label || node.group)}</strong> · ${escapeHtml(node.kind)}</p>
+        <p>${escapeHtml(node.summary)}</p>
+        <ul class="file-list">
+          ${(node.files || []).map((file) => `<li>${escapeHtml(file)}</li>`).join('')}
+        </ul>
+      `;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+  </script>
+</body>
+</html>

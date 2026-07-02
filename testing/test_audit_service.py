@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.grading import grade_equation_payload
+from src.grading import grade_equation_payload, grade_math_payload
 from src.server.config import ServerSettings
 from src.server.services.audit import RecognitionAuditService, normalize_vlm_response
 
@@ -98,8 +98,27 @@ class AuditServiceTests(unittest.TestCase):
             })
             summary = service.run_audit(audit_payload(), "audit_visual_mark")
 
-            self.assertEqual(summary["discrepancyCount"], 1)
-            self.assertEqual(summary["discrepancyTypes"], ["visual_intent_observed"])
+            self.assertEqual(summary["discrepancyCount"], 0)
+            self.assertEqual(summary["observationTypes"], ["visual_intent_observed"])
+            comparison = json.loads((Path(summary["auditDir"]) / "comparison.json").read_text())
+            self.assertEqual(comparison["observations"][0]["type"], "visual_intent_observed")
+
+    def test_evaluate_expression_vlm_transcript_uses_math_grader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": ["7"],
+                "lineObservations": [{"lineIndex": 0, "latex": "7", "confidence": 0.9}],
+                "visualMarks": [],
+                "overallConfidence": 0.9,
+                "notes": "clear",
+            })
+            summary = service.run_audit(evaluate_audit_payload(), "audit_evaluate")
+
+            self.assertEqual(summary["discrepancyCount"], 0)
+            self.assertEqual(summary["vlmProblemStatus"], "correct")
+            vlm_grading = json.loads((Path(summary["auditDir"]) / "vlm_grading.json").read_text())
+            self.assertEqual(vlm_grading["problem"]["resolvedProblemType"], "evaluate-expression")
+            self.assertEqual(vlm_grading["result"]["problemStatus"], "correct")
 
     def test_invalid_json_records_schema_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -140,6 +159,25 @@ class AuditServiceTests(unittest.TestCase):
             self.assertIn("ollama offline", summary["description"])
             metadata = json.loads((Path(summary["auditDir"]) / "audit_metadata.json").read_text())
             self.assertEqual(len(metadata["attempts"]), 1)
+
+    def test_repeated_timeouts_open_circuit_without_extra_vlm_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeVlmClient(None, error=RuntimeError("timed out"))
+            settings = ServerSettings(
+                audit_enabled=True,
+                audit_log_dir=directory,
+                vlm_audit_base_url="http://127.0.0.1:11434/v1",
+                vlm_audit_model="qwen3-vl:8b",
+            )
+            service = RecognitionAuditService(settings, vlm_client=client)
+
+            service.run_audit(audit_payload(), "audit_timeout_1")
+            service.run_audit(audit_payload(), "audit_timeout_2")
+            summary = service.run_audit(audit_payload(), "audit_timeout_3")
+
+            self.assertEqual(len(client.calls), 2)
+            self.assertEqual(summary["discrepancyTypes"], ["vlm_unavailable"])
+            self.assertIn("circuit open", summary["description"])
 
     def test_normalize_vlm_response_accepts_fenced_json(self):
         normalized = normalize_vlm_response({
@@ -217,6 +255,33 @@ def audit_payload() -> dict[str, Any]:
             },
         },
     }
+
+
+def evaluate_audit_payload() -> dict[str, Any]:
+    payload = audit_payload()
+    problem_latex = "10 - 3"
+    fast_grading = grade_math_payload({
+        "problemLatex": problem_latex,
+        "problemMetadata": {"problemType": "evaluate-expression"},
+        "lines": [{"lineIndex": 0, "latex": "7"}],
+    })
+    fast_grading = {"status": "complete", "failed": False, **fast_grading}
+    payload.update({
+        "problemLatex": problem_latex,
+        "problemMetadata": {"problemType": "evaluate-expression"},
+        "fastResult": {
+            **payload["fastResult"],
+            "latex": "7",
+            "latexLines": ["7"],
+            "grading": fast_grading,
+            "lines": [{
+                **payload["fastResult"]["lines"][0],
+                "acceptedLatex": "7",
+                "latex": "7",
+            }],
+        },
+    })
+    return payload
 
 
 if __name__ == "__main__":

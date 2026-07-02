@@ -1461,6 +1461,84 @@ test('recognition grading receives evaluate-expression problem metadata', async 
   assert.equal(gradeRequests.length, 1);
   assert.equal(gradeRequests[0].problemLatex, '\\frac{1}{2} + \\frac{2}{4}');
   assert.equal(gradeRequests[0].problemMetadata.problemType, 'evaluate-expression');
+  assert.equal(Object.hasOwn(gradeRequests[0], 'manifest'), false);
+});
+
+test('recognition final grading omits stale semantic manifests', async () => {
+  installFakeCanvas();
+  const gradeRequests = [];
+  const strokes = [stroke('eval-answer', 0, 0, 90, 40)];
+
+  await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 100, yMax: 50 },
+    problemLatex: '0.9 - 0.1',
+    problemMetadata: { problemType: 'evaluate-expression' },
+    apiUrl: 'http://mock-grader',
+    semanticScoring: true,
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '0.8',
+      top: { latex: '0.8', score: 2 },
+      candidates: [{ latex: '0.8', score: 2 }],
+      elapsedSeconds: 0.03
+    }),
+    scoreSemantics: async (request) => ({
+      answerManifest: {
+        problem_raw: request.problemLatex,
+        responseKind: 'solution_set',
+        error: 'problem must be an equation',
+        exact_set: []
+      },
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 1,
+        bestLatex: group.latex,
+        sound: false,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        grading: {
+          studentLatex: group.latex,
+          classification: 'other',
+          selectedCandidateIndex: 0,
+          solutionCoverage: 'none',
+          matchedSolutions: []
+        },
+        candidateScores: []
+      })),
+      elapsedSeconds: 0.01
+    }),
+    gradeWork: async (request) => {
+      gradeRequests.push(request);
+      return {
+        failed: false,
+        problem: {
+          latex: request.problemLatex,
+          resolvedProblemType: 'evaluate-expression',
+          cardinality: 'finite',
+          solutionSet: ['0.8'],
+          decimalSet: [0.8],
+          tolerance: 0.005,
+          manifest: {
+            responseKind: 'numeric_value',
+            exact_set: ['0.8']
+          }
+        },
+        steps: [],
+        result: {
+          problemStatus: 'correct',
+          breakdownLineIndex: null,
+          foundSolutions: ['0.8'],
+          missingSolutions: []
+        }
+      };
+    }
+  });
+
+  assert.equal(gradeRequests.length, 1);
+  assert.equal(gradeRequests[0].problemMetadata.problemType, 'evaluate-expression');
+  assert.equal(Object.hasOwn(gradeRequests[0], 'manifest'), false);
 });
 
 test('low-score semantic best does not overwrite a valid top OCR line', async () => {

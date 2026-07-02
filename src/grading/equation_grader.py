@@ -43,6 +43,8 @@ from .answer_grader import (
 DEFAULT_TOLERANCE = 0.005
 MAX_OCR_CANDIDATES = 5
 SYMPY_GRADER_BUDGET_SECONDS = 0.5
+EVALUATE_PROBLEM_TYPES = {"evaluate-expression", "expression-evaluation", "numeric-expression"}
+EQUATION_PROBLEM_TYPE = "equation-solving"
 TRANSFORMATIONS = standard_transformations + (
     implicit_multiplication_application,
     convert_xor,
@@ -329,46 +331,131 @@ def create_answer_manifest(
 def grade_equation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Grade a JSON-style payload from the gateway/client boundary."""
 
+    problem_raw = payload_problem_raw(payload)
     manifest = payload.get("manifest")
-    if not isinstance(manifest, dict):
-        problem_raw = (
-            payload.get("problem_raw") or
-            payload.get("problemRaw") or
-            payload.get("problemLatex") or
-            payload.get("problem") or
-            ""
-        )
-        variable = payload.get("variable")
-        if variable is None and isinstance(payload.get("problemMetadata"), dict):
-            variable = payload["problemMetadata"].get("solveVariable")
+    manifest_source = "payload"
+    if not manifest_is_usable_for_problem_type(
+        manifest,
+        problem_type=EQUATION_PROBLEM_TYPE,
+        problem_raw=problem_raw,
+    ):
+        variable = payload_solve_variable(payload)
         manifest = create_answer_manifest(str(problem_raw), variable=variable)
+        manifest_source = "generated"
 
     lines = payload.get("lines") or payload.get("studentLines") or []
-    return grade_equation_work(manifest, lines)
+    result = grade_equation_work(manifest, lines)
+    return annotate_grading_problem_metadata(
+        result,
+        resolved_problem_type=EQUATION_PROBLEM_TYPE,
+        manifest_source=manifest_source,
+        manifest=manifest,
+    )
 
 
 def grade_math_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Grade a generic math-work payload.
 
-    V1 supports equation solving and numeric expression evaluation. Missing
-    problem types preserve the existing equation-solving behavior.
+    V1 supports equation solving and numeric expression evaluation. Numeric
+    expression prompts without an equals sign are treated as evaluate mode even
+    when a stale caller sends equation metadata.
     """
 
-    problem_metadata = payload.get("problemMetadata") if isinstance(payload.get("problemMetadata"), dict) else {}
-    problem_type = str(
-        payload.get("problemType") or
-        problem_metadata.get("problemType") or
-        problem_metadata.get("kind") or
-        "equation-solving"
-    )
-    if problem_type in {"evaluate-expression", "expression-evaluation", "numeric-expression"}:
-        return grade_expression_payload(payload)
+    problem_type = resolve_math_problem_type(payload)
+    if problem_type == "evaluate-expression":
+        return grade_expression_payload({**payload, "problemType": problem_type})
 
     equation_payload = {
         **payload,
-        "problemType": "equation-solving",
+        "problemType": EQUATION_PROBLEM_TYPE,
     }
     return grade_equation_payload(equation_payload)
+
+
+def payload_problem_raw(payload: dict[str, Any]) -> str:
+    return str(
+        payload.get("problem_raw") or
+        payload.get("problemRaw") or
+        payload.get("problemLatex") or
+        payload.get("problem") or
+        ""
+    )
+
+
+def payload_solve_variable(payload: dict[str, Any]) -> Any:
+    variable = payload.get("variable")
+    if variable is None and isinstance(payload.get("problemMetadata"), dict):
+        variable = payload["problemMetadata"].get("solveVariable")
+    return variable
+
+
+def requested_problem_type(payload: dict[str, Any]) -> str:
+    problem_metadata = payload.get("problemMetadata") if isinstance(payload.get("problemMetadata"), dict) else {}
+    return str(
+        payload.get("problemType") or
+        problem_metadata.get("problemType") or
+        problem_metadata.get("kind") or
+        EQUATION_PROBLEM_TYPE
+    ).strip()
+
+
+def resolve_math_problem_type(payload: dict[str, Any]) -> str:
+    """Resolve the authoritative grader mode for a boundary payload."""
+
+    requested = requested_problem_type(payload)
+    if requested in EVALUATE_PROBLEM_TYPES:
+        return "evaluate-expression"
+
+    problem_raw = payload_problem_raw(payload).strip()
+    if problem_raw and "=" not in problem_raw:
+        expression_manifest = create_expression_manifest(problem_raw)
+        if not expression_manifest.get("error"):
+            return "evaluate-expression"
+
+    return EQUATION_PROBLEM_TYPE
+
+
+def expected_manifest_response_kind(problem_type: str) -> str:
+    return "numeric_value" if problem_type in EVALUATE_PROBLEM_TYPES else "solution_set"
+
+
+def manifest_response_kind(manifest: Any) -> str:
+    if not isinstance(manifest, dict):
+        return ""
+    return str(manifest.get("responseKind") or manifest.get("response_kind") or "")
+
+
+def manifest_is_usable_for_problem_type(
+    manifest: Any,
+    *,
+    problem_type: str,
+    problem_raw: str,
+) -> bool:
+    if not isinstance(manifest, dict):
+        return False
+    if manifest_response_kind(manifest) != expected_manifest_response_kind(problem_type):
+        return False
+    if str(manifest.get("problem_raw") or "").strip() != str(problem_raw or "").strip():
+        return False
+    if manifest.get("error"):
+        return False
+    return True
+
+
+def annotate_grading_problem_metadata(
+    result: dict[str, Any],
+    *,
+    resolved_problem_type: str,
+    manifest_source: str,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    problem = result.get("problem")
+    if isinstance(problem, dict):
+        problem["resolvedProblemType"] = resolved_problem_type
+        problem["manifestSource"] = manifest_source
+        problem["manifestResponseKind"] = manifest_response_kind(manifest)
+        problem["manifestError"] = manifest.get("error") if isinstance(manifest, dict) else None
+    return result
 
 
 def create_expression_manifest(
@@ -427,19 +514,25 @@ def create_expression_manifest(
 
 
 def grade_expression_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    problem_raw = payload_problem_raw(payload)
     manifest = payload.get("manifest")
-    if not isinstance(manifest, dict):
-        problem_raw = (
-            payload.get("problem_raw") or
-            payload.get("problemRaw") or
-            payload.get("problemLatex") or
-            payload.get("problem") or
-            ""
-        )
+    manifest_source = "payload"
+    if not manifest_is_usable_for_problem_type(
+        manifest,
+        problem_type="evaluate-expression",
+        problem_raw=problem_raw,
+    ):
         manifest = create_expression_manifest(str(problem_raw))
+        manifest_source = "generated"
 
     lines = payload.get("lines") or payload.get("studentLines") or []
-    return grade_expression_work(manifest, lines)
+    result = grade_expression_work(manifest, lines)
+    return annotate_grading_problem_metadata(
+        result,
+        resolved_problem_type="evaluate-expression",
+        manifest_source=manifest_source,
+        manifest=manifest,
+    )
 
 
 def grade_equation_work(
@@ -1677,11 +1770,13 @@ def is_reduced_fraction_literal(text: str, evaluated: sympy.Expr) -> bool:
         cleaned = re.sub(r"\((-?\d+)\)", r"\1", cleaned)
         cleaned = strip_outer_parentheses(cleaned)
 
-    match = re.fullmatch(r"(-?\d+)/(-?\d+)", cleaned)
+    match = re.fullmatch(r"(-?)\(?(-?\d+)/(-?\d+)\)?", cleaned)
     if not match:
         return False
-    numerator = int(match.group(1))
-    denominator = int(match.group(2))
+    numerator = int(match.group(2))
+    denominator = int(match.group(3))
+    if match.group(1):
+        numerator = -numerator
     if denominator == 0 or math.gcd(numerator, denominator) != 1:
         return False
     try:
@@ -1872,9 +1967,9 @@ def replace_structural_latex(text: str) -> str:
     while index < len(text):
         if text.startswith(r"\frac", index):
             after_command = skip_spaces(text, index + 5)
-            numerator, after_numerator = extract_group(text, after_command)
+            numerator, after_numerator = extract_group_or_compact_token(text, after_command)
             after_numerator = skip_spaces(text, after_numerator)
-            denominator, after_denominator = extract_group(text, after_numerator)
+            denominator, after_denominator = extract_group_or_compact_token(text, after_numerator)
             result.append(
                 "((" + replace_structural_latex(numerator) + ")/(" +
                 replace_structural_latex(denominator) + "))"
@@ -1953,6 +2048,23 @@ def extract_group(text: str, opening_index: int) -> tuple[str, int]:
             if depth == 0:
                 return text[opening_index + 1:index], index + 1
     raise GradingParseFailure("unbalanced LaTeX braces")
+
+
+def extract_group_or_compact_token(text: str, opening_index: int) -> tuple[str, int]:
+    if opening_index < len(text) and text[opening_index] == "{":
+        return extract_group(text, opening_index)
+    if opening_index >= len(text):
+        raise GradingParseFailure("expected a braced LaTeX group")
+
+    if text[opening_index] == "\\":
+        command = re.match(r"\\[A-Za-z]+", text[opening_index:])
+        if command:
+            end = opening_index + len(command.group(0))
+            return text[opening_index:end], end
+        if opening_index + 1 < len(text):
+            return text[opening_index:opening_index + 2], opening_index + 2
+
+    return text[opening_index], opening_index + 1
 
 
 def extract_bracket(text: str, opening_index: int) -> tuple[str, int]:
