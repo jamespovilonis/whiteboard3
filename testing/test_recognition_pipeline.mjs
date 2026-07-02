@@ -38,6 +38,10 @@ import {
   startCustomProblem,
   submitActiveProblem
 } from '../src/state/problemFlow.js';
+import {
+  loadRealHandwritingFixtures,
+  strokeGroupKey
+} from './real_handwriting_fixtures.mjs';
 
 const FLOW_TEST_PROBLEMS = Object.freeze([
   {
@@ -4441,6 +4445,46 @@ test('incremental scheduler matches one-shot recognition on messy synthetic late
   }
 });
 
+test('student writing pipeline handles distilled real handwriting trace fixtures', async () => {
+  installFakeCanvas();
+  const fixtures = loadRealHandwritingFixtures();
+  assert.equal(fixtures.length, 6);
+
+  for (const fixture of fixtures) {
+    const fakeReaders = fakeReadersForRealTrace(fixture);
+    const result = await recognizeStudentWriting({
+      strokes: fixture.strokes,
+      answerBox: fixture.answerBox,
+      problemLatex: fixture.problemLatex,
+      problemMetadata: {
+        source: 'testing/fixtures/real_handwriting',
+        sourceAuditId: fixture.sourceAuditId,
+        expectedLatexLines: fixture.expectedLatexLines,
+        fastLatexLines: fixture.fastLatexLines,
+        knownDiscrepancyTypes: fixture.knownDiscrepancyTypes
+      },
+      detectLineBands: false,
+      semanticScoring: false,
+      recognizeAlternatives: false,
+      chunkFallback: false,
+      recognizeLine: fakeReaders.recognizeLine,
+      gradeWork: null
+    });
+
+    const expectedGroups = fixture.expectedLineGroups.map((group) => strokeGroupKey(group.strokeIds));
+    const selectedGroups = result.segmentation.selected.map((line) => strokeGroupKey(line.strokeIds));
+    const expectedStrokeIds = new Set(fixture.expectedLineGroups.flatMap((group) => group.strokeIds));
+    const finalStrokeIds = new Set(result.lines.flatMap((line) => line.strokeIds || []));
+
+    assert.deepEqual(selectedGroups, expectedGroups, fixture.slug);
+    assert.deepEqual([...finalStrokeIds].sort(), [...expectedStrokeIds].sort(), fixture.slug);
+    assert.ok(result.lines.length > 0, fixture.slug);
+    assert.ok(result.lines.length <= fixture.expectedLineGroups.length, fixture.slug);
+    assert.equal(result.grading.status, 'complete', fixture.slug);
+    assert.notEqual(result.realtime?.allFinal, false, fixture.slug);
+  }
+});
+
 test('full recognition preserves deterministic rational rows when detector merges them', async () => {
   installFakeCanvas();
   const board = syntheticCatalogBoard('rational_quadratic_solve', {
@@ -5520,9 +5564,16 @@ test('VLM audit payload removes embedded crop data URLs', () => {
     }),
     strokes: [{
       id: 'stroke-a',
+      startTime: 1000,
+      endTime: 1048,
+      points: [
+        { x: 0.0012345, y: 0.0023456, t: 0, pressure: 0.5012 },
+        { x: 0.0045678, y: 0.0067891, t: 48, pressure: 0.6123 }
+      ],
       rawPoints: [{ x: 1, y: 2, pressure: 0.5 }],
       outlinePoints: [{ x: 1, y: 2 }, { x: 4, y: 2 }, { x: 4, y: 6 }],
-      canvasBbox: { xMin: 1, yMin: 2, xMax: 4, yMax: 6 }
+      canvasBbox: { xMin: 1, yMin: 2, xMax: 4, yMax: 6 },
+      relationsToPrev: { dx: 0.123456, dy: -0.25, dt: 480.4, overlapRatio: 0.333333 }
     }],
     inputSignature: 'sig-d',
     triggerReasons: ['normal_sample']
@@ -5530,6 +5581,9 @@ test('VLM audit payload removes embedded crop data URLs', () => {
 
   assert.equal(payload.problemId, 'problem-a');
   assert.equal(payload.strokes.length, 1);
+  assert.deepEqual(payload.strokes[0].points.map((point) => point.t), [0, 48]);
+  assert.equal(payload.strokes[0].relationsToPrev.dt, 480);
+  assert.ok(payload.strokes[0].relationsToPrev.overlapRatio > 0.333);
   assert.equal(payload.fastResult.lines[0].image, undefined);
   assert.equal(JSON.stringify(payload).includes('data:image/png'), false);
 });
@@ -5910,6 +5964,32 @@ function fakeReadersForSyntheticBoard(board, strokes) {
         candidates: [
           { latex: latex || 'x', score: 3 },
           { latex: 'x', score: 0.1 }
+        ],
+        elapsedSeconds: 0.01
+      };
+    }
+  };
+}
+
+function fakeReadersForRealTrace(fixture) {
+  const lineByStrokeKey = new Map(
+    (fixture.expectedLineGroups || []).map((group) => [
+      strokeGroupKey(group.strokeIds),
+      group
+    ])
+  );
+
+  return {
+    recognizeLine: async (image) => {
+      const key = strokeGroupKey(image.strokeIds || []);
+      const group = lineByStrokeKey.get(key);
+      const latex = group?.latex || fixture.fastLatexLines?.[0] || fixture.expectedLatexLines?.[0] || 'x';
+      return {
+        latex,
+        top: { latex, score: 3, confidence: 0.99 },
+        candidates: [
+          { latex, score: 3, confidence: 0.99 },
+          { latex: fixture.expectedLatexLines?.[0] || latex, score: 0.1, confidence: 0.2 }
         ],
         elapsedSeconds: 0.01
       };

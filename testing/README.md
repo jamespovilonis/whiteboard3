@@ -44,6 +44,34 @@ separate to exercise semantic scoring against the actual problem context.
 python3 -m unittest discover testing
 ```
 
+## Real Handwriting Trace Fixtures
+
+The committed fixtures under `testing/fixtures/real_handwriting/` are distilled
+from local VLM audit logs. They preserve anonymized board-space strokes,
+relative timing, reviewed line groups, visual-mark metadata, and both the fast
+pipeline transcript and VLM transcript.
+
+Regenerate the curated seed drafts from the local audit log directory:
+
+```sh
+npm run fixtures:real-handwriting
+```
+
+The distiller reads `WHITEBOARD_AUDIT_LOG_DIR` when set, otherwise it uses the
+local default audit log path. Review `expectedLineGroups` before committing a
+new trace; those groups are the CI-gated segmentation expectation. The normal
+segmentation suite consumes these fixtures directly:
+
+```sh
+npm run test:segmentation
+```
+
+To replay a committed trace through the browser with the real OCR gateway:
+
+```sh
+npm run test:e2e:real:traces
+```
+
 Run the broader offline segmentation matrix:
 
 ```sh

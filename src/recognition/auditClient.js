@@ -1,4 +1,5 @@
 export const DEFAULT_AUDIT_NORMAL_SAMPLE_RATE = 0.10;
+const MAX_COMPACT_STROKE_POINTS = 96;
 const previousAuditIdByProblemId = new Map();
 
 export function getRecognitionAuditDecision(result = {}, options = {}) {
@@ -284,21 +285,61 @@ function compactStrokes(strokes = []) {
     id: String(stroke.id || ''),
     startTime: stroke.startTime ?? null,
     endTime: stroke.endTime ?? null,
+    points: compactPoints(stroke.points, { includeTime: true, normalized: true }),
     rawPoints: compactPoints(stroke.rawPoints),
     outlinePoints: compactPoints(stroke.outlinePoints),
     color: stroke.color || '#000000',
     canvasBbox: clonePlain(stroke.canvasBbox || null),
-    bbox: clonePlain(stroke.bbox || null)
+    bbox: clonePlain(stroke.bbox || null),
+    relationsToPrev: compactRelations(stroke.relationsToPrev || null)
   }));
 }
 
-function compactPoints(points = []) {
+function compactPoints(points = [], options = {}) {
   if (!Array.isArray(points)) return [];
-  return points.map((point) => ({
-    x: Number(point?.x) || 0,
-    y: Number(point?.y) || 0,
-    pressure: Number.isFinite(Number(point?.pressure)) ? Number(point.pressure) : null
-  }));
+  return downsamplePoints(points, MAX_COMPACT_STROKE_POINTS).map((point) => {
+    const compact = {
+      x: quantize(point?.x, options.normalized ? 0.0001 : 0.01),
+      y: quantize(point?.y, options.normalized ? 0.0001 : 0.01),
+      pressure: Number.isFinite(Number(point?.pressure))
+        ? quantize(point.pressure, 0.001)
+        : null
+    };
+    if (options.includeTime && Number.isFinite(Number(point?.t))) {
+      compact.t = quantize(point.t, 1);
+    }
+    return compact;
+  });
+}
+
+function compactRelations(relations = null) {
+  if (!relations || typeof relations !== 'object') return null;
+  return {
+    dx: quantize(relations.dx, 0.0001),
+    dy: quantize(relations.dy, 0.0001),
+    dt: quantize(relations.dt, 1),
+    overlapRatio: quantize(relations.overlapRatio, 0.0001)
+  };
+}
+
+function downsamplePoints(points, maxPoints) {
+  if (!Array.isArray(points) || points.length <= maxPoints) return points || [];
+  if (maxPoints <= 2) return points.slice(0, maxPoints);
+
+  const out = [];
+  const lastIndex = points.length - 1;
+  for (let index = 0; index < maxPoints; index += 1) {
+    const sourceIndex = Math.round((index / (maxPoints - 1)) * lastIndex);
+    out.push(points[sourceIndex]);
+  }
+  return out;
+}
+
+function quantize(value, step) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  const quantum = Number(step) || 1;
+  return Math.round(numeric / quantum) * quantum;
 }
 
 function hasUnreadLine(result = {}) {

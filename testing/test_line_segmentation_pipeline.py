@@ -20,6 +20,7 @@ from synthetic_handwriting import place_handwriting_lines
 
 
 SEGMENTER = ROOT / "testing" / "segment_fixture_with_js.mjs"
+REAL_HANDWRITING_FIXTURE_DIR = TESTING_DIR / "fixtures" / "real_handwriting"
 
 
 def run_segmentation(board, order: str = "line-order") -> dict[str, Any]:
@@ -36,6 +37,17 @@ def run_segmentation_payload(payload: dict[str, Any], order: str = "line-order")
         capture_output=True,
     )
     return json.loads(completed.stdout)
+
+
+def load_real_handwriting_fixtures() -> list[dict[str, Any]]:
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(REAL_HANDWRITING_FIXTURE_DIR.glob("*.json"))
+    ]
+
+
+def stroke_group_key(stroke_ids: list[str]) -> str:
+    return "|".join(sorted(map(str, stroke_ids or [])))
 
 
 def assert_clean_line_cover(testcase: unittest.TestCase, result: dict[str, Any], expected_count: int):
@@ -104,6 +116,31 @@ class LineSegmentationPipelineTests(unittest.TestCase):
         board = build_board(problem.name, spacing="tight-steps", seed=119, ink_style="messy")
         result = run_segmentation(board, order="interleaved-lines")
         assert_clean_line_cover(self, result, len(problem.lines))
+
+    def test_segments_distilled_real_handwriting_trace_fixtures(self):
+        fixtures = load_real_handwriting_fixtures()
+        self.assertGreaterEqual(len(fixtures), 6)
+
+        for fixture in fixtures:
+            with self.subTest(slug=fixture["slug"]):
+                result = run_segmentation_payload(fixture, order="line-order")
+                expected_keys = sorted(
+                    stroke_group_key(group["strokeIds"])
+                    for group in fixture["expectedLineGroups"]
+                )
+                actual_keys = sorted(
+                    stroke_group_key(candidate["strokeIds"])
+                    for candidate in result["selected"]
+                )
+
+                self.assertEqual(result["strokeCount"], len(fixture["strokes"]))
+                self.assertEqual(actual_keys, expected_keys, msg=json.dumps(result["selected"], indent=2))
+                for candidate in result["selected"]:
+                    self.assertEqual(
+                        len(candidate.get("expectedLineSets") or []),
+                        1,
+                        msg=f"Selected trace candidate mixes reviewed groups: {json.dumps(candidate, indent=2)}",
+                    )
 
     def test_compact_final_fraction_survives_messy_tight_steps(self):
         problem = get_problem("rational_solve")

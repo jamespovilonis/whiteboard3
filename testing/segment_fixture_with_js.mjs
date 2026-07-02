@@ -10,7 +10,7 @@ for await (const chunk of process.stdin) {
 }
 
 const board = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-const strokes = contoursForOrder(board.lines || [], order);
+const strokes = strokesForBoard(board, order);
 const result = segmentMathLines(strokes, {
   answerBox: board.answerBox || null,
   detections: board.detections || []
@@ -26,7 +26,7 @@ const rescoredSelected = scoreByCandidateId
 const payload = {
   order,
   strokeCount: strokes.length,
-  expectedLines: (board.lines || []).length,
+  expectedLines: expectedLineCount(board),
   candidateCount: result.candidates.length,
   selectedCount: result.selected.length,
   partitions: Object.fromEntries(
@@ -39,6 +39,59 @@ const payload = {
 };
 
 process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+
+function strokesForBoard(board, mode) {
+  if (Array.isArray(board.strokes)) {
+    return directStrokesForOrder(board.strokes, mode);
+  }
+  return contoursForOrder(board.lines || [], mode);
+}
+
+function directStrokesForOrder(strokes, mode) {
+  const ordered = strokes
+    .filter((stroke) => stroke?.canvasBbox)
+    .map((stroke) => ({
+      ...stroke,
+      rawPoints: stroke.rawPoints || [],
+      outlinePoints: stroke.outlinePoints || stroke.rawPoints || []
+    }));
+
+  if (mode === 'reverse-lines') {
+    return ordered.slice().reverse();
+  }
+  if (mode === 'interleaved-lines' && ordered.some((stroke) => Number.isInteger(stroke.expectedLineIndex))) {
+    return interleaveExpectedLineStrokes(ordered);
+  }
+  return ordered.slice().sort((a, b) => strokeTime(a) - strokeTime(b));
+}
+
+function interleaveExpectedLineStrokes(strokes) {
+  const byLine = new Map();
+  for (const stroke of strokes) {
+    const lineIndex = Number.isInteger(stroke.expectedLineIndex) ? stroke.expectedLineIndex : -1;
+    if (!byLine.has(lineIndex)) byLine.set(lineIndex, []);
+    byLine.get(lineIndex).push(stroke);
+  }
+  for (const values of byLine.values()) {
+    values.sort((a, b) => strokeTime(a) - strokeTime(b));
+  }
+  const lineIndexes = [...byLine.keys()].sort((a, b) => a - b);
+  const maxLength = Math.max(0, ...[...byLine.values()].map((values) => values.length));
+  const ordered = [];
+  for (let strokeIndex = 0; strokeIndex < maxLength; strokeIndex += 1) {
+    for (const lineIndex of lineIndexes) {
+      const stroke = byLine.get(lineIndex)?.[strokeIndex];
+      if (stroke) ordered.push(stroke);
+    }
+  }
+  return ordered;
+}
+
+function expectedLineCount(board) {
+  if (Array.isArray(board.expectedLineGroups)) return board.expectedLineGroups.length;
+  if (Array.isArray(board.expectedLatexLines)) return board.expectedLatexLines.length;
+  return (board.lines || []).length;
+}
 
 function contoursForOrder(lines, mode) {
   const items = orderedContours(lines, mode);
@@ -96,9 +149,14 @@ function bbox(points) {
 }
 
 function summarizeCandidate(candidate) {
-  const lineIndexes = [...new Set(
+  const syntheticLineIndexes = [...new Set(
     (candidate.strokes || [])
       .map((stroke) => stroke.syntheticLineIndex)
+      .filter((value) => value !== undefined && value !== null)
+  )].sort((a, b) => a - b);
+  const expectedLineIndexes = [...new Set(
+    (candidate.strokes || [])
+      .map((stroke) => stroke.expectedLineIndex)
       .filter((value) => value !== undefined && value !== null)
   )].sort((a, b) => a - b);
 
@@ -109,10 +167,14 @@ function summarizeCandidate(candidate) {
     strokeCount: candidate.strokeIds.length,
     strokes: (candidate.strokes || []).map(summarizeStroke),
     bbox: candidate.tightBbox,
-    syntheticLineSets: lineIndexes,
-    syntheticLatex: lineIndexes.map((index) => candidate.strokes.find((stroke) => (
+    syntheticLineSets: syntheticLineIndexes,
+    syntheticLatex: syntheticLineIndexes.map((index) => candidate.strokes.find((stroke) => (
       stroke.syntheticLineIndex === index
-    ))?.syntheticLatex || null)
+    ))?.syntheticLatex || null),
+    expectedLineSets: expectedLineIndexes,
+    expectedLatex: expectedLineIndexes.map((index) => candidate.strokes.find((stroke) => (
+      stroke.expectedLineIndex === index
+    ))?.expectedLatex || null)
   };
 }
 
@@ -123,5 +185,12 @@ function summarizeStroke(stroke) {
     rawPoints: stroke.rawPoints || stroke.outlinePoints || [],
     syntheticLineIndex: stroke.syntheticLineIndex,
     syntheticLatex: stroke.syntheticLatex || null,
+    expectedLineIndex: stroke.expectedLineIndex ?? null,
+    expectedLatex: stroke.expectedLatex || null,
   };
+}
+
+function strokeTime(stroke) {
+  const start = Number(stroke?.startTime);
+  return Number.isFinite(start) ? start : 0;
 }
