@@ -1,4 +1,5 @@
 export const DEFAULT_AUDIT_NORMAL_SAMPLE_RATE = 0.10;
+export const RECOGNITION_AUDIT_PROMPT_VERSION = 'recognition-audit-v2';
 const MAX_COMPACT_STROKE_POINTS = 96;
 const previousAuditIdByProblemId = new Map();
 
@@ -100,6 +101,7 @@ export function buildRecognitionAuditPayload({
     answerBox: clonePlain(problem.answerBox),
     inputSignature,
     attemptId: buildAttemptId(problemId, inputSignature),
+    promptVersion: RECOGNITION_AUDIT_PROMPT_VERSION,
     previousAuditId,
     triggerReasons: triggerReasons.slice(),
     strokes: compactStrokes(strokes),
@@ -119,6 +121,7 @@ export function compactRecognitionResult(result = {}) {
     lines: (result.lines || []).map(compactLine),
     candidatePredictions: (result.candidatePredictions || []).map(compactLine),
     selectionSummary: compactSelectionSummary(result),
+    annotationAttachments: compactAnnotationAttachments(result),
     segmentation: {
       selected: (result.segmentation?.selected || []).map(compactCandidate),
       candidates: (result.segmentation?.candidates || []).map(compactCandidate),
@@ -188,8 +191,149 @@ function compactLine(line = {}) {
     selectionReason: line.selectionReason || selectionReasonForLine(line),
     timing: clonePlain(line.timing || null),
     realtimeStatus: line.realtimeStatus || null,
-    provisional: Boolean(line.provisional)
+    provisional: Boolean(line.provisional),
+    annotationAttachment: compactLineAnnotationAttachment(line)
   };
+}
+
+function compactAnnotationAttachments(result = {}) {
+  const lines = Array.isArray(result.lines) ? result.lines : [];
+  const linesByCandidateId = new Map(lines
+    .filter((line) => line?.candidateId)
+    .map((line) => [String(line.candidateId), line]));
+  const equationLines = lines.filter((line) => line?.tightBbox && /[=]/.test(String(line?.acceptedLatex || line?.latex || '')));
+
+  const attachments = lines
+    .map((line) => buildAnnotationAttachment(line, { linesByCandidateId, equationLines }))
+    .filter(Boolean);
+
+  const pairGroups = new Map();
+  for (const attachment of attachments) {
+    const pairKey = [
+      attachment.targetLineIndex ?? 'na',
+      attachment.operand || attachment.operatorLatex || '',
+    ].join('|');
+    if (!pairGroups.has(pairKey)) pairGroups.set(pairKey, []);
+    pairGroups.get(pairKey).push(attachment);
+  }
+  for (const [pairKey, group] of pairGroups.entries()) {
+    const hasLeft = group.some((item) => item.equationSide === 'left');
+    const hasRight = group.some((item) => item.equationSide === 'right');
+    const hasBoth = group.some((item) => item.equationSide === 'both');
+    if (!(hasBoth || (hasLeft && hasRight))) continue;
+    for (const attachment of group) {
+      attachment.pairedAnnotationId = `pair:${pairKey}`;
+    }
+  }
+
+  return attachments;
+}
+
+function compactLineAnnotationAttachment(line = {}) {
+  const attachment = buildAnnotationAttachment(line, {
+    linesByCandidateId: new Map(),
+    equationLines: []
+  });
+  return attachment || null;
+}
+
+function buildAnnotationAttachment(line = {}, { linesByCandidateId, equationLines } = {}) {
+  const repair = line?.ocrRepair || null;
+  const source = String(repair?.source || '');
+  const rawLatex = String(
+    repair?.originalLatex ||
+    line?.ocrLatex ||
+    line?.acceptedLatex ||
+    line?.latex ||
+    ''
+  ).trim();
+  const operand = String(repair?.operand || detachedOperationOperand(rawLatex) || '').trim();
+  const annotationBbox = normalizedBox(repair?.annotationBbox || line?.tightBbox || null);
+  if (!annotationBbox) return null;
+
+  const derivedFromRepair = source === 'geometry-operation-annotation';
+  const inferredDetached = looksLikeDetachedOperationAnnotation(rawLatex);
+  if (!derivedFromRepair && !inferredDetached) return null;
+
+  const anchor = resolveAttachmentAnchor(line, { linesByCandidateId, equationLines, repair });
+  const repairedLatex = String(repair?.repairedLatex || '').trim();
+  const equationSide = (
+    derivedFromRepair && hasSymmetricOperationRepair(repairedLatex, operand)
+      ? 'both'
+      : classifyAnnotationSide(annotationBbox, anchor?.tightBbox || null)
+  );
+  const operatorLatex = rawLatex || String(line?.acceptedLatex || line?.latex || '').trim();
+  return {
+    operatorLatex,
+    operand: operand || null,
+    targetLineIndex: Number.isFinite(Number(anchor?.lineIndex)) ? Number(anchor.lineIndex) : null,
+    targetCandidateId: anchor?.candidateId || null,
+    equationSide,
+    pairedAnnotationId: null,
+    attachmentConfidence: derivedFromRepair ? 0.95 : 0.7,
+    source: derivedFromRepair ? 'geometry-operation-annotation' : 'detached-operation-heuristic',
+    anchorBbox: clonePlain(anchor?.tightBbox || null),
+    annotationBbox: clonePlain(annotationBbox),
+    repairedLatex: repairedLatex || null,
+  };
+}
+
+function resolveAttachmentAnchor(line = {}, { linesByCandidateId, equationLines, repair } = {}) {
+  const anchorCandidateId = repair?.anchorCandidateId ? String(repair.anchorCandidateId) : '';
+  if (anchorCandidateId && linesByCandidateId?.has(anchorCandidateId)) {
+    return linesByCandidateId.get(anchorCandidateId) || null;
+  }
+  if (line?.tightBbox && Array.isArray(equationLines) && equationLines.length) {
+    return nearestEquationLine(line.tightBbox, equationLines);
+  }
+  return null;
+}
+
+function nearestEquationLine(annotationBbox, equationLines = []) {
+  const annotationCenterY = bboxYCenter(annotationBbox);
+  return equationLines
+    .map((line) => {
+      const anchorBox = normalizedBox(line?.tightBbox || null);
+      if (!anchorBox) return null;
+      const verticalGap = Math.max(0, Math.max(anchorBox.yMin - annotationBbox.yMax, annotationBbox.yMin - anchorBox.yMax));
+      const horizontalSpan = Math.max(0, Math.min(anchorBox.xMax, annotationBbox.xMax) - Math.max(anchorBox.xMin, annotationBbox.xMin));
+      const score = verticalGap + Math.abs(annotationCenterY - bboxYCenter(anchorBox)) * 0.2 - horizontalSpan * 0.01;
+      return { line, score };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.score - b.score)[0]?.line || null;
+}
+
+function classifyAnnotationSide(annotationBbox, anchorBbox) {
+  const annotation = normalizedBox(annotationBbox);
+  const anchor = normalizedBox(anchorBbox);
+  if (!annotation || !anchor) return 'unknown';
+
+  const anchorMidX = (anchor.xMin + anchor.xMax) / 2;
+  const width = Math.max(1, anchor.xMax - anchor.xMin);
+  const leftSpan = annotation.xMin <= anchorMidX - width * 0.08;
+  const rightSpan = annotation.xMax >= anchorMidX + width * 0.08;
+  const centerX = (annotation.xMin + annotation.xMax) / 2;
+  const spanningMidpoint = annotation.xMin <= anchorMidX && annotation.xMax >= anchorMidX;
+
+  if (spanningMidpoint || (leftSpan && rightSpan)) return 'both';
+  if (centerX < anchorMidX) return 'left';
+  if (centerX > anchorMidX) return 'right';
+  return 'both';
+}
+
+function hasSymmetricOperationRepair(repairedLatex = '', operand = '') {
+  const normalized = String(repairedLatex || '').replace(/\s+/g, ' ').trim();
+  const normalizedOperand = String(operand || '').trim();
+  if (!normalized || !normalizedOperand) return false;
+  return normalized === `\\times ${normalizedOperand} \\times ${normalizedOperand}` ||
+    normalized === `\\cdot ${normalizedOperand} \\cdot ${normalizedOperand}`;
+}
+
+function bboxYCenter(box) {
+  const normalized = normalizedBox(box);
+  if (!normalized) return 0;
+  return (normalized.yMin + normalized.yMax) / 2;
 }
 
 function compactSelectionSummary(result = {}) {
@@ -388,6 +532,23 @@ function hasCandidateSelectionConflict(result = {}) {
     if (grading?.solutionCoverage !== 'full') return false;
     return (result.lines || []).some((line) => boxesOverlap(line?.tightBbox, entry.tightBbox) >= 0.55);
   });
+}
+
+function detachedOperationOperand(latex = '') {
+  const normalized = String(latex || '')
+    .replace(/\\cdot/g, '*')
+    .replace(/\\times/g, '*')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized || /[=<>+\-/]/.test(normalized)) return '';
+
+  const subscript = normalized.match(/^(?:x|X|\*)\s*_\s*\{\s*((?:\d\s*){1,5})\s*\}$/);
+  if (subscript) return (subscript[1].match(/\d/g) || []).join('');
+
+  const single = normalized.match(/^(?:\*\s*)?((?:\d\s*){1,5})(?:\s*(?:\.|\*))?$/) ||
+    normalized.match(/^(?:\.|\*)\s*((?:\d\s*){1,5})$/);
+  if (!single) return '';
+  return (single[1].match(/\d/g) || []).join('');
 }
 
 function looksLikeDetachedOperationAnnotation(latex = '') {

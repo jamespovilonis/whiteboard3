@@ -67,8 +67,11 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(metadata["comparisonStatus"], "complete")
             self.assertIn("answerContext", metadata["artifactTypes"])
             self.assertIn("answerContext", metadata["cropBoxes"])
+            self.assertEqual(metadata["prompt_version"], "recognition-audit-v2")
+            self.assertEqual(metadata["attached_images"], ["problemCrop", "answerCrop", "answerContext"])
             self.assertEqual(summary["comparisonStatus"], "complete")
             self.assertIn("answerContext", summary["artifactTypes"])
+            self.assertEqual(summary["eventStage"], "terminal")
 
     def test_disagreement_records_status_and_solution_discrepancies(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -86,6 +89,7 @@ class AuditServiceTests(unittest.TestCase):
             comparison = json.loads((Path(summary["auditDir"]) / "comparison.json").read_text())
             self.assertEqual(comparison["fastProblemStatus"], "correct")
             self.assertEqual(comparison["vlmProblemStatus"], "incorrect")
+            self.assertIn("grading", comparison["discrepancies"][0]["source"])
 
     def test_visual_mark_only_records_visual_intent(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -102,6 +106,7 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(summary["observationTypes"], ["visual_intent_observed"])
             comparison = json.loads((Path(summary["auditDir"]) / "comparison.json").read_text())
             self.assertEqual(comparison["observations"][0]["type"], "visual_intent_observed")
+            self.assertEqual(len(comparison["observation_only_discrepancies"]), 1)
 
     def test_evaluate_expression_vlm_transcript_uses_math_grader(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -128,6 +133,9 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(summary["discrepancyTypes"], ["vlm_schema_error"])
             self.assertEqual(summary["failureKind"], "vlm_schema_error")
             self.assertTrue((Path(summary["auditDir"]) / "vlm_raw.json").exists())
+            raw = json.loads((Path(summary["auditDir"]) / "vlm_raw.json").read_text())
+            self.assertEqual(raw["failureKind"], "vlm_schema_error")
+            self.assertIn("parserError", raw)
 
     def test_schema_failure_is_retried_and_preserves_attempt_raw(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -148,6 +156,7 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(len(metadata["attempts"]), 2)
             self.assertEqual(metadata["attempts"][0]["failureKind"], "vlm_schema_error")
             self.assertTrue((audit_dir / "vlm_raw_attempt_1.json").exists())
+            self.assertEqual(metadata["attempts"][1]["prompt_version"], "recognition-audit-v2")
 
     def test_unavailable_vlm_records_unavailable_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -159,6 +168,7 @@ class AuditServiceTests(unittest.TestCase):
             self.assertIn("ollama offline", summary["description"])
             metadata = json.loads((Path(summary["auditDir"]) / "audit_metadata.json").read_text())
             self.assertEqual(len(metadata["attempts"]), 1)
+            self.assertEqual(metadata["failure_stage"], "requesting_vlm")
 
     def test_repeated_timeouts_open_circuit_without_extra_vlm_call(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -178,6 +188,65 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(len(client.calls), 2)
             self.assertEqual(summary["discrepancyTypes"], ["vlm_unavailable"])
             self.assertIn("circuit open", summary["description"])
+
+    def test_zero_and_letter_o_are_normalized_for_line_compare(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": ["5 = O"],
+                "lineObservations": [{"lineIndex": 0, "latex": "5 = O", "confidence": 0.9}],
+                "visualMarks": [],
+                "overallConfidence": 0.9,
+                "notes": "clear",
+            })
+            summary = service.run_audit(zero_o_audit_payload(), "audit_zero_o")
+
+            self.assertEqual(summary["discrepancyCount"], 0)
+
+    def test_annotation_attachment_mismatch_is_recorded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": [r"\frac{7}{3}"],
+                "lineObservations": [{"lineIndex": 0, "latex": r"\frac{7}{3}", "confidence": 0.9}],
+                "visualMarks": [],
+                "annotationAttachments": [{
+                    "operatorLatex": "(x+1)",
+                    "targetLineIndex": 0,
+                    "equationSide": "left",
+                    "attachmentConfidence": 0.9,
+                }],
+                "overallConfidence": 0.9,
+                "notes": "detached operation seen on left side",
+            })
+            summary = service.run_audit(annotation_audit_payload(), "audit_annotation_mismatch")
+
+            self.assertIn("equation_side_operation_annotation_mismatch", summary["discrepancyTypes"])
+            metadata = json.loads((Path(summary["auditDir"]) / "audit_metadata.json").read_text())
+            self.assertEqual(metadata["annotation_attachments"][0]["equation_side"], "left")
+
+    def test_grader_failure_still_writes_terminal_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = ServerSettings(
+                audit_enabled=True,
+                audit_log_dir=directory,
+                vlm_audit_base_url="http://127.0.0.1:11434/v1",
+                vlm_audit_model="qwen3-vl:8b",
+            )
+            service = RecognitionAuditService(
+                settings,
+                vlm_client=FakeVlmClient({
+                    "latexLines": ["x = 4"],
+                    "lineObservations": [{"lineIndex": 0, "latex": "x = 4", "confidence": 0.9}],
+                    "visualMarks": [],
+                    "overallConfidence": 0.9,
+                }),
+                grader=lambda _payload: (_ for _ in ()).throw(RuntimeError("grader exploded")),
+            )
+            summary = service.run_audit(audit_payload(), "audit_internal_failure")
+
+            self.assertEqual(summary["failureKind"], "audit_internal_error")
+            self.assertEqual(summary["failureStage"], "grading_vlm")
+            event_log = (Path(directory) / "audit_events.jsonl").read_text()
+            self.assertIn("audit_internal_error", event_log)
 
     def test_normalize_vlm_response_accepts_fenced_json(self):
         normalized = normalize_vlm_response({
@@ -220,6 +289,7 @@ def audit_payload() -> dict[str, Any]:
         "answerBox": {"xMin": 0, "yMin": 160, "xMax": 500, "yMax": 360},
         "inputSignature": "problem-a::stroke-a",
         "triggerReasons": ["normal_sample"],
+        "promptVersion": "recognition-audit-v2",
         "strokes": [{
             "id": "stroke-a",
             "rawPoints": [
@@ -237,6 +307,7 @@ def audit_payload() -> dict[str, Any]:
         "fastResult": {
             "latex": "x = 4",
             "latexLines": ["x = 4"],
+            "annotationAttachments": [],
             "grading": fast_grading,
             "lines": [{
                 "lineIndex": 0,
@@ -245,6 +316,7 @@ def audit_payload() -> dict[str, Any]:
                 "tightBbox": {"xMin": 80, "yMin": 210, "xMax": 170, "yMax": 270},
                 "acceptedLatex": "x = 4",
                 "latex": "x = 4",
+                "annotationAttachment": None,
             }],
             "segmentation": {
                 "selected": [{
@@ -281,6 +353,43 @@ def evaluate_audit_payload() -> dict[str, Any]:
             }],
         },
     })
+    return payload
+
+
+def zero_o_audit_payload() -> dict[str, Any]:
+    payload = audit_payload()
+    payload["problemLatex"] = "x + 5 = x"
+    payload["problemMetadata"] = {"problemType": "equation-solving"}
+    payload["fastResult"]["latex"] = "5 = 0"
+    payload["fastResult"]["latexLines"] = ["5 = 0"]
+    payload["fastResult"]["lines"][0]["acceptedLatex"] = "5 = 0"
+    payload["fastResult"]["lines"][0]["latex"] = "5 = 0"
+    payload["fastResult"]["grading"] = {
+        "status": "complete",
+        "failed": False,
+        **grade_equation_payload({
+            "problemLatex": "x + 5 = x",
+            "lines": [{"lineIndex": 0, "latex": "5 = 0"}],
+        }),
+    }
+    return payload
+
+
+def annotation_audit_payload() -> dict[str, Any]:
+    payload = audit_payload()
+    payload["problemLatex"] = r"\frac{x-1}{x+1}=4"
+    payload["triggerReasons"] = ["detached_operation_annotation"]
+    payload["fastResult"]["latex"] = r"\frac{x-1}{x+1}=4"
+    payload["fastResult"]["latexLines"] = [r"\frac{x-1}{x+1}=4"]
+    payload["fastResult"]["lines"][0]["acceptedLatex"] = r"\frac{x-1}{x+1}=4"
+    payload["fastResult"]["lines"][0]["latex"] = r"\frac{x-1}{x+1}=4"
+    payload["fastResult"]["annotationAttachments"] = [{
+        "operatorLatex": "(x+1)",
+        "targetLineIndex": 0,
+        "equationSide": "both",
+        "pairedAnnotationId": "pair:0|(x+1)",
+        "attachmentConfidence": 0.95,
+    }]
     return payload
 
 

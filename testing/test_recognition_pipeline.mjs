@@ -5652,6 +5652,54 @@ test('VLM audit payload removes embedded crop data URLs', () => {
   assert.equal(JSON.stringify(payload).includes('data:image/png'), false);
 });
 
+test('VLM audit payload carries structured annotation attachments', () => {
+  const anchor = auditLine({
+    lineIndex: 0,
+    candidateId: 'eq-line',
+    latex: '\\frac { x - 1 } { x + 1 } = 4',
+    acceptedLatex: '\\frac { x - 1 } { x + 1 } = 4',
+    tightBbox: { xMin: 120, yMin: 80, xMax: 520, yMax: 160 }
+  });
+  const annotation = auditLine({
+    lineIndex: 1,
+    candidateId: 'annotation-line',
+    latex: '\\times 4 \\times 4',
+    acceptedLatex: '\\times 4 \\times 4',
+    ocrLatex: '4*',
+    tightBbox: { xMin: 140, yMin: 10, xMax: 500, yMax: 70 },
+    ocrRepair: {
+      source: 'geometry-operation-annotation',
+      originalLatex: '4*',
+      repairedLatex: '\\times 4 \\times 4',
+      operand: '4',
+      anchorCandidateId: 'eq-line',
+      anchorBbox: { xMin: 120, yMin: 80, xMax: 520, yMax: 160 },
+      annotationBbox: { xMin: 140, yMin: 10, xMax: 500, yMax: 70 }
+    }
+  });
+
+  const payload = buildRecognitionAuditPayload({
+    problem: {
+      id: 'problem-b',
+      latex: '\\frac { x - 1 } { x + 1 } = 4',
+      metadata: {}
+    },
+    result: auditResult({
+      lines: [anchor, annotation],
+      candidatePredictions: [anchor, annotation]
+    }),
+    strokes: [],
+    inputSignature: 'sig-annotation',
+    triggerReasons: ['detached_operation_annotation']
+  });
+
+  assert.equal(payload.promptVersion, 'recognition-audit-v2');
+  assert.equal(payload.fastResult.annotationAttachments.length, 1);
+  assert.equal(payload.fastResult.annotationAttachments[0].targetLineIndex, 0);
+  assert.equal(payload.fastResult.annotationAttachments[0].equationSide, 'both');
+  assert.equal(payload.fastResult.annotationAttachments[0].pairedAnnotationId, 'pair:0|4');
+});
+
 function auditResult(options = {}) {
   const grading = options.grading || {
     status: 'complete',
@@ -5720,6 +5768,7 @@ function auditLine(options = {}) {
       failed: false,
       timedOut: false
     },
+    ocrRepair: options.ocrRepair ?? null,
     evidenceScore: options.evidenceScore ?? 3,
     timing: { submitToFinalPredictionSeconds: 0.1 }
   };

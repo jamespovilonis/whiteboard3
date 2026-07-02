@@ -26,10 +26,16 @@ MAX_RENDER_SIDE = 1800
 RENDER_PADDING = 80
 VLM_TIMEOUT_CIRCUIT_FAILURES = 2
 VLM_TIMEOUT_CIRCUIT_SECONDS = 300.0
+AUDIT_PROMPT_VERSION = "recognition-audit-v2"
+AUDIT_IMAGE_NAMES = ("problemCrop", "answerCrop", "answerContext")
 
 
 class AuditSchemaError(ValueError):
     """Raised when the VLM response cannot be normalized."""
+
+    def __init__(self, message: str, *, raw_response: Any = None):
+        super().__init__(message)
+        self.raw_response = raw_response
 
 
 class OpenAICompatibleVlmClient:
@@ -170,29 +176,39 @@ class RecognitionAuditService:
         crop_boxes: dict[str, Any] = {}
         audit_attempts: list[dict[str, Any]] = []
         failure_kind: str | None = None
-        comparison: dict[str, Any]
+        failure_stage = "initializing"
+        comparison: dict[str, Any] | None = None
         normalized: dict[str, Any] | None = None
         vlm_grading: dict[str, Any] | None = None
         raw_vlm: dict[str, Any] | None = None
+        prompt_version = str(payload.get("promptVersion") or AUDIT_PROMPT_VERSION)
+        attached_images: list[str] = []
 
         try:
+            failure_stage = "rendering_artifacts"
             rendered = render_audit_images(payload, audit_dir)
             crop_boxes = rendered.pop("cropBoxes", {})
             crops = {key: path for key, path in rendered.items() if isinstance(path, Path)}
             artifact_paths.update({key: str(path) for key, path in crops.items()})
             prompt = build_vlm_prompt(payload)
+            attached_images = [name for name in AUDIT_IMAGE_NAMES if name in crops]
+            failure_stage = "requesting_vlm"
             self._raise_if_vlm_circuit_open()
             raw_vlm, normalized = self._complete_and_normalize_vlm(
                 prompt=prompt,
-                image_paths=[crops["problemCrop"], crops["answerCrop"]],
+                image_paths=[crops[name] for name in attached_images],
+                image_names=attached_images,
                 audit_dir=audit_dir,
                 attempts=audit_attempts,
+                prompt_version=prompt_version,
+                audit_id=audit_id,
             )
             self._record_vlm_success()
             write_json(audit_dir / "vlm_raw.json", raw_vlm)
 
             write_json(audit_dir / "vlm_normalized.json", normalized)
 
+            failure_stage = "grading_vlm"
             vlm_grading = self.grader({
                 "problemLatex": payload.get("problemLatex") or "",
                 "problemMetadata": payload.get("problemMetadata") or {},
@@ -203,41 +219,73 @@ class RecognitionAuditService:
             })
             vlm_grading = {"status": "complete", "failed": False, **vlm_grading}
             write_json(audit_dir / "vlm_grading.json", vlm_grading)
+            failure_stage = "comparing_results"
             comparison = compare_audit_results(fast_result, normalized, vlm_grading)
         except AuditSchemaError as exc:
             failure_kind = "vlm_schema_error"
+            failure_stage = "normalizing_vlm"
             comparison = failure_comparison("vlm_schema_error", str(exc), fast_result)
-            write_json(audit_dir / "vlm_raw.json", raw_vlm or {"error": str(exc)})
+            write_json(audit_dir / "vlm_raw.json", schema_error_payload(exc, raw_vlm))
         except Exception as exc:
-            failure_kind = "vlm_unavailable"
-            self._record_vlm_unavailable(str(exc))
-            comparison = failure_comparison("vlm_unavailable", str(exc), fast_result)
-            write_json(audit_dir / "vlm_raw.json", {"error": str(exc)})
+            if failure_stage in {"requesting_vlm", "normalizing_vlm"}:
+                failure_kind = "vlm_unavailable"
+                self._record_vlm_unavailable(str(exc))
+                comparison = failure_comparison("vlm_unavailable", str(exc), fast_result)
+                write_json(audit_dir / "vlm_raw.json", unavailable_error_payload(exc, failure_stage))
+            else:
+                failure_kind = "audit_internal_error"
+                comparison = failure_comparison("audit_internal_error", str(exc), fast_result)
+        if comparison is None:
+            failure_kind = failure_kind or "audit_internal_error"
+            comparison = failure_comparison(failure_kind, "audit did not produce a comparison result", fast_result)
 
-        write_json(audit_dir / "comparison.json", comparison)
         failure_kind = failure_kind or first_failure_kind(comparison)
-        write_json(audit_dir / "audit_metadata.json", build_audit_metadata(
-            settings=self.settings,
-            audit_id=audit_id,
-            payload=payload,
-            comparison=comparison,
-            artifact_paths=artifact_paths,
-            crop_boxes=crop_boxes,
-            attempts=audit_attempts,
-            failure_kind=failure_kind,
-        ))
-        summary = build_event_summary(
-            audit_id=audit_id,
-            created_at=now,
-            payload=payload,
-            comparison=comparison,
-            audit_dir=audit_dir,
-            artifact_paths=artifact_paths,
-            normalized=normalized,
-            vlm_grading=vlm_grading,
-            failure_kind=failure_kind,
-        )
-        append_jsonl(self.log_dir / "audit_events.jsonl", summary)
+        try:
+            write_json(audit_dir / "comparison.json", comparison)
+            write_json(audit_dir / "audit_metadata.json", build_audit_metadata(
+                settings=self.settings,
+                audit_id=audit_id,
+                payload=payload,
+                comparison=comparison,
+                artifact_paths=artifact_paths,
+                crop_boxes=crop_boxes,
+                attempts=audit_attempts,
+                failure_kind=failure_kind,
+                failure_stage=failure_stage,
+                prompt_version=prompt_version,
+                normalized=normalized,
+                attached_images=attached_images,
+            ))
+            summary = build_event_summary(
+                audit_id=audit_id,
+                created_at=now,
+                payload=payload,
+                comparison=comparison,
+                audit_dir=audit_dir,
+                artifact_paths=artifact_paths,
+                normalized=normalized,
+                vlm_grading=vlm_grading,
+                failure_kind=failure_kind,
+                failure_stage=failure_stage,
+                prompt_version=prompt_version,
+                attempts=audit_attempts,
+                attached_images=attached_images,
+            )
+            append_jsonl(self.log_dir / "audit_events.jsonl", summary)
+        except Exception as exc:
+            summary = {
+                "auditId": audit_id,
+                "createdAt": now.isoformat().replace("+00:00", "Z"),
+                "eventStage": "terminal",
+                "problemId": payload.get("problemId"),
+                "comparisonStatus": "failed",
+                "failureKind": "audit_internal_error",
+                "failureStage": "writing_artifacts",
+                "description": f"Failed to persist audit artifacts: {exc}",
+                "auditDir": str(audit_dir),
+                "prompt_version": prompt_version,
+            }
+            append_jsonl(self.log_dir / "audit_events.jsonl", summary)
         self._set_status(audit_id, {
             "auditId": audit_id,
             "status": "logged",
@@ -281,34 +329,59 @@ class RecognitionAuditService:
         *,
         prompt: str,
         image_paths: list[Path],
+        image_names: list[str],
         audit_dir: Path,
         attempts: list[dict[str, Any]],
+        prompt_version: str,
+        audit_id: str,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         last_schema_error: AuditSchemaError | None = None
         for attempt_index in range(2):
             started = time.perf_counter()
             raw_vlm: dict[str, Any] | None = None
+            request_id = f"{audit_id}:attempt:{attempt_index + 1}"
             try:
                 raw_vlm = self.vlm_client.complete(prompt=prompt, image_paths=image_paths)
                 elapsed = time.perf_counter() - started
+                response_request_id = request_id_for_response(raw_vlm) or request_id
                 normalized = normalize_vlm_response(raw_vlm)
                 attempts.append({
                     "attempt": attempt_index + 1,
                     "status": "complete",
                     "elapsedSeconds": round(elapsed, 3),
+                    "requestId": response_request_id,
+                    "request_id": response_request_id,
+                    "promptVersion": prompt_version,
+                    "prompt_version": prompt_version,
+                    "attachedImages": list(image_names),
+                    "queueMs": None,
+                    "queue_ms": None,
+                    "inferenceMs": round(elapsed * 1000, 1),
+                    "inference_ms": round(elapsed * 1000, 1),
                 })
                 if attempt_index > 0:
                     write_json(audit_dir / f"vlm_raw_attempt_{attempt_index + 1}.json", raw_vlm)
                 return raw_vlm, normalized
             except AuditSchemaError as exc:
                 elapsed = time.perf_counter() - started
-                last_schema_error = exc
+                response_request_id = request_id_for_response(raw_vlm) or request_id
+                last_schema_error = AuditSchemaError(str(exc), raw_response=raw_vlm)
                 attempts.append({
                     "attempt": attempt_index + 1,
                     "status": "failed",
                     "failureKind": "vlm_schema_error",
                     "error": str(exc),
                     "elapsedSeconds": round(elapsed, 3),
+                    "failureStage": "normalizing_vlm",
+                    "requestId": response_request_id,
+                    "request_id": response_request_id,
+                    "promptVersion": prompt_version,
+                    "prompt_version": prompt_version,
+                    "attachedImages": list(image_names),
+                    "queueMs": None,
+                    "queue_ms": None,
+                    "inferenceMs": round(elapsed * 1000, 1),
+                    "inference_ms": round(elapsed * 1000, 1),
                 })
                 if raw_vlm is not None:
                     write_json(audit_dir / f"vlm_raw_attempt_{attempt_index + 1}.json", raw_vlm)
@@ -320,6 +393,16 @@ class RecognitionAuditService:
                     "failureKind": "vlm_unavailable",
                     "error": str(exc),
                     "elapsedSeconds": round(elapsed, 3),
+                    "failureStage": "requesting_vlm",
+                    "requestId": request_id,
+                    "request_id": request_id,
+                    "promptVersion": prompt_version,
+                    "prompt_version": prompt_version,
+                    "attachedImages": list(image_names),
+                    "queueMs": None,
+                    "queue_ms": None,
+                    "inferenceMs": round(elapsed * 1000, 1),
+                    "inference_ms": round(elapsed * 1000, 1),
                 })
                 raise
         if last_schema_error is not None:
@@ -346,21 +429,43 @@ def build_audit_id(payload: dict[str, Any]) -> str:
 def build_vlm_prompt(payload: dict[str, Any]) -> str:
     problem_latex = str(payload.get("problemLatex") or "").strip()
     trigger_reasons = payload.get("triggerReasons") or []
+    fast_attachments = flatten_annotation_attachments(
+        (payload.get("fastResult") or {}).get("annotationAttachments") or [],
+        source="fast",
+    )
+    attachment_context = ""
+    if fast_attachments:
+        summarized = [
+            {
+                "operator_latex": item.get("operator_latex"),
+                "target_line_index": item.get("target_line_index"),
+                "equation_side": item.get("equation_side"),
+            }
+            for item in fast_attachments[:6]
+        ]
+        attachment_context = (
+            "Fast OCR-side attachment hints (may be wrong): "
+            f"{json.dumps(summarized, sort_keys=True)}\n"
+        )
     return (
         "Read the student's handwritten math answer from the attached images. "
-        "The printed problem is not rendered in the image; it is provided here as LaTeX.\n\n"
+        "The printed problem is not rendered in the image; it is provided here as LaTeX. "
+        "The third image includes wider answer context only for interpreting detached operation marks.\n\n"
         f"Problem LaTeX: {problem_latex}\n"
         f"Audit trigger reasons: {', '.join(map(str, trigger_reasons)) or 'none'}\n\n"
+        f"{attachment_context}"
         "Return only a JSON object with this shape:\n"
         "{\n"
         "  \"latexLines\": [\"one LaTeX string per visible student math line\"],\n"
         "  \"lineObservations\": [{\"lineIndex\": 0, \"latex\": \"...\", \"confidence\": 0.0, \"notes\": \"...\"}],\n"
         "  \"visualMarks\": [{\"type\": \"circled_answer|boxed_answer|crossed_out|arrow|scratch|detached_operation_annotation|other\", \"lineIndex\": 0, \"latex\": \"...\", \"confidence\": 0.0, \"notes\": \"...\"}],\n"
+        "  \"annotationAttachments\": [{\"operatorLatex\": \"...\", \"targetLineIndex\": 0, \"equationSide\": \"left|right|both\", \"pairedAnnotationId\": \"...\", \"attachmentConfidence\": 0.0, \"notes\": \"...\"}],\n"
         "  \"overallConfidence\": 0.0,\n"
         "  \"notes\": \"short reason for anything suspicious\"\n"
         "}\n\n"
         "Confidence values must be numbers from 0 to 1. Use 0 only when the line or mark is unreadable, not as a placeholder. "
-        "Call out detached operation annotations such as multiplier/divider marks written beside both sides of an equation. "
+        "Call out detached operation annotations such as multiplier/divider marks written beside both sides of an equation, "
+        "and attach them to left, right, or both sides when possible. "
         "Do not decide whether the app is correct. Do not include markdown. "
         "Preserve visible intermediate lines, even if a final answer is circled."
     )
@@ -475,13 +580,18 @@ def normalize_vlm_response(raw_vlm: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(latex_lines, list):
         raise AuditSchemaError("VLM JSON must include latexLines as a list")
 
-    normalized_lines = [str(item).strip() for item in latex_lines if str(item or "").strip()]
+    normalized_lines = [normalize_vlm_latex_line(item) for item in latex_lines if str(item or "").strip()]
     line_observations = parsed.get("lineObservations") if isinstance(parsed.get("lineObservations"), list) else []
     visual_marks = parsed.get("visualMarks") if isinstance(parsed.get("visualMarks"), list) else []
+    annotation_attachments = parsed.get("annotationAttachments") if isinstance(parsed.get("annotationAttachments"), list) else []
+    normalized_attachments = flatten_annotation_attachments(annotation_attachments, source="vlm")
+    if not normalized_attachments:
+        normalized_attachments = attachments_from_visual_marks(visual_marks)
     return {
         "latexLines": normalized_lines,
         "lineObservations": [sanitize_json(item) for item in line_observations if isinstance(item, dict)],
         "visualMarks": [sanitize_json(item) for item in visual_marks if isinstance(item, dict)],
+        "annotationAttachments": normalized_attachments,
         "overallConfidence": clamp_float(parsed.get("overallConfidence"), default=None),
         "notes": str(parsed.get("notes") or "").strip(),
     }
@@ -504,6 +614,17 @@ def parse_json_content(content: str) -> dict[str, Any]:
     return parsed
 
 
+def normalize_vlm_latex_line(value: Any) -> str:
+    text = str(value or "").strip()
+    if "=" not in text:
+        return text
+    compact = re.sub(r"\s+", "", text).lower()
+    if "o" in compact and not re.search(r"[a-np-z]", compact):
+        text = re.sub(r"(?<![A-Za-z])O(?![A-Za-z])", "0", text)
+        text = re.sub(r"(?<![A-Za-z])o(?![A-Za-z])", "0", text)
+    return text
+
+
 def compare_audit_results(
     fast_result: dict[str, Any],
     normalized_vlm: dict[str, Any],
@@ -511,12 +632,14 @@ def compare_audit_results(
 ) -> dict[str, Any]:
     discrepancies: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
+    observation_only_discrepancies: list[dict[str, Any]] = []
     fast_grading = fast_result.get("grading") or {}
     fast_status = nested_get(fast_grading, ["result", "problemStatus"])
     vlm_status = nested_get(vlm_grading, ["result", "problemStatus"])
     if fast_status != vlm_status:
         discrepancies.append({
             "type": "problem_status_mismatch",
+            "source": "grading",
             "description": f"Fast grading status {fast_status!r} differs from VLM transcript grading status {vlm_status!r}.",
             "fast": fast_status,
             "slow": vlm_status,
@@ -527,6 +650,7 @@ def compare_audit_results(
     if fast_found != vlm_found:
         discrepancies.append({
             "type": "solution_set_mismatch",
+            "source": "grading",
             "description": f"Fast found solutions {fast_found!r}; VLM transcript found {vlm_found!r}.",
             "fast": fast_found,
             "slow": vlm_found,
@@ -537,6 +661,7 @@ def compare_audit_results(
     if len(fast_lines) != len(vlm_lines):
         discrepancies.append({
             "type": "line_count_mismatch",
+            "source": "ocr",
             "description": f"Fast pipeline returned {len(fast_lines)} lines; VLM read {len(vlm_lines)} lines.",
             "fast": len(fast_lines),
             "slow": len(vlm_lines),
@@ -545,24 +670,46 @@ def compare_audit_results(
         if normalize_latex_for_compare(fast_line) != normalize_latex_for_compare(vlm_line):
             discrepancies.append({
                 "type": "line_latex_mismatch",
+                "source": "ocr",
                 "lineIndex": index,
                 "description": f"Line {index + 1} differs between fast OCR and VLM read.",
                 "fast": fast_line,
                 "slow": vlm_line,
             })
 
+    fast_attachments = flatten_annotation_attachments(
+        fast_result.get("annotationAttachments") or extract_fast_annotation_attachments(fast_result),
+        source="fast",
+    )
+    vlm_attachments = flatten_annotation_attachments(
+        normalized_vlm.get("annotationAttachments") or [],
+        source="vlm",
+    )
+    if attachment_signatures(fast_attachments) != attachment_signatures(vlm_attachments):
+        discrepancies.append({
+            "type": "equation_side_operation_annotation_mismatch",
+            "source": "repair",
+            "description": "Detached operation annotation attachments differ between fast OCR repair and VLM context read.",
+            "fast": fast_attachments,
+            "slow": vlm_attachments,
+        })
+
     visual_marks = normalized_vlm.get("visualMarks") or []
     if visual_marks:
-        observations.append({
+        visual_observation = {
             "type": "visual_intent_observed",
+            "source": "vlm_normalization",
             "description": f"VLM observed {len(visual_marks)} visual mark(s).",
             "visualMarks": visual_marks,
-        })
+        }
+        observations.append(visual_observation)
+        observation_only_discrepancies.append(visual_observation)
 
     low_confidence = vlm_confidence_is_low(normalized_vlm)
     if low_confidence:
         discrepancies.append({
             "type": "vlm_low_confidence",
+            "source": "vlm_normalization",
             "description": "VLM reported low confidence for the whole answer or one line.",
         })
 
@@ -572,19 +719,28 @@ def compare_audit_results(
         "vlmProblemStatus": vlm_status,
         "discrepancies": discrepancies,
         "observations": observations,
+        "observation_only_discrepancies": observation_only_discrepancies,
         "description": describe_discrepancies(discrepancies),
     }
 
 
 def failure_comparison(kind: str, error: str, fast_result: dict[str, Any]) -> dict[str, Any]:
+    source = "requesting_vlm"
+    if kind == "vlm_schema_error":
+        source = "vlm_normalization"
+    elif kind == "audit_internal_error":
+        source = "audit_internal"
     return {
         "status": "failed",
         "fastProblemStatus": nested_get(fast_result.get("grading") or {}, ["result", "problemStatus"]),
         "vlmProblemStatus": None,
         "discrepancies": [{
             "type": kind,
+            "source": source,
             "description": error,
         }],
+        "observations": [],
+        "observation_only_discrepancies": [],
         "description": error,
     }
 
@@ -600,12 +756,19 @@ def build_event_summary(
     normalized: Optional[dict[str, Any]],
     vlm_grading: Optional[dict[str, Any]],
     failure_kind: Optional[str],
+    failure_stage: str,
+    prompt_version: str,
+    attempts: list[dict[str, Any]],
+    attached_images: list[str],
 ) -> dict[str, Any]:
     discrepancies = comparison.get("discrepancies") or []
     observations = comparison.get("observations") or []
+    last_attempt = attempts[-1] if attempts else {}
+    flattened_attachments = flatten_annotation_attachments((normalized or {}).get("annotationAttachments") or [], source="vlm")
     return {
         "auditId": audit_id,
         "createdAt": created_at.isoformat().replace("+00:00", "Z"),
+        "eventStage": "terminal",
         "problemId": payload.get("problemId"),
         "inputSignature": payload.get("inputSignature"),
         "attemptId": payload.get("attemptId"),
@@ -613,10 +776,14 @@ def build_event_summary(
         "triggerReasons": payload.get("triggerReasons") or [],
         "comparisonStatus": comparison.get("status"),
         "failureKind": failure_kind,
+        "failureStage": failure_stage,
+        "failure_stage": failure_stage,
         "discrepancyCount": len(discrepancies),
         "discrepancyTypes": [item.get("type") for item in discrepancies if isinstance(item, dict)],
+        "discrepancySources": [item.get("source") for item in discrepancies if isinstance(item, dict)],
         "observationCount": len(observations),
         "observationTypes": [item.get("type") for item in observations if isinstance(item, dict)],
+        "observation_only_discrepancies": comparison.get("observation_only_discrepancies") or [],
         "description": comparison.get("description") or "",
         "auditDir": str(audit_dir),
         "artifacts": artifact_paths,
@@ -624,7 +791,14 @@ def build_event_summary(
         "fastProblemStatus": comparison.get("fastProblemStatus"),
         "vlmProblemStatus": comparison.get("vlmProblemStatus"),
         "vlmLatexLines": (normalized or {}).get("latexLines") or [],
+        "annotation_attachments": flattened_attachments,
+        "annotationAttachmentCount": len(flattened_attachments),
         "vlmGradingFailed": bool((vlm_grading or {}).get("failed")),
+        "prompt_version": prompt_version,
+        "request_id": last_attempt.get("request_id"),
+        "queue_ms": last_attempt.get("queue_ms"),
+        "inference_ms": last_attempt.get("inference_ms"),
+        "attached_images": list(attached_images),
     }
 
 
@@ -638,7 +812,13 @@ def build_audit_metadata(
     crop_boxes: dict[str, Any],
     attempts: list[dict[str, Any]],
     failure_kind: Optional[str],
+    failure_stage: str,
+    prompt_version: str,
+    normalized: Optional[dict[str, Any]],
+    attached_images: list[str],
 ) -> dict[str, Any]:
+    last_attempt = attempts[-1] if attempts else {}
+    flattened_attachments = flatten_annotation_attachments((normalized or {}).get("annotationAttachments") or [], source="vlm")
     return {
         "auditId": audit_id,
         "model": settings.vlm_audit_model,
@@ -650,8 +830,11 @@ def build_audit_metadata(
             if isinstance(attempt, dict)
         ),
         "failureKind": failure_kind,
+        "failureStage": failure_stage,
+        "failure_stage": failure_stage,
         "comparisonStatus": comparison.get("status"),
         "observations": comparison.get("observations") or [],
+        "observation_only_discrepancies": comparison.get("observation_only_discrepancies") or [],
         "problemId": payload.get("problemId"),
         "inputSignature": payload.get("inputSignature"),
         "attemptId": payload.get("attemptId"),
@@ -660,6 +843,18 @@ def build_audit_metadata(
         "cropBoxes": crop_boxes,
         "imagePaths": artifact_paths,
         "artifactTypes": sorted(artifact_paths.keys()),
+        "promptVersion": prompt_version,
+        "prompt_version": prompt_version,
+        "requestId": last_attempt.get("request_id"),
+        "request_id": last_attempt.get("request_id"),
+        "queueMs": last_attempt.get("queue_ms"),
+        "queue_ms": last_attempt.get("queue_ms"),
+        "inferenceMs": last_attempt.get("inference_ms"),
+        "inference_ms": last_attempt.get("inference_ms"),
+        "attachedImages": list(attached_images),
+        "attached_images": list(attached_images),
+        "annotationAttachments": flattened_attachments,
+        "annotation_attachments": flattened_attachments,
     }
 
 
@@ -672,6 +867,35 @@ def first_failure_kind(comparison: dict[str, Any]) -> Optional[str]:
             if kind:
                 return kind
     return "failed"
+
+
+def request_id_for_response(raw_vlm: Any) -> Optional[str]:
+    if isinstance(raw_vlm, dict):
+        value = raw_vlm.get("id") or nested_get(raw_vlm, ["response", "id"])
+        if value:
+            return str(value)
+    return None
+
+
+def schema_error_payload(exc: AuditSchemaError, raw_vlm: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "error": str(exc),
+        "failureKind": "vlm_schema_error",
+        "failureStage": "normalizing_vlm",
+        "parserError": str(exc),
+    }
+    raw_response = raw_vlm if raw_vlm is not None else exc.raw_response
+    if raw_response is not None:
+        payload["rawResponse"] = sanitize_json(raw_response)
+    return payload
+
+
+def unavailable_error_payload(exc: Exception, failure_stage: str) -> dict[str, Any]:
+    return {
+        "error": str(exc),
+        "failureKind": "vlm_unavailable",
+        "failureStage": failure_stage,
+    }
 
 
 def fast_line_boxes(fast_result: dict[str, Any]) -> list[dict[str, float]]:
@@ -687,6 +911,17 @@ def fast_line_boxes(fast_result: dict[str, Any]) -> list[dict[str, float]]:
         if box:
             boxes.append(box)
     return boxes
+
+
+def extract_fast_annotation_attachments(fast_result: dict[str, Any]) -> list[dict[str, Any]]:
+    attachments: list[dict[str, Any]] = []
+    for line in fast_result.get("lines") or []:
+        if not isinstance(line, dict):
+            continue
+        attachment = line.get("annotationAttachment")
+        if isinstance(attachment, dict):
+            attachments.append(attachment)
+    return attachments
 
 
 def image_to_data_url(path: Path) -> str:
@@ -752,6 +987,79 @@ def clamp_float(value: Any, *, default: Optional[float]) -> Optional[float]:
     return max(0.0, min(1.0, number))
 
 
+def flatten_annotation_attachments(attachments: list[dict[str, Any]], *, source: str) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for item in attachments or []:
+        if not isinstance(item, dict):
+            continue
+        operator_latex = str(item.get("operator_latex") or item.get("operatorLatex") or "").strip()
+        if not operator_latex:
+            operator_latex = str(item.get("latex") or "").strip()
+        equation_side = str(item.get("equation_side") or item.get("equationSide") or "").strip().lower()
+        if equation_side not in {"left", "right", "both"}:
+            equation_side = "both" if "both" in str(item.get("notes") or "").lower() else "unknown"
+        flattened.append(sanitize_json({
+            "source": source,
+            "operator_latex": operator_latex,
+            "operand": str(item.get("operand") or "").strip() or None,
+            "target_line_index": safe_int(item.get("target_line_index") if "target_line_index" in item else item.get("targetLineIndex")),
+            "target_candidate_id": str(item.get("target_candidate_id") or item.get("targetCandidateId") or "").strip() or None,
+            "equation_side": equation_side,
+            "paired_annotation_id": str(item.get("paired_annotation_id") or item.get("pairedAnnotationId") or "").strip() or None,
+            "attachment_confidence": clamp_float(item.get("attachment_confidence") if "attachment_confidence" in item else item.get("attachmentConfidence"), default=None),
+            "notes": str(item.get("notes") or "").strip() or None,
+            "anchor_bbox": sanitize_json(item.get("anchor_bbox") or item.get("anchorBbox")),
+            "annotation_bbox": sanitize_json(item.get("annotation_bbox") or item.get("annotationBbox")),
+            "repaired_latex": str(item.get("repaired_latex") or item.get("repairedLatex") or "").strip() or None,
+        }))
+    return flattened
+
+
+def attachments_from_visual_marks(visual_marks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    attachments: list[dict[str, Any]] = []
+    for mark in visual_marks or []:
+        if not isinstance(mark, dict):
+            continue
+        if str(mark.get("type") or "").strip() != "detached_operation_annotation":
+            continue
+        attachments.append({
+            "source": "vlm",
+            "operator_latex": str(mark.get("latex") or "").strip(),
+            "operand": None,
+            "target_line_index": safe_int(mark.get("lineIndex")),
+            "target_candidate_id": None,
+            "equation_side": str(mark.get("equationSide") or "unknown").strip().lower(),
+            "paired_annotation_id": None,
+            "attachment_confidence": clamp_float(mark.get("confidence"), default=None),
+            "notes": str(mark.get("notes") or "").strip() or None,
+            "anchor_bbox": None,
+            "annotation_bbox": None,
+            "repaired_latex": None,
+        })
+    return attachments
+
+
+def attachment_signatures(attachments: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
+    signatures = []
+    for item in attachments or []:
+        if not isinstance(item, dict):
+            continue
+        signatures.append((
+            safe_int(item.get("target_line_index")),
+            str(item.get("equation_side") or "unknown"),
+            normalize_latex_for_compare(str(item.get("operand") or item.get("operator_latex") or "")),
+        ))
+    return sorted(signatures)
+
+
+def safe_int(value: Any) -> Optional[int]:
+    try:
+        integer = int(value)
+    except (TypeError, ValueError):
+        return None
+    return integer
+
+
 def vlm_confidence_is_low(normalized: dict[str, Any]) -> bool:
     overall = normalized.get("overallConfidence")
     if isinstance(overall, (int, float)) and overall < 0.5:
@@ -783,6 +1091,8 @@ def normalize_latex_for_compare(value: str) -> str:
     normalized = re.sub(r"\^\{([^{}])\}", r"^\1", normalized)
     normalized = re.sub(r"_\{([^{}])\}", r"_\1", normalized)
     normalized = normalized.replace(r"\left", "").replace(r"\right", "")
+    if "=" in normalized:
+        normalized = re.sub(r"(?<![a-z])o(?![a-z])", "0", normalized)
     return normalized
 
 
