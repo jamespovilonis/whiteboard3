@@ -39,6 +39,7 @@ import {
   submitActiveProblem
 } from '../src/state/problemFlow.js';
 import {
+  loadRealHandwritingFixture,
   loadRealHandwritingFixtures,
   strokeGroupKey
 } from './real_handwriting_fixtures.mjs';
@@ -4448,10 +4449,11 @@ test('incremental scheduler matches one-shot recognition on messy synthetic late
 test('student writing pipeline handles distilled real handwriting trace fixtures', async () => {
   installFakeCanvas();
   const fixtures = loadRealHandwritingFixtures();
-  assert.equal(fixtures.length, 6);
+  assert.equal(fixtures.length, 13);
 
   for (const fixture of fixtures) {
     const fakeReaders = fakeReadersForRealTrace(fixture);
+    const expectedGrading = pythonGradeFixtureTranscript(fixture);
     const result = await recognizeStudentWriting({
       strokes: fixture.strokes,
       answerBox: fixture.answerBox,
@@ -4463,12 +4465,13 @@ test('student writing pipeline handles distilled real handwriting trace fixtures
         fastLatexLines: fixture.fastLatexLines,
         knownDiscrepancyTypes: fixture.knownDiscrepancyTypes
       },
+      apiUrl: 'http://127.0.0.1:8010',
       detectLineBands: false,
       semanticScoring: false,
       recognizeAlternatives: false,
       chunkFallback: false,
       recognizeLine: fakeReaders.recognizeLine,
-      gradeWork: null
+      gradeWork: async (request) => pythonGradePayload(request)
     });
 
     const expectedGroups = fixture.expectedLineGroups.map((group) => strokeGroupKey(group.strokeIds));
@@ -4481,8 +4484,69 @@ test('student writing pipeline handles distilled real handwriting trace fixtures
     assert.ok(result.lines.length > 0, fixture.slug);
     assert.ok(result.lines.length <= fixture.expectedLineGroups.length, fixture.slug);
     assert.equal(result.grading.status, 'complete', fixture.slug);
+    assert.equal(
+      result.grading.result?.problemStatus,
+      expectedGrading.result?.problemStatus,
+      fixture.slug
+    );
     assert.notEqual(result.realtime?.allFinal, false, fixture.slug);
   }
+});
+
+test('segmentation ignores large enclosing circle annotation strokes', () => {
+  const fixture = loadRealHandwritingFixture('circled-x-equals-four');
+  const result = segmentMathLines(fixture.strokes, {
+    answerBox: fixture.answerBox,
+    ignoredStrokeIds: []
+  });
+
+  assert.deepEqual(
+    result.selected.map((line) => strokeGroupKey(line.strokeIds)),
+    [strokeGroupKey(fixture.expectedLineGroups[0].strokeIds)]
+  );
+});
+
+test('segmentation infers visual-only annotations from unlabeled real strokes', () => {
+  for (const slug of ['circled-intermediate-result', 'crossout-scratch-division']) {
+    const fixture = loadRealHandwritingFixture(slug);
+    const unlabeledStrokes = fixture.strokes.map((stroke) => {
+      const copy = { ...stroke };
+      delete copy.visualOnly;
+      return copy;
+    });
+    const result = segmentMathLines(unlabeledStrokes, {
+      answerBox: fixture.answerBox,
+      ignoredStrokeIds: [],
+      detections: fixture.detections || []
+    });
+
+    assert.deepEqual(
+      result.selected.map((line) => strokeGroupKey(line.strokeIds)),
+      fixture.expectedLineGroups.map((group) => strokeGroupKey(group.strokeIds)),
+      slug
+    );
+  }
+});
+
+test('segmentation ignores isolated tiny scratch marks without dropping decimal points', () => {
+  const isolated = [stroke('dot', 100, 100, 109, 109)];
+  assert.deepEqual(
+    segmentMathLines(isolated, { answerBox: padBboxForTest(bboxForStrokes(isolated), 10) }).selected,
+    []
+  );
+
+  const decimal = [
+    stroke('zero', 100, 100, 132, 160),
+    stroke('dot', 140, 152, 149, 161),
+    stroke('five', 158, 100, 190, 160),
+  ];
+  const result = segmentMathLines(decimal, {
+    answerBox: padBboxForTest(bboxForStrokes(decimal), 10)
+  });
+  assert.deepEqual(
+    result.selected.map((line) => strokeGroupKey(line.strokeIds)),
+    [strokeGroupKey(['zero', 'dot', 'five'])]
+  );
 });
 
 test('full recognition preserves deterministic rational rows when detector merges them', async () => {
@@ -5987,14 +6051,39 @@ function fakeReadersForRealTrace(fixture) {
       return {
         latex,
         top: { latex, score: 3, confidence: 0.99 },
-        candidates: [
-          { latex, score: 3, confidence: 0.99 },
-          { latex: fixture.expectedLatexLines?.[0] || latex, score: 0.1, confidence: 0.2 }
-        ],
+        candidates: [{ latex, score: 3, confidence: 0.99 }],
         elapsedSeconds: 0.01
       };
     }
   };
+}
+
+function pythonGradeFixtureTranscript(fixture) {
+  return pythonGradePayload({
+    problemLatex: fixture.problemLatex,
+    problemMetadata: fixture.problemMetadata || {},
+    lines: (fixture.expectedLineGroups || []).map((group, index) => ({
+      lineIndex: index,
+      latex: group.latex
+    }))
+  });
+}
+
+function pythonGradePayload(payload) {
+  const script = `
+import json
+import sys
+from src.grading import grade_math_payload
+payload = json.load(sys.stdin)
+print(json.dumps(grade_math_payload(payload)))
+`;
+  const output = execFileSync('python3', ['-c', script], {
+    cwd: process.cwd(),
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    maxBuffer: 10 * 1024 * 1024
+  });
+  return JSON.parse(output);
 }
 
 function syntheticLineIndexesForStrokeIds(strokeIds, strokesById) {

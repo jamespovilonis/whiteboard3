@@ -10,40 +10,166 @@
     "width": 433.37
   },
   "description": "Fraction subtraction over-segmentation.",
+  "detections": [
+    {
+      "bbox": {
+        "xMax": 256.12,
+        "xMin": 169.12,
+        "yMax": 355.31,
+        "yMin": 284.31
+      },
+      "normalizedBbox": {
+        "xMax": 0.591,
+        "xMin": 0.3902,
+        "yMax": 0.7674,
+        "yMin": 0.614
+      },
+      "polygon": [
+        [
+          169.12,
+          284.31
+        ],
+        [
+          256.12,
+          284.31
+        ],
+        [
+          256.12,
+          355.31
+        ],
+        [
+          169.12,
+          355.31
+        ]
+      ],
+      "score": 0.814236
+    },
+    {
+      "bbox": {
+        "xMax": 322.12,
+        "xMin": 235.12,
+        "yMax": 245.31,
+        "yMin": 168.31
+      },
+      "normalizedBbox": {
+        "xMax": 0.7433,
+        "xMin": 0.5425,
+        "yMax": 0.5298,
+        "yMin": 0.3635
+      },
+      "polygon": [
+        [
+          235.12,
+          172.31
+        ],
+        [
+          318.12,
+          168.31
+        ],
+        [
+          322.12,
+          241.31
+        ],
+        [
+          239.12,
+          245.31
+        ]
+      ],
+      "score": 0.839129
+    },
+    {
+      "bbox": {
+        "xMax": 325.12,
+        "xMin": 242.12,
+        "yMax": 185.31,
+        "yMin": 101.31
+      },
+      "normalizedBbox": {
+        "xMax": 0.7502,
+        "xMin": 0.5587,
+        "yMax": 0.4002,
+        "yMin": 0.2188
+      },
+      "polygon": [
+        [
+          242.12,
+          101.31
+        ],
+        [
+          325.12,
+          101.31
+        ],
+        [
+          325.12,
+          185.31
+        ],
+        [
+          242.12,
+          185.31
+        ]
+      ],
+      "score": 0.748583
+    },
+    {
+      "bbox": {
+        "xMax": 179.12,
+        "xMin": 77.12,
+        "yMax": 246.31,
+        "yMin": 73.31
+      },
+      "normalizedBbox": {
+        "xMax": 0.4133,
+        "xMin": 0.178,
+        "yMax": 0.532,
+        "yMin": 0.1583
+      },
+      "polygon": [
+        [
+          77.12,
+          75.31
+        ],
+        [
+          177.12,
+          73.31
+        ],
+        [
+          179.12,
+          244.31
+        ],
+        [
+          79.12,
+          246.31
+        ]
+      ],
+      "score": 0.781587
+    }
+  ],
   "expectedLatexLines": [
     "\\frac{1}{2} - \\frac{1}{2}",
     "0"
   ],
   "expectedLineGroups": [
     {
-      "latex": "1 \\pm 1",
+      "latex": "\\frac{1}{2} - \\frac{1}{2}",
       "lineIndex": 0,
-      "source": "fastResult.lines",
-      "sourceCandidateId": "fast-line-1",
+      "source": "reviewed-vlm-semantic-lines",
+      "sourceCandidateId": "loose_s001|s002|s003|s004|s005|s006|s007",
       "strokeIds": [
         "s001",
-        "s005",
-        "s002"
-      ]
-    },
-    {
-      "latex": "2 -",
-      "lineIndex": 1,
-      "source": "reviewed-current-segmentation",
-      "sourceCandidateId": "strict_s004|s006",
-      "strokeIds": [
-        "s004",
-        "s006"
-      ]
-    },
-    {
-      "latex": "\\frac { 1 } { 2 } = \\frac { 3 } { 2 }",
-      "lineIndex": 2,
-      "source": "reviewed-current-segmentation",
-      "sourceCandidateId": "row-line_s003|s007|s008",
-      "strokeIds": [
+        "s002",
         "s003",
-        "s007",
+        "s004",
+        "s005",
+        "s006",
+        "s007"
+      ]
+    },
+    {
+      "latex": "0",
+      "lineIndex": 1,
+      "source": "reviewed-vlm-semantic-lines",
+      "sourceCandidateId": "loose_s008",
+      "strokeIds": [
         "s008"
       ]
     }
@@ -94,7 +220,7 @@
       },
       "color": "#000000",
       "endTime": 236.0,
-      "expectedLatex": "1 \\pm 1",
+      "expectedLatex": "\\frac{1}{2} - \\frac{1}{2}",
       "expectedLineIndex": 0,
       "id": "s001",
       "outlinePoints": [
@@ -716,7 +842,7 @@
       },
       "color": "#000000",
       "endTime": 591.0,
-      "expectedLatex": "1 \\pm 1",
+      "expectedLatex": "\\frac{1}{2} - \\frac{1}{2}",
       "expectedLineIndex": 0,
       "id": "s002",
       "outlinePoints": [
@@ -1316,8 +1442,8 @@
       },
       "color": "#000000",
       "endTime": 1387.0,
-      "expectedLatex": "\\frac { 1 } { 2 } = \\frac { 3 } { 2 }",
-      "expectedLineIndex": 2,
+      "expectedLatex": "\\frac{1}{2} - \\frac{1}{2}",
+      "expectedLineIndex": 0,
       "id": "s003",
       "outlinePoints": [
         {
@@ -2081,8 +2207,8 @@
       },
       "color": "#000000",
       "endTime": 1859.0,
-      "expectedLatex": "2 -",
-      "expectedLineIndex": 1,
+      "expectedLatex": "\\frac{1}{2} - \\frac{1}{2}",
+      "expectedLineIndex": 0,
       "id": "s004",
       "outlinePoints": [
         {
@@ -2659,7 +2785,7 @@
       },
       "color": "#000000",
       "endTime": 3076.0,
-      "expectedLatex": "1 \\pm 1",
+      "expectedLatex": "\\frac{1}{2} - \\frac{1}{2}",
       "expectedLineIndex": 0,
       "id": "s005",
       "outlinePoints": [
@@ -3259,8 +3385,8 @@
       },
       "color": "#000000",
       "endTime": 3512.0,
-      "expectedLatex": "2 -",
-      "expectedLineIndex": 1,
+      "expectedLatex": "\\frac{1}{2} - \\frac{1}{2}",
+      "expectedLineIndex": 0,
       "id": "s006",
       "outlinePoints": [
         {
@@ -3892,8 +4018,8 @@
       },
       "color": "#000000",
       "endTime": 4118.0,
-      "expectedLatex": "\\frac { 1 } { 2 } = \\frac { 3 } { 2 }",
-      "expectedLineIndex": 2,
+      "expectedLatex": "\\frac{1}{2} - \\frac{1}{2}",
+      "expectedLineIndex": 0,
       "id": "s007",
       "outlinePoints": [
         {
@@ -4602,8 +4728,8 @@
       },
       "color": "#000000",
       "endTime": 5181.0,
-      "expectedLatex": "\\frac { 1 } { 2 } = \\frac { 3 } { 2 }",
-      "expectedLineIndex": 2,
+      "expectedLatex": "0",
+      "expectedLineIndex": 1,
       "id": "s008",
       "outlinePoints": [
         {

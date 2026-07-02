@@ -8,13 +8,13 @@ import {
   waitForRecognitionComplete
 } from './helpers/playback.js';
 import {
+  loadRealHandwritingFixtures,
   loadRealHandwritingFixture,
   translateRealTraceFixture
 } from '../testing/real_handwriting_fixtures.mjs';
 
 const MOCK_TRACE_SLUG = 'crossout-scratch-division';
-const LIVE_TRACE_SLUG = 'compact-plus-minus-solution';
-const LIVE_TIMEOUT_MS = 180_000;
+const LIVE_TIMEOUT_MS = 300_000;
 
 test('mocked recognition replays a distilled real handwriting trace in the browser', async ({ page }) => {
   test.skip(
@@ -59,30 +59,36 @@ test('live OCR can replay a distilled real handwriting trace', async ({ page }, 
   );
   test.setTimeout(LIVE_TIMEOUT_MS);
 
-  const fixture = loadRealHandwritingFixture(LIVE_TRACE_SLUG);
+  const fixtures = loadRealHandwritingFixtures();
+  expect(fixtures.length).toBeGreaterThanOrEqual(10);
   await installInvalidProblemSourceRoute(page, { problems: [] });
-  await page.goto('/');
-  await waitForE2EBridge(page);
-  const initial = await enterCustomLatexProblem(page, fixture.problemLatex, {
-    problemType: problemTypeFor(fixture)
-  });
 
-  await injectTrace(page, fixture, initial.activeProblem);
-  const recognized = await waitForRecognitionComplete(page, initial.activeProblem.id);
-  const entry = recognized.recognitionResults.find((item) => item.problemId === initial.activeProblem.id);
-  const result = entry?.recognition?.result || null;
+  for (const fixture of fixtures) {
+    await test.step(`replay ${fixture.slug}`, async () => {
+      await page.goto('/');
+      await waitForE2EBridge(page);
+      const initial = await enterCustomLatexProblem(page, fixture.problemLatex, {
+        problemType: problemTypeFor(fixture)
+      });
 
-  expect(result).not.toBeNull();
-  expect(entry.recognition.status).toBe('complete');
-  expect(result.lines.length).toBeGreaterThan(0);
-  await testInfo.attach(`${fixture.slug}-live-lines`, {
-    body: JSON.stringify({
-      expectedLatexLines: fixture.expectedLatexLines,
-      fastLatexLines: fixture.fastLatexLines,
-      recognizedLines: result.lines.map((line) => line.acceptedLatex || line.latex || '')
-    }, null, 2),
-    contentType: 'application/json'
-  });
+      await injectTrace(page, fixture, initial.activeProblem);
+      const recognized = await waitForRecognitionComplete(page, initial.activeProblem.id);
+      const entry = recognized.recognitionResults.find((item) => item.problemId === initial.activeProblem.id);
+      const result = entry?.recognition?.result || null;
+
+      expect(result).not.toBeNull();
+      expect(entry.recognition.status).toBe('complete');
+      expect(result.lines.length).toBeGreaterThan(0);
+      await testInfo.attach(`${fixture.slug}-live-lines`, {
+        body: JSON.stringify({
+          expectedLatexLines: fixture.expectedLatexLines,
+          fastLatexLines: fixture.fastLatexLines,
+          recognizedLines: result.lines.map((line) => line.acceptedLatex || line.latex || '')
+        }, null, 2),
+        contentType: 'application/json'
+      });
+    });
+  }
 });
 
 async function injectTrace(page, fixture, activeProblem) {

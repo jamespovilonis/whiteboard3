@@ -13,7 +13,8 @@ const board = JSON.parse(Buffer.concat(chunks).toString('utf8'));
 const strokes = strokesForBoard(board, order);
 const result = segmentMathLines(strokes, {
   answerBox: board.answerBox || null,
-  detections: board.detections || []
+  detections: board.detections || [],
+  ignoredStrokeIds: board.visualOnlyStrokeIds || []
 });
 const scoreByCandidateId = board.scoreByCandidateId || null;
 const rescoredSelected = scoreByCandidateId

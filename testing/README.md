@@ -72,6 +72,17 @@ To replay a committed trace through the browser with the real OCR gateway:
 npm run test:e2e:real:traces
 ```
 
+To inspect the local audit log corpus without treating stale logged OCR as
+current behavior:
+
+```sh
+npm run audit:real-handwriting
+```
+
+This command regrades the logged fast OCR transcript and separately runs the
+current JS segmenter on raw strokes, so remaining mismatches can be sorted into
+stale OCR, grading-policy, and current-segmentation buckets.
+
 Run the broader offline segmentation matrix:
 
 ```sh

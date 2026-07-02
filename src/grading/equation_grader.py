@@ -907,6 +907,25 @@ def classify_line_candidates(
 
     if verdicts:
         best, _best_original_index = _pick_best_candidate_verdict(verdicts)
+        if (
+            best is not None and
+            best.get("classification") != "other" and
+            best.get("solutionCoverage") == "full"
+        ):
+            return best
+
+    repaired = repeated_assignment_equals_repair_verdict(
+        candidates,
+        manifest,
+        exact_values,
+        variable,
+        reference_latex,
+    )
+    if repaired is not None:
+        return repaired
+
+    if verdicts:
+        best, _best_original_index = _pick_best_candidate_verdict(verdicts)
         if best is not None and best.get("classification") != "other":
             return best
 
@@ -965,12 +984,76 @@ def classify_equation_candidate(
         )
 
     if equation_equivalent(reference_latex, text, variable):
+        if manifest.get("cardinality") == "none" and equation_contradiction(text):
+            return selected_line(
+                text,
+                "valid_step",
+                index,
+                "full",
+                (-1,),
+                accepted_special="none",
+                finality=final_answer(),
+            )
         return selected_line(text, "valid_step", index, "none", ())
 
     if is_parseable_equation(text):
         return selected_line(text, "invalid_step", index, "none", ())
 
     return selected_line(text, "other", index, "none", ())
+
+
+def repeated_assignment_equals_repair_verdict(
+    candidates: Sequence[str],
+    manifest: dict[str, Any],
+    exact_values: Sequence[sympy.Expr],
+    variable: str,
+    reference_latex: str,
+) -> Optional[dict[str, Any]]:
+    if manifest.get("cardinality") != "finite" or len(exact_values) < 2:
+        return None
+
+    for index, latex in enumerate(candidates[:MAX_OCR_CANDIDATES]):
+        original = str(latex or "").strip()
+        if not original:
+            continue
+        repaired = repeated_assignment_equals_repair_candidate(original, variable)
+        if not repaired:
+            continue
+        verdict = classify_equation_candidate(
+            repaired,
+            index,
+            manifest,
+            exact_values,
+            variable,
+            reference_latex,
+        )
+        if verdict.get("classification") != "valid_step" or verdict.get("solutionCoverage") != "full":
+            continue
+        return {
+            **verdict,
+            "studentLatex": original,
+            "repairedLatex": repaired,
+            "ocrRepair": {
+                "source": "repeated-assignment-equals-repair",
+                "originalLatex": original,
+                "repairedLatex": repaired,
+            },
+        }
+    return None
+
+
+def repeated_assignment_equals_repair_candidate(text: str, variable: str) -> Optional[str]:
+    raw = str(text or "").strip()
+    variable_pattern = re.escape(str(variable or "x"))
+    number = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
+    match = re.fullmatch(
+        rf"\s*({variable_pattern})\s*=\s*({number})\s+\1\s*[-+]\s*({number})\s*",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return f"{match.group(1)} = {match.group(2)} {match.group(1)} = {match.group(3)}"
 
 
 def classify_expression_candidates(
@@ -986,6 +1069,15 @@ def classify_expression_candidates(
         if not text:
             continue
         verdicts.append(classify_expression_candidate(text, index, manifest, exact_values))
+
+    if verdicts:
+        best, _best_original_index = _pick_best_candidate_verdict(verdicts)
+        if best is not None and best.get("solutionCoverage") == "full":
+            return best
+
+    repaired = expression_equals_repair_verdict(candidates, manifest, exact_values)
+    if repaired is not None:
+        return repaired
 
     if verdicts:
         best, _best_original_index = _pick_best_candidate_verdict(verdicts)
@@ -1053,6 +1145,77 @@ def classify_expression_candidate(
     )
     verdict["_expression_elements"] = tuple(expression_parts)
     return verdict
+
+
+def expression_equals_repair_verdict(
+    candidates: Sequence[str],
+    manifest: dict[str, Any],
+    exact_values: Sequence[sympy.Expr],
+) -> Optional[dict[str, Any]]:
+    for index, latex in enumerate(candidates[:MAX_OCR_CANDIDATES]):
+        original = str(latex or "").strip()
+        if not original:
+            continue
+        for repaired in expression_equals_repair_candidates(original):
+            verdict = classify_expression_candidate(repaired, index, manifest, exact_values)
+            if verdict.get("classification") != "valid_step" or verdict.get("solutionCoverage") != "full":
+                continue
+            verdict = {
+                **verdict,
+                "studentLatex": original,
+                "repairedLatex": repaired,
+                "ocrRepair": {
+                    "source": "expression-equals-repair",
+                    "originalLatex": original,
+                    "repairedLatex": repaired,
+                },
+            }
+            return verdict
+    return None
+
+
+def expression_equals_repair_candidates(text: str) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+
+    repairs: list[str] = []
+    for index, char in enumerate(raw):
+        if char not in "+-":
+            continue
+        if not is_binary_additive_operator(raw, index):
+            continue
+        candidate = f"{raw[:index]}={raw[index + 1:]}"
+        if candidate.count("=") < 1:
+            continue
+        repairs.append(candidate)
+    return list(dict.fromkeys(repairs))
+
+
+def is_binary_additive_operator(text: str, index: int) -> bool:
+    left = previous_non_space(text, index)
+    right = next_non_space(text, index)
+    if left is None or right is None:
+        return False
+    if left in "=+-*/^({[,":  # unary sign or operator sequence
+        return False
+    if right in "=+*/^)}],":
+        return False
+    return True
+
+
+def previous_non_space(text: str, index: int) -> Optional[str]:
+    for cursor in range(index - 1, -1, -1):
+        if not text[cursor].isspace():
+            return text[cursor]
+    return None
+
+
+def next_non_space(text: str, index: int) -> Optional[str]:
+    for cursor in range(index + 1, len(text)):
+        if not text[cursor].isspace():
+            return text[cursor]
+    return None
 
 
 def first_broken_expression_parts_index(
@@ -1211,6 +1374,7 @@ def finite_solution_match(
     if not entries:
         return None
 
+    isolated_assignment = has_isolated_variable_assignment(latex, variable)
     matched: set[int] = set()
     all_matched_final = True
     unsimplified_reasons: list[str] = []
@@ -1218,7 +1382,7 @@ def finite_solution_match(
         for index, exact in enumerate(exact_values):
             if solution_values_equivalent(candidate_value, exact, manifest):
                 matched.add(index)
-                if finality.status != "final":
+                if finality.status != "final" and not isolated_assignment:
                     all_matched_final = False
                     if finality.reason:
                         unsimplified_reasons.append(finality.reason)
@@ -1365,6 +1529,22 @@ def equation_identity(latex: str) -> bool:
         return False
     try:
         return bool(simplified == 0)
+    except Exception:
+        return False
+
+
+def equation_contradiction(latex: str) -> bool:
+    try:
+        parsed = parse_math(latex)
+    except GradingParseFailure:
+        return False
+    if parsed.kind != "equation":
+        return False
+    simplified = _simplify_with_budget(parsed.residual)
+    if simplified is None or getattr(simplified, "free_symbols", set()):
+        return False
+    try:
+        return bool(simplified != 0)
     except Exception:
         return False
 
@@ -1529,6 +1709,18 @@ def split_solution_parts(latex: str, variable: str) -> list[str]:
             return split_solution_list(left_text)
 
     return split_solution_list(text)
+
+
+def has_isolated_variable_assignment(latex: str, variable: str) -> bool:
+    equation_match = split_equation_text(str(latex or "").strip())
+    if equation_match is None:
+        return False
+    left_text, right_text = equation_match
+    variable_text = compact_answer_text(variable)
+    return (
+        compact_answer_text(left_text) == variable_text or
+        compact_answer_text(right_text) == variable_text
+    )
 
 
 def split_repeated_solution_assignments(text: str, variable: str) -> list[str]:
@@ -1718,17 +1910,18 @@ def expression_value_finality(raw_text: str, evaluated: sympy.Expr) -> AnswerFin
     if unevaluated.free_symbols:
         return invalid_format("final numeric answer contains variables")
 
-    compact_normalized = compact_math_form(normalized)
-    if is_decimal_or_integer_literal(normalized):
+    finality_normalized = normalized[1:] if normalized.startswith("+") else normalized
+    compact_normalized = compact_math_form(finality_normalized)
+    if is_decimal_or_integer_literal(finality_normalized):
         return final_answer()
-    if is_reduced_fraction_literal(normalized, evaluated):
+    if is_reduced_fraction_literal(finality_normalized, evaluated):
         return final_answer()
 
     compact_canonical = compact_math_form(sympy.sstr(evaluated))
     if compact_normalized == compact_canonical:
         return final_answer()
 
-    if compact_math_form(normalize_e_power_text(normalized)) == compact_canonical:
+    if compact_math_form(normalize_e_power_text(finality_normalized)) == compact_canonical:
         return final_answer()
 
     simplified = _simplify_with_budget(unevaluated - evaluated)

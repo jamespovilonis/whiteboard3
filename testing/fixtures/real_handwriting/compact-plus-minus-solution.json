@@ -10,32 +10,59 @@
     "width": 489.38
   },
   "description": "Compact plus-minus solution-set mismatch.",
+  "detections": [
+    {
+      "bbox": {
+        "xMax": 395.25,
+        "xMin": 69.25,
+        "yMax": 202.05,
+        "yMin": 63.05
+      },
+      "normalizedBbox": {
+        "xMax": 0.8077,
+        "xMin": 0.1415,
+        "yMax": 0.6798,
+        "yMin": 0.2121
+      },
+      "polygon": [
+        [
+          73.25,
+          63.05
+        ],
+        [
+          395.25,
+          73.05
+        ],
+        [
+          391.25,
+          202.05
+        ],
+        [
+          69.25,
+          192.05
+        ]
+      ],
+      "score": 0.84095
+    }
+  ],
   "expectedLatexLines": [
     "x = \\pm 2"
   ],
   "expectedLineGroups": [
     {
-      "latex": "x = + 2",
+      "latex": "x = \\pm 2",
       "lineIndex": 0,
-      "source": "fastResult.lines",
-      "sourceCandidateId": "fast-line-1",
+      "source": "reviewed-vlm-semantic-lines",
+      "sourceCandidateId": "parent_s001|s002|s003|s004|s005|s006|s007|s008",
       "strokeIds": [
         "s001",
-        "s003",
         "s002",
-        "s008",
-        "s006",
+        "s003",
+        "s004",
         "s005",
-        "s004"
-      ]
-    },
-    {
-      "latex": "- \\sigma",
-      "lineIndex": 1,
-      "source": "fastResult.lines",
-      "sourceCandidateId": "fast-line-2",
-      "strokeIds": [
-        "s007"
+        "s006",
+        "s007",
+        "s008"
       ]
     }
   ],
@@ -83,7 +110,7 @@
       },
       "color": "#000000",
       "endTime": 224.0,
-      "expectedLatex": "x = + 2",
+      "expectedLatex": "x = \\pm 2",
       "expectedLineIndex": 0,
       "id": "s001",
       "outlinePoints": [
@@ -705,7 +732,7 @@
       },
       "color": "#000000",
       "endTime": 676.0,
-      "expectedLatex": "x = + 2",
+      "expectedLatex": "x = \\pm 2",
       "expectedLineIndex": 0,
       "id": "s002",
       "outlinePoints": [
@@ -1327,7 +1354,7 @@
       },
       "color": "#000000",
       "endTime": 1093.0,
-      "expectedLatex": "x = + 2",
+      "expectedLatex": "x = \\pm 2",
       "expectedLineIndex": 0,
       "id": "s003",
       "outlinePoints": [
@@ -1927,7 +1954,7 @@
       },
       "color": "#000000",
       "endTime": 1517.0,
-      "expectedLatex": "x = + 2",
+      "expectedLatex": "x = \\pm 2",
       "expectedLineIndex": 0,
       "id": "s004",
       "outlinePoints": [
@@ -2549,7 +2576,7 @@
       },
       "color": "#000000",
       "endTime": 16527.0,
-      "expectedLatex": "x = + 2",
+      "expectedLatex": "x = \\pm 2",
       "expectedLineIndex": 0,
       "id": "s005",
       "outlinePoints": [
@@ -3160,7 +3187,7 @@
       },
       "color": "#000000",
       "endTime": 17201.0,
-      "expectedLatex": "x = + 2",
+      "expectedLatex": "x = \\pm 2",
       "expectedLineIndex": 0,
       "id": "s006",
       "outlinePoints": [
@@ -3793,8 +3820,8 @@
       },
       "color": "#000000",
       "endTime": 17952.0,
-      "expectedLatex": "- \\sigma",
-      "expectedLineIndex": 1,
+      "expectedLatex": "x = \\pm 2",
+      "expectedLineIndex": 0,
       "id": "s007",
       "outlinePoints": [
         {
@@ -4448,7 +4475,7 @@
       },
       "color": "#000000",
       "endTime": 19205.0,
-      "expectedLatex": "x = + 2",
+      "expectedLatex": "x = \\pm 2",
       "expectedLineIndex": 0,
       "id": "s008",
       "outlinePoints": [

@@ -198,9 +198,13 @@ export class IncrementalRecognitionScheduler {
     }
 
     const version = this.reconcileVersion;
+    const ignoredStrokeIds = (input.strokes || [])
+      .filter((stroke) => stroke?.visualOnly)
+      .map((stroke) => String(stroke.id));
     const segmentation = segmentMathLines(input.strokes, {
       answerBox: input.answerBox,
-      detections: []
+      detections: [],
+      ignoredStrokeIds
     });
     const selected = segmentation.selected || [];
     const currentSignatures = new Set();

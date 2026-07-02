@@ -53,6 +53,9 @@ export async function recognizeStudentWriting(options = {}) {
     gradeWork = gradeMathWork,
     gradingTimeoutMs = 5000
   } = options;
+  const ignoredStrokeIds = (options.ignoredStrokeIds || [])
+    .concat((strokes || []).filter((stroke) => stroke?.visualOnly).map((stroke) => stroke.id))
+    .map(String);
 
   throwIfAborted(signal);
   const detection = await resolveDetections({
@@ -70,6 +73,7 @@ export async function recognizeStudentWriting(options = {}) {
   const segmentation = segmentMathLines(strokes, {
     answerBox,
     detections: detection.detections,
+    ignoredStrokeIds,
     problemLatex,
     previousLatex
   });
@@ -77,6 +81,7 @@ export async function recognizeStudentWriting(options = {}) {
     ? segmentMathLines(strokes, {
         answerBox,
         detections: [],
+        ignoredStrokeIds,
         problemLatex,
         previousLatex
       })

@@ -10,7 +10,7 @@ from typing import Any
 
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "real_handwriting"
-EXPECTED_FIXTURE_COUNT = 6
+EXPECTED_FIXTURE_COUNT = 13
 
 
 class RealHandwritingFixtureSchemaTests(unittest.TestCase):
@@ -57,6 +57,23 @@ class RealHandwritingFixtureSchemaTests(unittest.TestCase):
                     self.assertTrue(group["latex"])
                     self.assertTrue(group["strokeIds"])
                     self.assertTrue(set(group["strokeIds"]) <= stroke_ids)
+
+                for detection in fixture.get("detections") or []:
+                    self.assert_valid_box(detection["bbox"])
+                    self.assert_valid_box(detection["normalizedBbox"], normalized=True)
+                    if "polygon" in detection:
+                        self.assertGreaterEqual(len(detection["polygon"]), 4)
+
+                visual_only = set(fixture.get("visualOnlyStrokeIds") or [])
+                grouped = set(
+                    stroke_id
+                    for group in fixture["expectedLineGroups"]
+                    for stroke_id in group["strokeIds"]
+                )
+                self.assertFalse(visual_only & grouped)
+                for stroke in fixture["strokes"]:
+                    if stroke["id"] in visual_only:
+                        self.assertTrue(stroke.get("visualOnly"))
 
     def test_vlm_transcript_and_fast_lines_are_both_preserved(self):
         mismatched = 0

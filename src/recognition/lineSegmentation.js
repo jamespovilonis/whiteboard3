@@ -10,7 +10,16 @@ const DEFAULT_CONFIG = Object.freeze({
 
 export function segmentMathLines(strokes, options = {}) {
   const config = { ...DEFAULT_CONFIG, ...(options.config || {}) };
-  const eligibleStrokes = filterStrokes(strokes || [], options.answerBox);
+  const ignoredStrokeIds = new Set((options.ignoredStrokeIds || []).map(String));
+  for (const stroke of [
+    ...detectEnclosingAnnotationStrokes(strokes || []),
+    ...detectSeparatedTopAnnotationStrokes(strokes || []),
+    ...detectTinyIsolatedScratchStrokes(strokes || [])
+  ]) {
+    ignoredStrokeIds.add(String(stroke.id));
+  }
+  const eligibleStrokes = filterStrokes(strokes || [], options.answerBox)
+    .filter((stroke) => !ignoredStrokeIds.has(String(stroke.id)));
   const candidates = [];
   const byStrokeSet = new Map();
 
@@ -44,6 +53,12 @@ export function segmentMathLines(strokes, options = {}) {
 
   const parent = addCandidate(eligibleStrokes, 'parent', { sources: ['all-strokes'] });
   const baseGroups = buildBaseGroups(eligibleStrokes, config);
+  for (const stack of buildTallFractionStackGroups(clusterStrokeRows(parent, config), config)) {
+    addCandidate(stack.strokes, 'fraction-stack-line', {
+      sources: ['global-tall-fraction-stack'],
+      parentCandidateId: parent?.candidateId || null
+    });
+  }
 
   for (const group of buildOverlapGroups(eligibleStrokes, 'loose', config)) {
     addCandidate(group.strokes, 'loose', { sources: ['loose-overlap'] });
@@ -74,6 +89,12 @@ export function segmentMathLines(strokes, options = {}) {
       for (const stack of buildCompactFractionStackGroups(rawRows, config)) {
         addCandidate(stack.strokes, 'fraction-stack-line', {
           sources: ['fraction-stack'],
+          parentCandidateId: groupCandidate.candidateId
+        });
+      }
+      for (const stack of buildTallFractionStackGroups(rawRows, config)) {
+        addCandidate(stack.strokes, 'fraction-stack-line', {
+          sources: ['tall-fraction-stack'],
           parentCandidateId: groupCandidate.candidateId
         });
       }
@@ -257,6 +278,14 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
   const structuralRows = splitCandidateIntoRows(candidate, DEFAULT_CONFIG);
   const nearbyCompactFraction = bboxHeight(candidate.tightBbox) <= 140 &&
     hasNearbyCompactFractionBridge(candidate, rawRows);
+  const plusMinusStructure = hasAttachedPlusMinusStroke(candidate, rawRows);
+  const builtTallFractionStack = profiles.includes('fraction-stack-line') &&
+    bboxHeight(candidate.tightBbox) > 150 &&
+    bboxHeight(candidate.tightBbox) <= 285 &&
+    candidate.strokes.length <= 12 &&
+    rawRows.length >= 2 &&
+    rawRows.length <= 6 &&
+    hasWideFractionBar(candidate);
   const fractionBridge = hasFractionLikeBridge(candidate) ||
     hasInlineFractionBridge(candidate) ||
     nearbyCompactFraction ||
@@ -266,9 +295,10 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
   const compactFractionLine = !parentLikeCandidateProfiles(profiles) &&
     bboxHeight(candidate.tightBbox) <= 140 &&
     hasCompactFractionStructure(candidate);
-  const fractionStructural = fractionBridge || compactFractionLine;
+  const fractionStructural = fractionBridge || compactFractionLine || builtTallFractionStack;
   const structural = fractionBridge ||
     compactFractionLine ||
+    plusMinusStructure ||
     structuralRows.some((row) => rowHasTallOperatorStroke(row, rowMedianHeight(row)));
   const parentLike = profiles.includes('parent') || profiles.includes('dbnet-parent') || profiles.includes('row-parent');
 
@@ -288,6 +318,10 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
     score += Math.min(8.5, (rawRows.length - 1) * 4.1);
   }
   if (compactFractionLine) score += 4.2;
+  if (profiles.includes('fraction-stack-line') && fractionStructural) score += 3.2;
+  if (builtTallFractionStack) score += 27.5;
+  if (plusMinusStructure) score += 6.8;
+  score += inlineFragmentContinuityBonus(candidate, allCandidates, { medianHeight });
   if (profiles.includes('raw-row-line') && hasCompactFractionContainer(candidate, allCandidates)) {
     score -= 8;
   }
@@ -336,7 +370,10 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
     ));
     if (childLinesCoverParent(candidate, children) && children.length > 1) {
       const independentRows = childrenLookLikeIndependentRows(children, width, medianHeight, candidate);
-      score -= (children.length - 1) * (structural && !independentRows ? 1.0 : 8.5);
+      const protectedFractionStack = profiles.includes('fraction-stack-line') && fractionStructural;
+      score -= (children.length - 1) * (
+        protectedFractionStack ? 0.8 : (structural && !independentRows ? 1.0 : 8.5)
+      );
     }
   }
 
@@ -353,7 +390,8 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
     ));
     if (childLinesCoverParent(candidate, children) && children.length > 1) {
       const independentRows = childrenLookLikeIndependentRows(children, width, medianHeight, candidate);
-      if (independentRows || !structural) {
+      const protectedFractionStack = profiles.includes('fraction-stack-line') && fractionStructural;
+      if ((independentRows && !protectedFractionStack) || !structural) {
         score -= (children.length - 1) * (independentRows ? 9.8 : 4.2);
       }
     }
@@ -825,6 +863,77 @@ function hasCompactFractionStructure(candidate) {
     hasNearbyCompactFractionBridge(candidate, rawRows);
 }
 
+function hasAttachedPlusMinusStroke(candidate, rows = null) {
+  if (!candidate?.strokes?.length || !candidate.tightBbox) return false;
+  const sortedRows = (rows || clusterStrokeRows(candidate, DEFAULT_CONFIG)).slice().sort(compareRows);
+  if (sortedRows.length !== 2) return false;
+
+  const upper = sortedRows[0];
+  const lower = sortedRows[1];
+  if ((lower.strokes || []).length !== 1) return false;
+  const mark = lower.strokes[0];
+  if (!isHorizontalStroke(mark)) return false;
+
+  const markBox = mark.canvasBbox;
+  const markWidth = bboxWidth(markBox);
+  if (markWidth < 18 || markWidth > Math.max(90, bboxWidth(candidate.tightBbox) * 0.36)) return false;
+  if (bboxHeight(markBox) > Math.max(14, rowMedianHeight(upper) * 0.38)) return false;
+
+  const gap = verticalGap(upper.bbox, lower.bbox);
+  if (gap > Math.max(18, rowMedianHeight(upper) * 0.45)) return false;
+  if (horizontalOverlapRatio(markBox, upper.bbox) < 0.18) return false;
+
+  const upperHorizontals = (upper.strokes || []).filter((stroke) => (
+    stroke !== mark &&
+    isHorizontalStroke(stroke) &&
+    horizontalGap(stroke.canvasBbox, markBox) <= Math.max(55, markWidth * 1.2)
+  ));
+  return upperHorizontals.length > 0;
+}
+
+function inlineFragmentContinuityBonus(candidate, allCandidates = [], { medianHeight = 1 } = {}) {
+  if (!candidate?.tightBbox || !candidate?.strokeIds?.length) return 0;
+  if ((candidate.strokeIds || []).length < 5) return 0;
+  const profiles = candidate.profiles || [];
+  if (!profiles.some((profile) => (
+    profile === 'row-line' ||
+    profile === 'raw-row-line' ||
+    profile === 'loose' ||
+    profile === 'strict'
+  ))) {
+    return 0;
+  }
+
+  const children = (allCandidates || [])
+    .filter((child) => (
+      child !== candidate &&
+      child?.tightBbox &&
+      child.strokeIds?.length &&
+      (child.strokeIds || []).length < (candidate.strokeIds || []).length &&
+      strokeSetContains(candidate, child) &&
+      child.profiles?.includes('strict')
+    ))
+    .sort((a, b) => centerX(a.tightBbox) - centerX(b.tightBbox));
+  if (children.length < 2 || !childLinesCoverParent(candidate, children)) return 0;
+
+  const broadEnough = bboxWidth(candidate.tightBbox) >= Math.max(85, (medianHeight || 1) * 2.2);
+  if (!broadEnough) return 0;
+
+  let alignedPairs = 0;
+  for (let index = 0; index < children.length - 1; index += 1) {
+    const left = children[index].tightBbox;
+    const right = children[index + 1].tightBbox;
+    const maxHeight = Math.max(1, bboxHeight(left), bboxHeight(right));
+    const aligned = verticalOverlapRatio(left, right) >= 0.22 ||
+      Math.abs(centerY(left) - centerY(right)) <= Math.max(18, maxHeight * 0.55);
+    const close = horizontalGap(left, right) <= Math.max(90, maxHeight * 1.6);
+    if (aligned && close) alignedPairs += 1;
+  }
+
+  if (alignedPairs === 0) return 0;
+  return Math.min(6.0, 3.4 + alignedPairs * 1.2);
+}
+
 function hasProminentLocalFractionBridge(candidate, rows) {
   if (!candidate?.strokes?.length || !rows || rows.length < 2) return false;
   const candidateBox = computeTightBbox(candidate.strokes);
@@ -1152,6 +1261,64 @@ function buildCompactFractionStackGroups(rows, config) {
     }
   }
   return groups;
+}
+
+function buildTallFractionStackGroups(rows, config) {
+  const sortedRows = (rows || []).slice().sort(compareRows);
+  const groups = [];
+  for (let index = 0; index < sortedRows.length - 1; index += 1) {
+    for (let span = 2; span <= 5 && index + span <= sortedRows.length; span += 1) {
+      const slice = sortedRows.slice(index, index + span);
+      const strokes = uniqueStrokes(slice.flatMap((row) => row.strokes || []));
+      if (strokes.length <= 2) continue;
+      const candidate = candidateFromStrokes(strokes, {
+        profile: 'fraction-stack-probe',
+        config
+      });
+      const height = bboxHeight(candidate.tightBbox);
+      if (height <= 150 || height > 285) continue;
+      const candidateRows = clusterStrokeRows(candidate, config);
+      const wideSupportedFraction = hasWideFractionBar(candidate) &&
+        hasProminentLocalFractionBridge(candidate, candidateRows);
+      if (!wideSupportedFraction && !hasProminentLocalFractionBridge(candidate, candidateRows)) {
+        continue;
+      }
+      if (
+        rowsHaveIndependentLowerContinuation(slice, candidate, { broadContinuationMin: 360 }) &&
+        !wideSupportedFraction
+      ) {
+        continue;
+      }
+      if (bottomRowFallsBelowFractionStack(slice, candidate)) continue;
+      groups.push({ strokes });
+    }
+  }
+  return groups;
+}
+
+function bottomRowFallsBelowFractionStack(rows, candidate) {
+  const sortedRows = (rows || []).slice().sort(compareRows);
+  if (sortedRows.length < 3) return false;
+
+  const bottom = sortedRows[sortedRows.length - 1];
+  const bottomStrokeIds = new Set((bottom.strokes || []).map((stroke) => String(stroke.id)));
+  const bars = (candidate?.strokes || [])
+    .filter((stroke) => (
+      stroke?.canvasBbox &&
+      isHorizontalStroke(stroke) &&
+      !bottomStrokeIds.has(String(stroke.id))
+    ))
+    .map((stroke) => stroke.canvasBbox)
+    .filter((box) => centerY(box) < centerY(bottom.bbox))
+    .sort((a, b) => centerY(b) - centerY(a));
+  const bar = bars[0];
+  if (!bar) return false;
+
+  const bottomGap = Math.max(0, bottom.bbox.yMin - bar.yMax);
+  const centerGap = centerY(bottom.bbox) - centerY(bar);
+  const bottomMedian = rowMedianHeight(bottom) || bboxHeight(bottom.bbox);
+  return bottomGap > Math.max(42, bottomMedian * 0.85) &&
+    centerGap > Math.max(70, bottomMedian * 1.45);
 }
 
 function rowsHaveIndependentLowerContinuation(rows, candidate, options = {}) {
@@ -2007,6 +2174,141 @@ export function detectScratchAnnotations(strokes) {
   if (horizontalOverlapRatio(topBox, remainingBox) < 0.2) return [];
 
   return topStrokes;
+}
+
+export function detectEnclosingAnnotationStrokes(strokes) {
+  const usable = (strokes || []).filter((stroke) => stroke?.canvasBbox);
+  if (usable.length < 4) return [];
+
+  const medianHeight = median(usable.map(strokeHeight)) || 1;
+  const medianWidth = median(usable.map(strokeWidth)) || 1;
+  const out = [];
+
+  for (const stroke of usable) {
+    const box = stroke.canvasBbox;
+    const width = bboxWidth(box);
+    const height = bboxHeight(box);
+    if (width < Math.max(90, medianWidth * 2.8)) continue;
+    if (height < Math.max(70, medianHeight * 2.2)) continue;
+    const aspect = width / Math.max(1, height);
+    if (aspect < 0.45 || aspect > 2.6) continue;
+    if (isHorizontalStroke(stroke) || strokeWidth(stroke) / Math.max(1, strokeHeight(stroke)) < 0.45) continue;
+
+    const enclosed = usable.filter((other) => {
+      if (other === stroke || !other.canvasBbox) return false;
+      const otherBox = other.canvasBbox;
+      const centerInside = centerX(otherBox) >= box.xMin && centerX(otherBox) <= box.xMax &&
+        centerY(otherBox) >= box.yMin && centerY(otherBox) <= box.yMax;
+      if (!centerInside) return false;
+      return bboxWidth(otherBox) <= width * 0.55 && bboxHeight(otherBox) <= height * 0.72;
+    });
+    if (enclosed.length < 3) continue;
+
+    const enclosedBox = computeTightBbox(enclosed);
+    if (!enclosedBox) continue;
+    if (horizontalOverlapRatio(box, enclosedBox) < 0.85) continue;
+    if (verticalOverlapRatio(box, enclosedBox) < 0.85) continue;
+    out.push(stroke);
+  }
+
+  return out;
+}
+
+export function detectSeparatedTopAnnotationStrokes(strokes) {
+  const usable = (strokes || []).filter((stroke) => stroke?.canvasBbox);
+  if (usable.length < 8) return [];
+
+  const sorted = usable.slice().sort(compareStrokeCenterY);
+  const medianHeight = median(usable.map(strokeHeight)) || 1;
+  const medianWidth = median(usable.map(strokeWidth)) || 1;
+  const splitIndexes = [];
+
+  for (let index = 0; index < sorted.length - 1; index += 1) {
+    const gap = centerY(sorted[index + 1].canvasBbox) - centerY(sorted[index].canvasBbox);
+    const topCount = index + 1;
+    const restCount = sorted.length - topCount;
+    if (topCount < 2 || topCount > 8 || restCount < 5) continue;
+    if (gap >= Math.max(8, medianHeight * 0.65)) {
+      splitIndexes.push(index + 1);
+    }
+  }
+  if (splitIndexes.length === 0) return [];
+
+  const overallBox = computeTightBbox(usable);
+  if (!overallBox) return [];
+
+  for (const splitIndex of splitIndexes) {
+    const topStrokes = sorted.slice(0, splitIndex);
+    const remaining = sorted.slice(splitIndex);
+    const topBox = computeTightBbox(topStrokes);
+    const remainingBox = computeTightBbox(remaining);
+    if (!topBox || !remainingBox) continue;
+    if (topBox.yMax > remainingBox.yMin + medianHeight * 0.2) continue;
+
+    const topWidth = bboxWidth(topBox);
+    const topHeight = bboxHeight(topBox);
+    const topCoverage = topStrokes.reduce((sum, stroke) => sum + strokeWidth(stroke), 0) / Math.max(1, topWidth);
+    const verticalGap = remainingBox.yMin - topBox.yMax;
+    const sparseWideMark = (
+      topStrokes.length <= 4 &&
+      topWidth >= Math.max(240, medianWidth * 8) &&
+      topHeight <= medianHeight * 2.2 &&
+      topCoverage <= 0.28 &&
+      verticalGap >= medianHeight * 1.0
+    );
+
+    const hasLongStrike = topStrokes.some((stroke) => (
+      strokeWidth(stroke) >= Math.max(70, medianWidth * 2.2) &&
+      strokeHeight(stroke) <= medianHeight * 0.35
+    ));
+    const hasLooseEnclosingStroke = topStrokes.some((stroke) => {
+      const width = strokeWidth(stroke);
+      const height = strokeHeight(stroke);
+      const aspect = width / Math.max(1, height);
+      return (
+        height >= medianHeight * 2.6 &&
+        width >= medianWidth * 1.4 &&
+        aspect >= 0.35 &&
+        aspect <= 1.3
+      );
+    });
+    const crossedScratchMark = (
+      topStrokes.length <= 8 &&
+      hasLongStrike &&
+      hasLooseEnclosingStroke &&
+      topHeight <= bboxHeight(overallBox) * 0.48
+    );
+
+    if (sparseWideMark || crossedScratchMark) return topStrokes;
+  }
+
+  return [];
+}
+
+export function detectTinyIsolatedScratchStrokes(strokes) {
+  const usable = (strokes || []).filter((stroke) => stroke?.canvasBbox);
+  if (usable.length === 0) return [];
+
+  return usable.filter((stroke) => {
+    const width = strokeWidth(stroke);
+    const height = strokeHeight(stroke);
+    if (width > 10 || height > 10) return false;
+
+    return !usable.some((other) => {
+      if (other === stroke || !other.canvasBbox) return false;
+      const horizontalGap = Math.max(
+        0,
+        Math.max(other.canvasBbox.xMin, stroke.canvasBbox.xMin) -
+          Math.min(other.canvasBbox.xMax, stroke.canvasBbox.xMax)
+      );
+      const verticalGap = Math.max(
+        0,
+        Math.max(other.canvasBbox.yMin, stroke.canvasBbox.yMin) -
+          Math.min(other.canvasBbox.yMax, stroke.canvasBbox.yMax)
+      );
+      return Math.hypot(horizontalGap, verticalGap) <= 32;
+    });
+  });
 }
 
 /**

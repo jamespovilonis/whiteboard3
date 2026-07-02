@@ -48,31 +48,194 @@ DEFAULT_FIXTURES: Sequence[dict[str, str]] = (
         "slug": "compact-plus-minus-solution",
         "description": "Compact plus-minus solution-set mismatch.",
     },
+    {
+        "audit_id": "audit_20260630T144334954639Z_7784e96969",
+        "slug": "circled-x-equals-four",
+        "description": "Large oval around final x=4 answer causing OCR to read parentheses.",
+    },
+    {
+        "audit_id": "audit_20260701T154037909609Z_cfcdad97a1",
+        "slug": "wide-fraction-answer-setup",
+        "description": "Wide handwritten fraction answer split by timing into numerator and denominator rows.",
+    },
+    {
+        "audit_id": "audit_20260701T220426951173Z_2eafc3f6f8",
+        "slug": "radical-fraction-simplification",
+        "description": "Radical fraction simplification with late detached equals strokes and stacked fraction bodies.",
+    },
+    {
+        "audit_id": "audit_20260701T153744697859Z_cc6a30ef8a",
+        "slug": "plus-minus-fraction-solution",
+        "description": "Quadratic solve with a plus-minus fractional final answer.",
+    },
+    {
+        "audit_id": "audit_20260630T192728021251Z_d70549b67a",
+        "slug": "fragmented-invalid-expression",
+        "description": "Invalid expression answer that must stay one semantic line instead of fragmenting into correct-looking single digits.",
+    },
+    {
+        "audit_id": "audit_20260701T220344096316Z_166bcd217a",
+        "slug": "radical-fraction-simplification-no-leading-equals",
+        "description": "Radical fraction simplification without leading equals strokes; stale OCR split numerator and radical body.",
+    },
+    {
+        "audit_id": "audit_20260701T220432397511Z_d626c2d905",
+        "slug": "radical-fraction-simplification-leading-minus",
+        "description": "Radical fraction simplification with leading equals/minus-like strokes and stale OCR fragmentation.",
+    },
 )
 
 REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
-    "audit_20260701T211642649058Z_042676e831": [
+    "audit_20260701T154037909609Z_cfcdad97a1": [
         {
             "lineIndex": 0,
-            "latex": "1 \\pm 1",
-            "strokeIds": ["s001", "s005", "s002"],
-            "source": "fastResult.lines",
-            "sourceCandidateId": "fast-line-1",
+            "latex": "x = \\frac{11+9}{2}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010", "s011"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "parent_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011",
+        },
+    ],
+    "audit_20260630T144334954639Z_7784e96969": [
+        {
+            "lineIndex": 0,
+            "latex": "x=4",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "strict_s001|s002|s003|s004|s005|s006",
+        },
+    ],
+    "audit_20260630T190746242118Z_6345194572": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{2x}{2} = \\frac{10}{2}",
+            "strokeIds": ["s007", "s008", "s010", "s011", "s013", "s014", "s015", "s016", "s017", "s018", "s019"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "fraction-stack-line_s007|s008|s010|s011|s013|s014|s015|s016|s017|s018|s019",
         },
         {
             "lineIndex": 1,
-            "latex": "2 -",
-            "strokeIds": ["s004", "s006"],
-            "source": "reviewed-current-segmentation",
-            "sourceCandidateId": "strict_s004|s006",
+            "latex": "x=5",
+            "strokeIds": ["s020", "s021", "s022", "s023", "s024"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "raw-row-line_s020|s021|s022|s023|s024",
+        },
+    ],
+    "audit_20260701T130355711645Z_7123ff1932": [
+        {
+            "lineIndex": 0,
+            "latex": "x-1=10",
+            "strokeIds": ["s005", "s006", "s007", "s008", "s009", "s010", "s011", "s012"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "loose_s005|s006|s007|s008|s009|s010|s011|s012",
         },
         {
-            "lineIndex": 2,
-            "latex": "\\frac { 1 } { 2 } = \\frac { 3 } { 2 }",
-            "strokeIds": ["s003", "s007", "s008"],
-            "source": "reviewed-current-segmentation",
-            "sourceCandidateId": "row-line_s003|s007|s008",
+            "lineIndex": 1,
+            "latex": "x=9",
+            "strokeIds": ["s013", "s014", "s015", "s016", "s017", "s018"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "loose_s013|s014|s015|s016|s017|s018",
         },
+    ],
+    "audit_20260701T211642649058Z_042676e831": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{1}{2} - \\frac{1}{2}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "loose_s001|s002|s003|s004|s005|s006|s007",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "0",
+            "strokeIds": ["s008"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "loose_s008",
+        },
+    ],
+    "audit_20260701T220336197762Z_92f670ddce": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{7}{\\sqrt{9}}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "parent_s001|s002|s003|s004|s005",
+        },
+    ],
+    "audit_20260701T220426951173Z_2eafc3f6f8": [
+        {
+            "lineIndex": 0,
+            "latex": "= \\frac{7}{\\sqrt{9}}",
+            "strokeIds": ["s010", "s001", "s011", "s002", "s003", "s004", "s005"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s010|s001|s011|s002|s003|s004|s005",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "= \\frac{7}{3}",
+            "strokeIds": ["s012", "s006", "s013", "s007", "s008", "s009"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s012|s006|s013|s007|s008|s009",
+        },
+    ],
+    "audit_20260701T220344096316Z_166bcd217a": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{7}{\\sqrt{9}}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "fraction-stack-line_s001|s002|s003|s004|s005",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "\\frac{7}{3}",
+            "strokeIds": ["s006", "s007", "s008", "s009"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "fraction-stack-line_s006|s007|s008|s009",
+        },
+    ],
+    "audit_20260701T220432397511Z_d626c2d905": [
+        {
+            "lineIndex": 0,
+            "latex": "= \\frac{7}{\\sqrt{9}}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s010", "s011", "s014", "s015"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "fraction-stack-line_s001|s002|s003|s004|s005|s010|s011|s014|s015",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "= \\frac{7}{3}",
+            "strokeIds": ["s006", "s007", "s008", "s009", "s012", "s013"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "fraction-stack-line_s006|s007|s008|s009|s012|s013",
+        },
+    ],
+    "audit_20260630T204322495004Z_f13be89ef3": [
+        {
+            "lineIndex": 0,
+            "latex": "x = \\pm 2",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "parent_s001|s002|s003|s004|s005|s006|s007|s008",
+        },
+    ],
+    "audit_20260630T192728021251Z_d70549b67a": [
+        {
+            "lineIndex": 0,
+            "latex": "1+1=2",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "parent_s001|s002|s003|s004|s005|s006|s007",
+        },
+    ],
+}
+
+REVIEWED_VISUAL_ONLY_STROKES: dict[str, list[str]] = {
+    "audit_20260630T144334954639Z_7784e96969": ["s007"],
+    "audit_20260630T190746242118Z_6345194572": [
+        "s001", "s002", "s003", "s004", "s005", "s006", "s009", "s012",
+    ],
+    "audit_20260701T130355711645Z_7123ff1932": [
+        "s001", "s002", "s003", "s004",
     ],
 }
 
@@ -192,10 +355,18 @@ def build_fixture(audit_dir: Path, spec: dict[str, str]) -> dict[str, Any]:
     for stroke in distilled_strokes:
         stroke["bbox"] = normalize_box(stroke["canvasBbox"], board_size)
         stroke["points"] = normalized_points_for(stroke, board_size)
+    detections = distill_detections(
+        fast_result.get("detection", {}).get("detections") or [],
+        origin,
+        answer_box,
+        board_size,
+    )
 
     assign_relations(distilled_strokes)
     line_groups = reviewed_line_groups(spec["audit_id"]) or build_line_groups(fast_result, id_map)
+    visual_only_stroke_ids = reviewed_visual_only_stroke_ids(spec["audit_id"])
     annotate_strokes(distilled_strokes, line_groups)
+    annotate_visual_only_strokes(distilled_strokes, visual_only_stroke_ids)
 
     return {
         "schemaVersion": 1,
@@ -221,14 +392,58 @@ def build_fixture(audit_dir: Path, spec: dict[str, str]) -> dict[str, Any]:
         "answerBox": relative_answer_box,
         "problemBox": relative_problem_box,
         "boardSize": board_size,
+        "detections": detections,
         "strokes": distilled_strokes,
         "expectedLineGroups": line_groups,
-        "visualOnlyStrokeIds": [],
+        "visualOnlyStrokeIds": visual_only_stroke_ids,
         "sourceStats": {
             "originalStrokeCount": len(source_strokes),
             "eligibleStrokeCount": len(eligible_strokes),
         },
     }
+
+
+def distill_detections(
+    detections: Sequence[Any],
+    origin: dict[str, float],
+    answer_box: Optional[dict[str, float]],
+    board_size: dict[str, float],
+) -> list[dict[str, Any]]:
+    distilled: list[dict[str, Any]] = []
+    for item in detections:
+        if not isinstance(item, dict):
+            continue
+        source_box = bbox_or_none(item.get("bbox"))
+        if not source_box:
+            continue
+        if answer_box and not boxes_overlap(source_box, answer_box):
+            continue
+        shifted = shift_box(source_box, origin)
+        if not shifted:
+            continue
+        detection: dict[str, Any] = {
+            "bbox": shifted,
+            "normalizedBbox": normalize_box(shifted, board_size),
+        }
+        score = item.get("score")
+        if is_finite(score):
+            detection["score"] = round_float(float(score), 6)
+        polygon = []
+        for point in item.get("polygon") or []:
+            if (
+                isinstance(point, (list, tuple)) and
+                len(point) >= 2 and
+                is_finite(point[0]) and
+                is_finite(point[1])
+            ):
+                polygon.append([
+                    round_float(float(point[0]) - origin["x"], 2),
+                    round_float(float(point[1]) - origin["y"], 2),
+                ])
+        if polygon:
+            detection["polygon"] = polygon
+        distilled.append(detection)
+    return distilled
 
 
 def distill_stroke(stroke: dict[str, Any], distilled_id: str, origin: dict[str, float], time_base: float) -> dict[str, Any]:
@@ -306,6 +521,10 @@ def reviewed_line_groups(audit_id: str) -> list[dict[str, Any]]:
     return [dict(item) for item in REVIEWED_LINE_GROUP_OVERRIDES.get(audit_id, [])]
 
 
+def reviewed_visual_only_stroke_ids(audit_id: str) -> list[str]:
+    return [str(item) for item in REVIEWED_VISUAL_ONLY_STROKES.get(audit_id, [])]
+
+
 def annotate_strokes(strokes: list[dict[str, Any]], line_groups: Sequence[dict[str, Any]]) -> None:
     labels: dict[str, tuple[int, str]] = {}
     for group in line_groups:
@@ -317,6 +536,13 @@ def annotate_strokes(strokes: list[dict[str, Any]], line_groups: Sequence[dict[s
         if label:
             stroke["expectedLineIndex"] = label[0]
             stroke["expectedLatex"] = label[1]
+
+
+def annotate_visual_only_strokes(strokes: list[dict[str, Any]], visual_only_stroke_ids: Sequence[str]) -> None:
+    visual_ids = {str(stroke_id) for stroke_id in visual_only_stroke_ids}
+    for stroke in strokes:
+        if stroke["id"] in visual_ids:
+            stroke["visualOnly"] = True
 
 
 def assign_relations(strokes: list[dict[str, Any]]) -> None:

@@ -140,18 +140,18 @@ class EquationGraderWorkTests(unittest.TestCase):
         self.assertEqual(result["steps"][0]["studentLatex"], "x = 4")
         self.assertEqual(result["steps"][0]["selectedCandidateIndex"], 1)
 
-    def test_unsimplified_equivalent_solution_is_incomplete(self):
+    def test_arithmetic_equivalent_equation_solution_is_final(self):
         manifest = create_answer_manifest("x + 2 = 5")
 
         result = grade_equation_work(manifest, [{"latex": "x = 5 - 2"}])
 
         self.assertEqual(result["steps"][0]["classification"], "valid_step")
         self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
-        self.assertEqual(result["steps"][0]["answerFinality"], "unsimplified")
-        self.assertEqual(result["steps"][0]["countsTowardCompletion"], False)
-        self.assertEqual(result["result"]["problemStatus"], "incomplete")
-        self.assertEqual(result["result"]["foundSolutions"], [])
-        self.assertEqual(result["result"]["missingSolutions"], ["3"])
+        self.assertEqual(result["steps"][0]["answerFinality"], "final")
+        self.assertEqual(result["steps"][0]["countsTowardCompletion"], True)
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["result"]["foundSolutions"], ["3"])
+        self.assertEqual(result["result"]["missingSolutions"], [])
 
     def test_simplified_solution_completes_after_unsimplified_work(self):
         manifest = create_answer_manifest("x + 2 = 5")
@@ -162,7 +162,7 @@ class EquationGraderWorkTests(unittest.TestCase):
         ])
 
         self.assertEqual(result["result"]["problemStatus"], "correct")
-        self.assertEqual([step["answerFinality"] for step in result["steps"]], ["unsimplified", "final"])
+        self.assertEqual([step["answerFinality"] for step in result["steps"]], ["final", "final"])
         self.assertEqual(result["result"]["foundSolutions"], ["3"])
 
     def test_candidate_ranking_prefers_final_answer_over_unsimplified_answer(self):
@@ -177,9 +177,36 @@ class EquationGraderWorkTests(unittest.TestCase):
         }])
 
         self.assertEqual(result["result"]["problemStatus"], "correct")
-        self.assertEqual(result["steps"][0]["studentLatex"], "x = 3")
-        self.assertEqual(result["steps"][0]["selectedCandidateIndex"], 1)
-        self.assertEqual(result["steps"][0]["answerFinality"], "final")
+        self.assertEqual(result["steps"][0]["studentLatex"], "x = 5 - 2")
+        self.assertEqual(result["steps"][0]["selectedCandidateIndex"], 0)
+
+    def test_bare_unsimplified_equivalent_solution_is_incomplete(self):
+        manifest = create_answer_manifest("x + 2 = 5")
+
+        result = grade_equation_work(manifest, [{"latex": "5 - 2"}])
+
+        self.assertEqual(result["steps"][0]["classification"], "valid_step")
+        self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
+        self.assertEqual(result["steps"][0]["answerFinality"], "unsimplified")
+        self.assertEqual(result["steps"][0]["countsTowardCompletion"], False)
+        self.assertEqual(result["result"]["problemStatus"], "incomplete")
+
+    def test_accepts_audit_arithmetic_equation_answers_as_final(self):
+        addition = grade_math_payload({
+            "problemLatex": "x-1=9",
+            "problemMetadata": {"source": "user-latex"},
+            "lines": [{"latex": "x = 1 + 9"}],
+        })
+        fraction = grade_math_payload({
+            "problemLatex": "2x - 9 = 11",
+            "problemMetadata": {"source": "user-latex"},
+            "lines": [{"latex": r"x = \frac { 1 1 + 9 } { 2 }"}],
+        })
+
+        self.assertEqual(addition["result"]["problemStatus"], "correct")
+        self.assertEqual(addition["steps"][0]["answerFinality"], "final")
+        self.assertEqual(fraction["result"]["problemStatus"], "correct")
+        self.assertEqual(fraction["steps"][0]["answerFinality"], "final")
 
     def test_candidate_group_grading_selects_valid_top_five_prediction(self):
         manifest = create_answer_manifest("3x + 5 = 17")
@@ -240,6 +267,27 @@ class EquationGraderWorkTests(unittest.TestCase):
                 self.assertEqual(result["result"]["problemStatus"], "correct")
                 self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
                 self.assertEqual(result["steps"][0]["matchedSolutions"], ["2", "3"])
+
+    def test_repeated_assignment_repairs_second_equals_read_as_minus(self):
+        manifest = create_answer_manifest("x^2 - 5x + 6 = 0")
+
+        result = grade_equation_work(manifest, [
+            {"latex": "(x - 2)(x - 3)=0"},
+            {"latex": "x = 2 x - 3"},
+        ])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][1]["matchedSolutions"], ["2", "3"])
+        self.assertEqual(result["steps"][1]["repairedLatex"], "x = 2 x = 3")
+        self.assertEqual(result["steps"][1]["ocrRepair"]["source"], "repeated-assignment-equals-repair")
+
+    def test_repeated_assignment_repair_requires_multi_solution_problem(self):
+        manifest = create_answer_manifest("x - 2 = 0")
+
+        result = grade_equation_work(manifest, [{"latex": "x = 2 x - 3"}])
+
+        self.assertEqual(result["result"]["problemStatus"], "incorrect")
+        self.assertNotIn("ocrRepair", result["steps"][0])
 
     def test_partial_solution_is_incomplete(self):
         manifest = create_answer_manifest("x^2 - 5x + 6 = 0")
@@ -309,6 +357,30 @@ class EquationGraderWorkTests(unittest.TestCase):
         self.assertEqual(result["result"]["problemStatus"], "correct")
         self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
 
+    def test_accepts_plus_minus_fraction_solution_as_final(self):
+        manifest = create_answer_manifest("4x^2 - 9 = 0")
+
+        result = grade_equation_work(manifest, [{
+            "latex": r"x = \pm \frac { 3 } { 2 }",
+        }])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
+        self.assertEqual(result["steps"][0]["answerFinality"], "final")
+        self.assertEqual(result["result"]["missingSolutions"], [])
+
+    def test_accepts_plus_minus_radical_multiple_solution_as_final(self):
+        manifest = create_answer_manifest("x^2 - 8 = 0")
+
+        result = grade_equation_work(manifest, [{
+            "latex": r"x = \pm 2 \sqrt { 2 }",
+        }])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["solutionCoverage"], "full")
+        self.assertEqual(result["steps"][0]["answerFinality"], "final")
+        self.assertEqual(result["result"]["missingSolutions"], [])
+
     def test_accepts_rounded_decimal_solutions_with_tolerance(self):
         manifest = create_answer_manifest("x^2 - 2 = 0")
 
@@ -324,6 +396,20 @@ class EquationGraderWorkTests(unittest.TestCase):
 
         self.assertEqual(result["result"]["problemStatus"], "correct")
         self.assertEqual(result["steps"][0]["acceptedSpecialAnswer"], "none")
+
+    def test_accepts_no_solution_contradiction_step(self):
+        manifest = create_answer_manifest("x + 5 = x")
+
+        for lines in (
+            [{"latex": "- x - x"}, {"latex": "5 = 0"}],
+            [{"latex": "-x"}, {"latex": "-x"}, {"latex": "5 = 0"}],
+        ):
+            with self.subTest(lines=lines):
+                result = grade_equation_work(manifest, lines)
+
+                self.assertEqual(result["result"]["problemStatus"], "correct")
+                self.assertEqual(result["steps"][-1]["acceptedSpecialAnswer"], "none")
+                self.assertEqual(result["steps"][-1]["solutionCoverage"], "full")
 
     def test_accepts_infinite_solution_answer(self):
         manifest = create_answer_manifest("x + 1 = x + 1")
@@ -729,6 +815,27 @@ class ExpressionGraderTests(unittest.TestCase):
         self.assertEqual(result["steps"][0]["classification"], "invalid_step")
         self.assertEqual(result["steps"][0]["answerFinality"], "invalid_format")
         self.assertEqual(result["result"]["problemStatus"], "incorrect")
+
+    def test_expression_repairs_equals_read_as_minus_in_chain(self):
+        result = grade_expression_payload({
+            "problemLatex": r"\log_2(8) - \log(100)",
+            "lines": [{"latex": "= 3 - 2 - 1"}],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["studentLatex"], "= 3 - 2 - 1")
+        self.assertEqual(result["steps"][0]["repairedLatex"], "= 3 - 2 = 1")
+        self.assertEqual(result["steps"][0]["ocrRepair"]["source"], "expression-equals-repair")
+
+    def test_expression_equals_repair_does_not_accept_wrong_subtraction(self):
+        result = grade_expression_payload({
+            "problemLatex": "5 - 2",
+            "lines": [{"latex": "5 - 1"}],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "incorrect")
+        self.assertEqual(result["steps"][0]["classification"], "invalid_step")
+        self.assertNotIn("ocrRepair", result["steps"][0])
 
     def test_expression_accepts_reduced_fraction_and_rejects_unreduced_fraction(self):
         correct = grade_expression_payload({
