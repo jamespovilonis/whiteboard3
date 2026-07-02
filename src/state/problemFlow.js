@@ -224,7 +224,7 @@ export function startCustomProblem(flow, latex, viewportWidth) {
     latex: normalizedLatex,
     modelResponse: normalizeModelResponse(null, normalizedLatex, index, input.problemType),
     metadata: {
-      source: 'user-latex',
+      source: input.source,
       problemType: input.problemType
     }
   };
@@ -409,14 +409,21 @@ function normalizeCustomProblemInput(input) {
     const requestedProblemType = normalizeProblemType(input.problemType || input.kind);
     return {
       latex,
-      problemType: resolveCustomProblemType(latex, requestedProblemType)
+      problemType: resolveCustomProblemType(latex, requestedProblemType),
+      source: normalizeCustomProblemSource(input.source)
     };
   }
   const latex = String(input || '').trim();
   return {
     latex,
-    problemType: resolveCustomProblemType(latex, 'equation-solving')
+    problemType: resolveCustomProblemType(latex, 'equation-solving'),
+    source: 'user-latex'
   };
+}
+
+function normalizeCustomProblemSource(source) {
+  const normalized = String(source || '').trim();
+  return normalized || 'user-latex';
 }
 
 function normalizeProblemType(value) {

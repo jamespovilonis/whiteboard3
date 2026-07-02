@@ -17,7 +17,9 @@ export default function WhiteboardStage({
   onPanStateChange,
   onStrokeFinalized,
   onStrokesChanged,
-  onPenStrokeStart
+  onPenStrokeStart,
+  className = '',
+  canvasTestId = 'whiteboard-canvas'
 }) {
   const bgCanvasRef = useRef(null);
   const fgCanvasRef = useRef(null);
@@ -110,7 +112,7 @@ export default function WhiteboardStage({
 
   return (
     <div
-      className={`whiteboard-stage tool-${activeTool} ${isPanning ? 'is-panning' : ''}`}
+      className={`whiteboard-stage tool-${activeTool} ${isPanning ? 'is-panning' : ''} ${className}`}
       onWheel={handleWheel}
     >
       <canvas ref={bgCanvasRef} className="whiteboard-canvas whiteboard-bg" aria-hidden="true" />
@@ -118,7 +120,7 @@ export default function WhiteboardStage({
         ref={fgCanvasRef}
         className="whiteboard-canvas whiteboard-fg"
         aria-label="Whiteboard drawing surface"
-        data-testid="whiteboard-canvas"
+        data-testid={canvasTestId}
       />
       <ProblemLayer
         problems={problems}

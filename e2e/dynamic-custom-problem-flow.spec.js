@@ -4,7 +4,7 @@ import { installInvalidProblemSourceRoute } from './helpers/problemSource.js';
 import {
   clickAndScrollCanvasDown,
   drawAnswerStrokeInsideProblemBox,
-  enterCustomLatexProblem,
+  enterHandwrittenProblem,
   getE2ESnapshot,
   waitForE2EBridge,
   waitForProblemSourceLoaded,
@@ -27,23 +27,26 @@ const CUSTOM_PROBLEMS = [
   }
 ];
 
-test('solves multiple user-entered latex problems and can scroll the canvas for longer work', async ({ page }) => {
+test('solves multiple handwritten problems and can scroll the canvas for longer work', async ({ page }) => {
   await installInvalidProblemSourceRoute(page, { problems: [] });
   const mockRecognition = await installMockRecognitionRoutes(page, {
-    latexLines: CUSTOM_PROBLEMS.map((problem) => problem.recognizedLatex)
+    latexLines: CUSTOM_PROBLEMS.flatMap((problem) => [
+      problem.latex,
+      problem.recognizedLatex
+    ])
   });
 
   await page.goto('/');
   await waitForE2EBridge(page);
   await waitForProblemSourceLoaded(page);
-  await expect(page.getByTestId('latex-equation-input')).toBeVisible();
+  await expect(page.getByTestId('handwritten-problem-canvas')).toBeVisible();
 
   for (const [index, customProblem] of CUSTOM_PROBLEMS.entries()) {
     const problemId = `problem-${index + 1}`;
-    const initial = await enterCustomLatexProblem(page, customProblem.latex);
+    const initial = await enterHandwrittenProblem(page, customProblem.latex);
     expect(initial.activeProblem.id).toBe(problemId);
     expect(initial.activeProblem.latex).toBe(customProblem.latex);
-    expect(initial.activeProblem.metadata.source).toBe('user-latex');
+    expect(initial.activeProblem.metadata.source).toBe('user-handwriting');
     await expect(page.locator(`.problem-print[data-problem-id="${problemId}"]`)).toBeVisible();
     await expect(page.getByTestId('submit-answer')).toBeEnabled();
 
@@ -79,7 +82,7 @@ test('solves multiple user-entered latex problems and can scroll the canvas for 
       const snapshot = window.__whiteboardE2E?.snapshot?.();
       return snapshot?.activeProblem === null && snapshot?.problemFlow?.awaitingEquation === true;
     });
-    await expect(page.getByTestId('latex-equation-input')).toBeVisible();
+    await expect(page.getByTestId('handwritten-problem-canvas')).toBeVisible();
   }
 
   const finalSnapshot = await getE2ESnapshot(page);

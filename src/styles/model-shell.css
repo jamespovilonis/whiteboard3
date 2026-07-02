@@ -758,6 +758,10 @@
   animation: latex-dialog-open 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.handwritten-problem-dialog {
+  width: min(760px, calc(100vw - 48px));
+}
+
 .latex-dialog-copy {
   display: flex;
   flex-direction: column;
@@ -866,8 +870,68 @@
   font-size: 28px;
 }
 
+.handwritten-problem-pad {
+  position: relative;
+  height: 320px;
+  overflow: hidden;
+  background: #fefff1;
+  border: 1px solid rgba(32, 34, 40, 0.14);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.42);
+}
+
+.handwritten-problem-pad .toolbar {
+  bottom: 12px;
+}
+
+.handwritten-problem-preview {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 82px;
+  padding: 14px;
+  overflow-x: auto;
+  background: rgba(238, 236, 225, 0.66);
+  border: 1px solid rgba(32, 34, 40, 0.10);
+  border-radius: 8px;
+}
+
+.handwritten-problem-preview > span {
+  color: rgba(48, 48, 56, 0.72);
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.handwritten-problem-preview-math {
+  min-width: 0;
+}
+
+.handwritten-problem-preview-math .katex-display {
+  margin: 0;
+}
+
+.handwritten-problem-preview-math .katex {
+  color: #303038;
+  font-size: 28px;
+}
+
+.handwritten-problem-error {
+  padding: 10px 12px;
+  color: rgb(142, 36, 32);
+  background: rgba(190, 56, 48, 0.08);
+  border: 1px solid rgba(190, 56, 48, 0.22);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 .latex-dialog-actions {
   display: flex;
+  gap: 10px;
   justify-content: flex-end;
 }
 
@@ -896,6 +960,36 @@
   cursor: not-allowed;
   opacity: 0.46;
   transform: none;
+}
+
+.latex-dialog-actions button.secondary {
+  color: rgba(48, 48, 56, 0.82);
+  background: rgba(32, 34, 40, 0.08);
+  border-color: rgba(32, 34, 40, 0.10);
+}
+
+.latex-dialog-actions button.secondary:hover {
+  background: rgba(32, 34, 40, 0.13);
+}
+
+@media (max-width: 700px) {
+  .handwritten-problem-dialog {
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+  }
+
+  .handwritten-problem-pad {
+    height: 280px;
+  }
+
+  .handwritten-problem-preview {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .handwritten-problem-actions {
+    flex-wrap: wrap;
+  }
 }
 
 @keyframes latex-dialog-open {

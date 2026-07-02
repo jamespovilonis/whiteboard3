@@ -4694,6 +4694,20 @@ test('starting an evaluate custom problem stores problem type and model copy', (
   assert.equal(active.metadata.problemType, 'evaluate-expression');
 });
 
+test('starting a handwritten custom problem stores handwriting source', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, {
+    latex: '2x - 1 = 19',
+    problemType: 'equation-solving',
+    source: 'user-handwriting'
+  }, 1200);
+  const active = getActiveProblem(started.flow);
+
+  assert.equal(active.latex, '2x - 1 = 19');
+  assert.equal(active.metadata.source, 'user-handwriting');
+  assert.equal(active.metadata.problemType, 'equation-solving');
+});
+
 test('numeric custom expression without equals routes to evaluate mode', () => {
   const initial = createInitialProblemFlow(1200);
   const started = startCustomProblem(initial, '  0.9 - 0.11  ', 1200);
@@ -4791,7 +4805,7 @@ test('submitted problem answer box ignores later strokes underneath it', () => {
   assert.deepEqual(afterLaterInk.answerContentBox, frozenProblem.answerContentBox);
 });
 
-test('next problem request opens the latex prompt after a custom submission', () => {
+test('next problem request opens the custom problem prompt after a custom submission', () => {
   const initial = createInitialProblemFlow(1200);
   const started = startCustomProblem(initial, 'x + 1 = 3', 1200).flow;
   const active = getActiveProblem(started);

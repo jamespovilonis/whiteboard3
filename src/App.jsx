@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import LatexEquationDialog from './components/LatexEquationDialog.jsx';
+import HandwrittenProblemDialog from './components/HandwrittenProblemDialog.jsx';
 import ModelShell from './components/ModelShell.jsx';
 import Toolbar from './components/Toolbar.jsx';
 import WhiteboardStage from './components/WhiteboardStage.jsx';
@@ -124,7 +124,8 @@ export default function App() {
     problemFlow,
     recognitionResults,
     eventsRef: e2eEventsRef,
-    onRecognitionPausedChange: setRecognitionPaused
+    onRecognitionPausedChange: setRecognitionPaused,
+    onCreateCustomProblem: createCustomProblem
   });
 
   return (
@@ -173,7 +174,7 @@ export default function App() {
       />
 
       {problemFlow.awaitingEquation && (
-        <LatexEquationDialog onSubmit={createCustomProblem} />
+        <HandwrittenProblemDialog onSubmit={createCustomProblem} />
       )}
 
       <button

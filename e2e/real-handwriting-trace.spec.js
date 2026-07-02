@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { installMockRecognitionRoutes } from './helpers/mockRecognition.js';
 import { installInvalidProblemSourceRoute } from './helpers/problemSource.js';
 import {
-  enterCustomLatexProblem,
+  createCustomProblemDirectly,
   getE2ESnapshot,
   waitForE2EBridge,
   waitForRecognitionComplete
@@ -32,7 +32,7 @@ test('mocked recognition replays a distilled real handwriting trace in the brows
   await page.clock.install({ time: new Date('2026-06-28T12:00:00.000Z') });
   await page.goto('/');
   await waitForE2EBridge(page);
-  const initial = await enterCustomLatexProblem(page, fixture.problemLatex, {
+  const initial = await createCustomProblemDirectly(page, fixture.problemLatex, {
     problemType: problemTypeFor(fixture)
   });
 
@@ -67,7 +67,7 @@ test('live OCR can replay a distilled real handwriting trace', async ({ page }, 
     await test.step(`replay ${fixture.slug}`, async () => {
       await page.goto('/');
       await waitForE2EBridge(page);
-      const initial = await enterCustomLatexProblem(page, fixture.problemLatex, {
+      const initial = await createCustomProblemDirectly(page, fixture.problemLatex, {
         problemType: problemTypeFor(fixture)
       });
 

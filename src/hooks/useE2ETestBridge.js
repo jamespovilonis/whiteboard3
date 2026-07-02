@@ -9,7 +9,8 @@ export function useE2ETestBridge({
   problemFlow,
   recognitionResults,
   eventsRef,
-  onRecognitionPausedChange
+  onRecognitionPausedChange,
+  onCreateCustomProblem
 }) {
   useEffect(() => {
     if (!E2E_TEST_ENABLED || typeof window === 'undefined') return undefined;
@@ -53,6 +54,9 @@ export function useE2ETestBridge({
       },
       replaceStrokes(strokes, reason = 'e2e-inject') {
         engineRef.current?.replaceStrokesForE2E?.(strokes, reason);
+      },
+      createCustomProblem(input) {
+        onCreateCustomProblem?.(input);
       }
     };
 
@@ -63,7 +67,15 @@ export function useE2ETestBridge({
         delete window.__whiteboardE2E;
       }
     };
-  }, [engineRef, eventsRef, onRecognitionPausedChange, problemFlow, recognitionResults, viewport]);
+  }, [
+    engineRef,
+    eventsRef,
+    onCreateCustomProblem,
+    onRecognitionPausedChange,
+    problemFlow,
+    recognitionResults,
+    viewport
+  ]);
 }
 
 export function recordE2EEvent(eventsRef, type, detail = {}) {

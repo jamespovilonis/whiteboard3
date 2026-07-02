@@ -26,20 +26,69 @@ export async function waitForProblemSourceLoaded(page) {
   ));
 }
 
-export async function enterCustomLatexProblem(page, latex, options = {}) {
+export async function enterHandwrittenProblem(page, latex, options = {}) {
   await expectBridge(page);
-  if (options.problemType === 'evaluate-expression') {
-    await page.getByTestId('latex-problem-type-evaluate').click();
-  } else if (options.problemType === 'equation-solving') {
-    await page.getByTestId('latex-problem-type-solve').click();
-  }
-  await page.getByTestId('latex-equation-input').fill(latex);
-  await page.getByTestId('latex-equation-submit').click();
+  await submitHandwrittenProblemPreview(page, latex, options);
+  await page.getByTestId('handwritten-problem-confirm').click();
   await waitForE2EBridge(page, { activeProblemLatex: latex });
   const snapshot = await getE2ESnapshot(page);
   await waitForActiveProblemOnCanvas(page, snapshot.activeProblem?.id || null);
   await page.locator('.problem-print').first().waitFor({ state: 'visible' });
   return getE2ESnapshot(page);
+}
+
+export const enterCustomLatexProblem = enterHandwrittenProblem;
+
+export async function createCustomProblemDirectly(page, latex, options = {}) {
+  await expectBridge(page);
+  await page.evaluate(({ latex: problemLatex, problemType, source }) => {
+    window.__whiteboardE2E?.createCustomProblem?.({
+      latex: problemLatex,
+      problemType,
+      source
+    });
+  }, {
+    latex,
+    problemType: options.problemType || 'equation-solving',
+    source: options.source || 'user-latex'
+  });
+  await waitForE2EBridge(page, { activeProblemLatex: latex });
+  const snapshot = await getE2ESnapshot(page);
+  await waitForActiveProblemOnCanvas(page, snapshot.activeProblem?.id || null);
+  await page.locator('.problem-print').first().waitFor({ state: 'visible' });
+  return getE2ESnapshot(page);
+}
+
+export async function submitHandwrittenProblemPreview(page, expectedLatex, options = {}) {
+  await expectBridge(page);
+  if (options.problemType === 'evaluate-expression') {
+    await page.getByTestId('handwritten-problem-type-evaluate').click();
+  } else if (options.problemType === 'equation-solving') {
+    await page.getByTestId('handwritten-problem-type-solve').click();
+  }
+  await drawHandwrittenProblemStroke(page, options.stroke);
+  await page.getByTestId('handwritten-problem-submit').click();
+  await page.waitForFunction((latex) => (
+    document.querySelector('[data-testid="handwritten-problem-latex"]')?.dataset?.latex === latex
+  ), expectedLatex);
+}
+
+async function drawHandwrittenProblemStroke(page, stroke = {}) {
+  const canvas = page.getByTestId('handwritten-problem-canvas');
+  await canvas.waitFor({ state: 'visible' });
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error('Handwritten problem canvas is not visible');
+  const y = box.y + (stroke.yOffset ?? box.height * 0.45);
+  const startX = box.x + (stroke.startXOffset ?? 96);
+  const endX = box.x + (stroke.endXOffset ?? Math.min(box.width - 96, 260));
+
+  await page.mouse.move(startX, y);
+  await page.mouse.down();
+  await page.mouse.move(endX, y + (stroke.endYOffset ?? 18), { steps: stroke.steps ?? 8 });
+  await page.mouse.up();
+  await page.waitForFunction(() => (
+    !document.querySelector('[data-testid="handwritten-problem-submit"]')?.disabled
+  ));
 }
 
 export async function drawAnswerStrokeInsideProblemBox(page, problemBox, options = {}) {
