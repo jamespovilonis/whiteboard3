@@ -35,6 +35,13 @@ const PROBLEM_MODES = {
     copy: 'Draw the numeric expression you want to evaluate.',
     actionLabel: 'Evaluate',
     previewLabel: 'Recognized expression preview'
+  },
+  simplify: {
+    problemType: 'simplify-expression',
+    title: 'Write an expression',
+    copy: 'Draw the algebraic expression you want to simplify.',
+    actionLabel: 'Simplify',
+    previewLabel: 'Recognized expression preview'
   }
 };
 
@@ -199,6 +206,15 @@ export default function HandwrittenProblemDialog({ onSubmit }) {
             onClick={() => setMode('evaluate')}
           >
             Evaluate
+          </button>
+          <button
+            type="button"
+            className={mode === 'simplify' ? 'is-selected' : ''}
+            aria-pressed={mode === 'simplify'}
+            data-testid="handwritten-problem-type-simplify"
+            onClick={() => setMode('simplify')}
+          >
+            Simplify
           </button>
         </div>
 

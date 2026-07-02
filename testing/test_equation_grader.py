@@ -17,11 +17,13 @@ if str(TESTING_DIR) not in sys.path:
 from src.grading import (
     create_answer_manifest,
     create_expression_manifest,
+    create_simplification_manifest,
     grade_candidate_group,
     grade_equation_payload,
     grade_equation_work,
     grade_expression_payload,
     grade_expression_work,
+    grade_simplification_work,
     grade_math_payload,
 )
 
@@ -1038,6 +1040,147 @@ class ExpressionGraderTests(unittest.TestCase):
         self.assertEqual(six_plus_half["result"]["problemStatus"], "correct")
         self.assertEqual(six_plus_half["result"]["foundSolutions"], ["13/2"])
         self.assertEqual(mixed_zero["result"]["problemStatus"], "correct")
+
+
+class SimplificationGraderTests(unittest.TestCase):
+    def test_simplification_manifest_generates_targets_for_supported_families(self):
+        cases = [
+            ("polynomial", "(x + 1)^2 - x^2", ["2*x + 1"]),
+            ("rational", r"\frac { x ^ { 2 } - 1 } { x - 1 }", ["x + 1"]),
+            ("radical", r"\sqrt { x ^ { 2 } }", ["Abs(x)"]),
+            ("exponential", "2 ^ x * 2 ^ 3", ["2**(x + 3)"]),
+            ("logarithmic", r"\log ( 100 x ) - \log ( x )", ["2"]),
+            ("trigonometric", r"\sin ( x ) ^ { 2 } + \cos ( x ) ^ { 2 }", ["1"]),
+            (
+                "combination",
+                r"\frac { x ^ { 2 } - 1 } { x - 1 } + \sin ( x ) ^ { 2 } + \cos ( x ) ^ { 2 }",
+                ["x + 2"],
+            ),
+        ]
+
+        for label, problem_latex, expected in cases:
+            with self.subTest(label=label):
+                manifest = create_simplification_manifest(problem_latex)
+
+                self.assertNotIn("error", manifest)
+                self.assertEqual(manifest["responseKind"], "simplified_expression")
+                self.assertEqual(manifest["exact_set"], expected)
+                self.assertEqual(manifest["variables"], ["x"])
+
+    def test_simplification_manifest_rejects_numeric_only_and_equations(self):
+        numeric = create_simplification_manifest("5 - 2")
+        equation = create_simplification_manifest("x + 1 = 3")
+
+        self.assertEqual(numeric["error"], "simplification prompts must contain at least one variable")
+        self.assertEqual(equation["error"], "problem must be an expression")
+
+    def test_simplification_accepts_rearranged_final_expression(self):
+        result = grade_math_payload({
+            "problemType": "simplify-expression",
+            "problemLatex": "(x + 1)^2 - x^2",
+            "lines": [{"latex": "1 + 2x"}],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["answerFinality"], "final")
+        self.assertEqual(result["result"]["foundSolutions"], ["2*x + 1"])
+
+    def test_simplification_rejects_equivalent_unsimplified_final_as_incomplete(self):
+        for problem_latex, repeated_latex, target in (
+            (r"\frac { x ^ { 2 } - 1 } { x - 1 }", r"\frac { x ^ { 2 } - 1 } { x - 1 }", "x + 1"),
+            ("x + x", "x + x", "2*x"),
+            (r"\sqrt { x ^ { 2 } }", r"\sqrt { x ^ { 2 } }", "Abs(x)"),
+        ):
+            with self.subTest(problem=problem_latex):
+                result = grade_math_payload({
+                    "problemType": "simplify-expression",
+                    "problemLatex": problem_latex,
+                    "lines": [{"latex": repeated_latex}],
+                })
+
+                self.assertEqual(result["steps"][0]["classification"], "valid_step")
+                self.assertEqual(result["steps"][0]["matchedSolutions"], [target])
+                self.assertEqual(result["steps"][0]["answerFinality"], "unsimplified")
+                self.assertEqual(result["steps"][0]["countsTowardCompletion"], False)
+                self.assertEqual(result["result"]["problemStatus"], "incomplete")
+
+    def test_simplification_accepts_vertical_leading_equals_chain(self):
+        result = grade_math_payload({
+            "problemType": "simplify-expression",
+            "problemLatex": "x + x",
+            "lines": [
+                {"latex": "x + x"},
+                {"latex": "= 2x"},
+            ],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][-1]["answerFinality"], "final")
+
+    def test_simplification_chain_with_broken_middle_link_is_incorrect(self):
+        result = grade_math_payload({
+            "problemType": "simplify-expression",
+            "problemLatex": "x + x",
+            "lines": [
+                {"lineIndex": 0, "latex": "x + x"},
+                {"lineIndex": 1, "latex": "= x + 1"},
+                {"lineIndex": 2, "latex": "= 2x"},
+            ],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "incorrect")
+        self.assertEqual(result["result"]["breakdownLineIndex"], 1)
+        self.assertEqual(result["steps"][1]["classification"], "invalid_step")
+
+    def test_simplification_top_candidate_recovery_selects_final_expression(self):
+        manifest = create_simplification_manifest("x + x")
+
+        result = grade_simplification_work(manifest, [{
+            "latex": "x + x",
+            "candidates": [
+                {"latex": "x + x"},
+                {"latex": "2x"},
+            ],
+        }])
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["studentLatex"], "2x")
+        self.assertEqual(result["steps"][0]["selectedCandidateIndex"], 1)
+        self.assertEqual(result["steps"][0]["answerFinality"], "final")
+
+    def test_simplification_accepts_absolute_value_target_notation(self):
+        result = grade_math_payload({
+            "problemType": "simplify-expression",
+            "problemLatex": r"\sqrt { x ^ { 2 } }",
+            "lines": [{"latex": r"\left| x \right|"}],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["matchedSolutions"], ["Abs(x)"])
+
+    def test_grade_math_payload_dispatches_and_regenerates_simplification_manifest(self):
+        stale_manifest = create_answer_manifest("x + x")
+        result = grade_math_payload({
+            "problemType": "simplify-expression",
+            "problemLatex": "x + x",
+            "manifest": stale_manifest,
+            "lines": [{"latex": "2x"}],
+        })
+
+        self.assertEqual(stale_manifest["responseKind"], "solution_set")
+        self.assertEqual(result["problem"]["manifestResponseKind"], "simplified_expression")
+        self.assertEqual(result["problem"]["manifestSource"], "generated")
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+
+    def test_grade_math_payload_infers_symbolic_simplification_without_equals(self):
+        result = grade_math_payload({
+            "problemLatex": "x + x",
+            "problemMetadata": {"problemType": "equation-solving"},
+            "lines": [{"latex": "2x"}],
+        })
+
+        self.assertEqual(result["problem"]["resolvedProblemType"], "simplify-expression")
+        self.assertEqual(result["result"]["problemStatus"], "correct")
 
 
 if __name__ == "__main__":

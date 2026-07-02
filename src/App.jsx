@@ -8,6 +8,8 @@ import {
   recordE2EEvent,
   useE2ETestBridge
 } from './hooks/useE2ETestBridge.js';
+import { addRecognitionAuditNote } from './recognition/auditClient.js';
+import { getRecognitionApiUrl } from './recognition/config.js';
 import { useProblemFlowController } from './hooks/useProblemFlowController.js';
 import { useToolbarCollapse } from './hooks/useToolbarCollapse.js';
 import { useViewportController } from './hooks/useViewportController.js';
@@ -112,6 +114,20 @@ export default function App() {
     submitAnswer();
   }, [submitAnswer]);
 
+  const handleAuditNoteSubmit = useCallback(async ({ auditId, problemId, note }) => {
+    const saved = await addRecognitionAuditNote({
+      auditId,
+      problemId,
+      note,
+      source: 'recognition-debugger'
+    }, {
+      apiUrl: getRecognitionApiUrl()
+    });
+    setAuditByProblemId((current) => updateAuditTracker(current, 'recognition-audit-note-added', saved));
+    recordE2EEvent(e2eEventsRef, 'recognition-audit-note-added', saved);
+    return saved;
+  }, []);
+
   useWhiteboardShortcuts({
     engineRef,
     onSelectTool: selectTool,
@@ -171,6 +187,7 @@ export default function App() {
         nextProblemDisabled={!isProblemReadyForNext(activeProblem)}
         onSubmitAnswer={handleSubmitAnswer}
         onNextProblem={goToNextProblem}
+        onAuditNoteSubmit={handleAuditNoteSubmit}
       />
 
       {problemFlow.awaitingEquation && (
@@ -216,6 +233,10 @@ function updateAuditTracker(current, type, detail = {}) {
   } else if (type === 'recognition-audit-error') {
     next.status = 'error';
     next.label = 'Audit error';
+  } else if (type === 'recognition-audit-note-added') {
+    next.personalNote = detail.note || previous.personalNote || '';
+    next.personalNoteAt = detail.createdAt || Date.now();
+    next.personalNoteCount = Number(previous.personalNoteCount || 0) + 1;
   }
 
   return {

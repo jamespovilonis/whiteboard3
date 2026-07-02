@@ -32,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.grading import (
     create_answer_manifest,
     create_expression_manifest,
+    create_simplification_manifest,
     grade_candidate_group,
     manifest_is_usable_for_problem_type,
     resolve_math_problem_type,
@@ -3183,6 +3184,8 @@ def score_semantic_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if answer_manifest is None:
         if problem_type == "evaluate-expression":
             answer_manifest = create_expression_manifest(problem_latex)
+        elif problem_type == "simplify-expression":
+            answer_manifest = create_simplification_manifest(problem_latex)
         else:
             answer_manifest = create_answer_manifest(
                 problem_latex,

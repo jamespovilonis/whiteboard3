@@ -1469,6 +1469,56 @@ test('recognition grading receives evaluate-expression problem metadata', async 
   assert.equal(Object.hasOwn(gradeRequests[0], 'manifest'), false);
 });
 
+test('recognition grading receives simplify-expression problem metadata', async () => {
+  installFakeCanvas();
+  const gradeRequests = [];
+  const strokes = [stroke('simplify-answer', 0, 0, 90, 40)];
+
+  await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 100, yMax: 50 },
+    problemLatex: 'x + x',
+    problemMetadata: { problemType: 'simplify-expression' },
+    apiUrl: 'http://mock-grader',
+    semanticScoring: false,
+    recognizeLine: async () => ({
+      latex: '2x',
+      top: { latex: '2x', score: 2 },
+      candidates: [{ latex: '2x', score: 2 }],
+      elapsedSeconds: 0.03
+    }),
+    gradeWork: async (request) => {
+      gradeRequests.push(request);
+      return {
+        failed: false,
+        problem: {
+          latex: request.problemLatex,
+          cardinality: 'finite',
+          solutionSet: ['2*x'],
+          decimalSet: [],
+          tolerance: 0.005,
+          manifest: {
+            responseKind: 'simplified_expression',
+            exact_set: ['2*x']
+          }
+        },
+        steps: [],
+        result: {
+          problemStatus: 'correct',
+          breakdownLineIndex: null,
+          foundSolutions: ['2*x'],
+          missingSolutions: []
+        }
+      };
+    }
+  });
+
+  assert.equal(gradeRequests.length, 1);
+  assert.equal(gradeRequests[0].problemLatex, 'x + x');
+  assert.equal(gradeRequests[0].problemMetadata.problemType, 'simplify-expression');
+  assert.equal(Object.hasOwn(gradeRequests[0], 'manifest'), false);
+});
+
 test('recognition final grading omits stale semantic manifests', async () => {
   installFakeCanvas();
   const gradeRequests = [];
@@ -4918,6 +4968,24 @@ test('starting an evaluate custom problem stores problem type and model copy', (
   assert.equal(active.metadata.problemType, 'evaluate-expression');
 });
 
+test('starting a simplify custom problem stores problem type and model copy', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, {
+    latex: '  x + x  ',
+    problemType: 'simplify-expression'
+  }, 1200);
+  const active = getActiveProblem(started.flow);
+
+  assert.equal(started.flow.awaitingEquation, false);
+  assert.equal(active.id, 'problem-1');
+  assert.equal(active.kind, 'simplify-expression');
+  assert.equal(active.latex, 'x + x');
+  assert.equal(active.modelResponse.before, 'Simplify the expression.');
+  assert.equal(active.modelResponse.latex, 'x + x');
+  assert.equal(active.metadata.source, 'user-latex');
+  assert.equal(active.metadata.problemType, 'simplify-expression');
+});
+
 test('starting a handwritten custom problem stores handwriting source', () => {
   const initial = createInitialProblemFlow(1200);
   const started = startCustomProblem(initial, {
@@ -4943,6 +5011,17 @@ test('numeric custom expression without equals routes to evaluate mode', () => {
   assert.equal(active.metadata.problemType, 'evaluate-expression');
 });
 
+test('symbolic custom expression without equals routes to simplify mode', () => {
+  const initial = createInitialProblemFlow(1200);
+  const started = startCustomProblem(initial, '  x + x  ', 1200);
+  const active = getActiveProblem(started.flow);
+
+  assert.equal(active.kind, 'simplify-expression');
+  assert.equal(active.latex, 'x + x');
+  assert.equal(active.modelResponse.before, 'Simplify the expression.');
+  assert.equal(active.metadata.problemType, 'simplify-expression');
+});
+
 test('fixture problem flow accepts evaluate-expression definitions', () => {
   const flow = createInitialProblemFlow(1200, [{
     id: 'evaluate-half-plus-half',
@@ -4955,6 +5034,20 @@ test('fixture problem flow accepts evaluate-expression definitions', () => {
   assert.equal(active.kind, 'evaluate-expression');
   assert.equal(active.metadata.problemType, 'evaluate-expression');
   assert.equal(active.modelResponse.before, 'Evaluate the expression.');
+});
+
+test('fixture problem flow accepts simplify-expression definitions', () => {
+  const flow = createInitialProblemFlow(1200, [{
+    id: 'simplify-x-plus-x',
+    kind: 'simplify-expression',
+    latex: 'x + x'
+  }]);
+  const active = getActiveProblem(flow);
+
+  assert.equal(active.id, 'simplify-x-plus-x');
+  assert.equal(active.kind, 'simplify-expression');
+  assert.equal(active.metadata.problemType, 'simplify-expression');
+  assert.equal(active.modelResponse.before, 'Simplify the expression.');
 });
 
 test('submitting a custom problem freezes it without opening the next prompt', () => {

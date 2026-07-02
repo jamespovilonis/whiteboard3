@@ -63,6 +63,8 @@ export async function submitHandwrittenProblemPreview(page, expectedLatex, optio
   await expectBridge(page);
   if (options.problemType === 'evaluate-expression') {
     await page.getByTestId('handwritten-problem-type-evaluate').click();
+  } else if (options.problemType === 'simplify-expression') {
+    await page.getByTestId('handwritten-problem-type-simplify').click();
   } else if (options.problemType === 'equation-solving') {
     await page.getByTestId('handwritten-problem-type-solve').click();
   }

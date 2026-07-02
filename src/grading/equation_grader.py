@@ -44,6 +44,7 @@ DEFAULT_TOLERANCE = 0.005
 MAX_OCR_CANDIDATES = 5
 SYMPY_GRADER_BUDGET_SECONDS = 0.5
 EVALUATE_PROBLEM_TYPES = {"evaluate-expression", "expression-evaluation", "numeric-expression"}
+SIMPLIFY_PROBLEM_TYPES = {"simplify-expression", "expression-simplification", "simplifying-expression"}
 EQUATION_PROBLEM_TYPE = "equation-solving"
 TRANSFORMATIONS = standard_transformations + (
     implicit_multiplication_application,
@@ -80,7 +81,7 @@ LATEX_VARIABLE_COMMANDS = {
 }
 
 
-def sympy_log10(arg: sympy.Expr, base: Optional[sympy.Expr] = None) -> sympy.Expr:
+def sympy_log10(arg: sympy.Expr, base: Optional[sympy.Expr] = None, **_kwargs: Any) -> sympy.Expr:
     if base is None:
         return sympy.log(arg, 10)
     return sympy.log(arg, base)
@@ -104,6 +105,7 @@ KNOWN_FUNCTIONS = {
     "ln": sympy.log,
     "exp": sympy.exp,
     "abs": sympy.Abs,
+    "Abs": sympy.Abs,
 }
 KNOWN_CONSTANTS = {"pi": sympy.pi, "e": sympy.E}
 
@@ -356,14 +358,17 @@ def grade_equation_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def grade_math_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Grade a generic math-work payload.
 
-    V1 supports equation solving and numeric expression evaluation. Numeric
-    expression prompts without an equals sign are treated as evaluate mode even
-    when a stale caller sends equation metadata.
+    V1 supports equation solving, numeric expression evaluation, and symbolic
+    expression simplification. Numeric expression prompts without an equals
+    sign are treated as evaluate mode; variable expression prompts without an
+    equals sign are treated as simplify mode.
     """
 
     problem_type = resolve_math_problem_type(payload)
     if problem_type == "evaluate-expression":
         return grade_expression_payload({**payload, "problemType": problem_type})
+    if problem_type == "simplify-expression":
+        return grade_simplification_payload({**payload, "problemType": problem_type})
 
     equation_payload = {
         **payload,
@@ -405,18 +410,27 @@ def resolve_math_problem_type(payload: dict[str, Any]) -> str:
     requested = requested_problem_type(payload)
     if requested in EVALUATE_PROBLEM_TYPES:
         return "evaluate-expression"
+    if requested in SIMPLIFY_PROBLEM_TYPES:
+        return "simplify-expression"
 
     problem_raw = payload_problem_raw(payload).strip()
     if problem_raw and "=" not in problem_raw:
         expression_manifest = create_expression_manifest(problem_raw)
         if not expression_manifest.get("error"):
             return "evaluate-expression"
+        simplification_manifest = create_simplification_manifest(problem_raw)
+        if not simplification_manifest.get("error"):
+            return "simplify-expression"
 
     return EQUATION_PROBLEM_TYPE
 
 
 def expected_manifest_response_kind(problem_type: str) -> str:
-    return "numeric_value" if problem_type in EVALUATE_PROBLEM_TYPES else "solution_set"
+    if problem_type in EVALUATE_PROBLEM_TYPES:
+        return "numeric_value"
+    if problem_type in SIMPLIFY_PROBLEM_TYPES:
+        return "simplified_expression"
+    return "solution_set"
 
 
 def manifest_response_kind(manifest: Any) -> str:
@@ -530,6 +544,89 @@ def grade_expression_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return annotate_grading_problem_metadata(
         result,
         resolved_problem_type="evaluate-expression",
+        manifest_source=manifest_source,
+        manifest=manifest,
+    )
+
+
+def create_simplification_manifest(
+    problem_raw: str,
+    *,
+    tolerance: float = DEFAULT_TOLERANCE,
+) -> dict[str, Any]:
+    """Create an answer manifest for a symbolic expression simplification prompt."""
+
+    raw = str(problem_raw or "").strip()
+    manifest: dict[str, Any] = {
+        "problem_raw": raw,
+        "responseKind": "simplified_expression",
+        "finalityPolicy": "pragmatic",
+        "variable": None,
+        "variables": [],
+        "cardinality": "finite",
+        "exact_set": [],
+        "decimal_set": [],
+        "tolerance": float(tolerance),
+        "acceptable_strings": [],
+    }
+    if not raw:
+        return {**manifest, "error": "empty problem"}
+
+    try:
+        parsed = parse_math(raw)
+    except GradingParseFailure as exc:
+        return {**manifest, "error": str(exc)}
+
+    if parsed.kind != "expression":
+        return {
+            **manifest,
+            "problem_standardized": parsed.standardized,
+            "error": "problem must be an expression",
+        }
+    if not parsed.left.free_symbols:
+        return {
+            **manifest,
+            "problem_standardized": parsed.standardized,
+            "error": "simplification prompts must contain at least one variable",
+        }
+
+    exact = _simplify_with_budget(parsed.left)
+    if exact is None:
+        return {
+            **manifest,
+            "problem_standardized": parsed.standardized,
+            "variables": sorted(symbol.name for symbol in parsed.left.free_symbols),
+            "error": "simplify failed or exceeded budget",
+        }
+    exact_set = [expression_answer_string(exact)]
+    decimal = safe_float(exact)
+    return {
+        **manifest,
+        "problem_standardized": parsed.standardized,
+        "variables": sorted(symbol.name for symbol in parsed.left.free_symbols),
+        "exact_set": exact_set,
+        "decimal_set": [round(decimal, 3)] if decimal is not None else [],
+        "acceptable_strings": [compact_answer_text(exact_set[0])],
+    }
+
+
+def grade_simplification_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    problem_raw = payload_problem_raw(payload)
+    manifest = payload.get("manifest")
+    manifest_source = "payload"
+    if not manifest_is_usable_for_problem_type(
+        manifest,
+        problem_type="simplify-expression",
+        problem_raw=problem_raw,
+    ):
+        manifest = create_simplification_manifest(str(problem_raw))
+        manifest_source = "generated"
+
+    lines = payload.get("lines") or payload.get("studentLines") or []
+    result = grade_simplification_work(manifest, lines)
+    return annotate_grading_problem_metadata(
+        result,
+        resolved_problem_type="simplify-expression",
         manifest_source=manifest_source,
         manifest=manifest,
     )
@@ -758,6 +855,139 @@ def grade_expression_work(
     }
 
 
+def grade_simplification_work(
+    manifest: dict[str, Any],
+    lines: Sequence[dict[str, Any] | str],
+) -> dict[str, Any]:
+    """Grade symbolic expression-simplification work against a manifest."""
+
+    normalized_lines = list(lines or [])
+    exact_values = manifest_exact_values(manifest)
+    selected_by_line: list[dict[str, Any]] = []
+    expression_elements: list[dict[str, Any]] = []
+
+    for fallback_index, line in enumerate(normalized_lines):
+        line_index = line.get("lineIndex", fallback_index) if isinstance(line, dict) else fallback_index
+        candidates = line_candidate_latex(line)
+        selected = classify_simplification_candidates(candidates, manifest, exact_values)
+        for raw_part, value in selected.get("_expression_elements", ()):
+            expression_elements.append({
+                "lineIndex": int(line_index),
+                "raw": raw_part,
+                "value": value,
+            })
+        selected_by_line.append({
+            "lineIndex": line_index,
+            **selected,
+        })
+
+    first_invalid_index: Optional[int] = next(
+        (
+            int(step["lineIndex"])
+            for step in selected_by_line
+            if step.get("classification") == "invalid_step"
+        ),
+        None,
+    )
+    saw_valid = any(step.get("classification") == "valid_step" for step in selected_by_line)
+    found_indices: set[int] = set()
+
+    if first_invalid_index is None and expression_elements:
+        clear_expression_completion_credit(selected_by_line)
+        first_invalid_index = first_broken_expression_link_index(expression_elements, manifest)
+        if first_invalid_index is not None:
+            mark_expression_line_invalid(
+                selected_by_line,
+                first_invalid_index,
+                "adjacent expressions are not equivalent",
+            )
+
+    if first_invalid_index is None and expression_elements and exact_values:
+        final_element = expression_elements[-1]
+        matched = tuple(
+            index
+            for index, exact in enumerate(exact_values)
+            if solution_values_equivalent(final_element["value"], exact, manifest)
+        )
+        if matched:
+            target = exact_values[matched[0]]
+            finality = simplification_value_finality(
+                final_element["raw"],
+                final_element["value"],
+                target,
+                manifest,
+            )
+            mark_expression_line_final(
+                selected_by_line,
+                int(final_element["lineIndex"]),
+                matched,
+                finality,
+            )
+            saw_valid = True
+            if finality.counts_toward_completion:
+                found_indices.update(matched)
+        else:
+            first_invalid_index = int(final_element["lineIndex"])
+            mark_expression_line_invalid(
+                selected_by_line,
+                first_invalid_index,
+                "final expression does not match the simplified target",
+            )
+
+    manifest_failed = bool(manifest.get("error"))
+    if manifest_failed and first_invalid_index is not None and not found_indices:
+        first_invalid_index = None
+
+    if found_indices and len(found_indices) == len(exact_values):
+        status = "correct"
+        breakdown_line_index = None
+    elif first_invalid_index is not None:
+        status = "incorrect"
+        breakdown_line_index = first_invalid_index
+    elif saw_valid:
+        status = "incomplete"
+        breakdown_line_index = None
+    else:
+        status = "not_started"
+        breakdown_line_index = None
+
+    exact_set = list(manifest.get("exact_set") or [])
+    steps = [
+        {
+            **strip_private_selection_fields(public_line_selection(step, manifest)),
+        }
+        for step in selected_by_line
+    ]
+    return {
+        "problem": {
+            "latex": manifest.get("problem_raw", ""),
+            "standardized": manifest.get("problem_standardized", ""),
+            "solveVariable": None,
+            "variables": list(manifest.get("variables") or []),
+            "cardinality": manifest.get("cardinality"),
+            "solutionSet": exact_set,
+            "decimalSet": list(manifest.get("decimal_set") or []),
+            "tolerance": manifest.get("tolerance", DEFAULT_TOLERANCE),
+            "manifest": manifest,
+        },
+        "steps": steps,
+        "result": {
+            "problemStatus": status,
+            "breakdownLineIndex": breakdown_line_index,
+            "foundSolutions": [
+                str(exact_set[index])
+                for index in sorted(found_indices)
+                if index >= 0 and index < len(exact_set)
+            ],
+            "missingSolutions": [
+                str(value)
+                for index, value in enumerate(exact_set)
+                if index not in found_indices
+            ],
+        },
+    }
+
+
 def grade_candidate_group(
     manifest: dict[str, Any],
     group: dict[str, Any] | str,
@@ -774,6 +1004,8 @@ def grade_candidate_group(
 
     if manifest.get("responseKind") == "numeric_value":
         return grade_expression_candidate_group(manifest, group)
+    if manifest.get("responseKind") == "simplified_expression":
+        return grade_simplification_candidate_group(manifest, group)
 
     variable = str(manifest.get("variable") or "x")
     exact_values = manifest_exact_values(manifest)
@@ -842,6 +1074,45 @@ def grade_expression_candidate_group(
             selected["selectedCandidateIndex"] = best_original_index
     elif candidates:
         selected = classify_expression_candidates(candidates, manifest, exact_values)
+    else:
+        selected = selected_line("", "other", None, "none", ())
+
+    candidate_verdicts = [
+        {
+            "candidateIndex": index,
+            "latex": verdict.get("studentLatex", ""),
+            **strip_private_selection_fields(verdict),
+        }
+        for index, verdict in enumerate(candidate_verdicts_raw)
+    ]
+
+    return {
+        **strip_private_selection_fields(selected),
+        "candidateVerdicts": candidate_verdicts,
+    }
+
+
+def grade_simplification_candidate_group(
+    manifest: dict[str, Any],
+    group: dict[str, Any] | str,
+) -> dict[str, Any]:
+    exact_values = manifest_exact_values(manifest)
+    candidates = line_candidate_latex(group)
+
+    candidate_verdicts_raw: list[dict[str, Any]] = []
+    for index, latex in enumerate(candidates[:MAX_OCR_CANDIDATES]):
+        verdict = classify_simplification_candidates([latex], manifest, exact_values)
+        verdict = public_line_selection(verdict, manifest)
+        verdict["_original_candidate_index"] = index
+        candidate_verdicts_raw.append(verdict)
+
+    best, best_original_index = _pick_best_candidate_verdict(candidate_verdicts_raw)
+    if best is not None:
+        selected = best
+        if selected.get("selectedCandidateIndex") is not None:
+            selected["selectedCandidateIndex"] = best_original_index
+    elif candidates:
+        selected = classify_simplification_candidates(candidates, manifest, exact_values)
     else:
         selected = selected_line("", "other", None, "none", ())
 
@@ -1149,6 +1420,121 @@ def classify_expression_candidate(
     )
     verdict["_expression_elements"] = tuple(expression_parts)
     return verdict
+
+
+def classify_simplification_candidates(
+    candidates: Sequence[str],
+    manifest: dict[str, Any],
+    exact_values: Sequence[sympy.Expr],
+) -> dict[str, Any]:
+    first_latex = candidates[0] if candidates else ""
+    verdicts: list[dict[str, Any]] = []
+
+    for index, latex in enumerate(candidates[:MAX_OCR_CANDIDATES]):
+        text = str(latex or "").strip()
+        if not text:
+            continue
+        verdicts.append(classify_simplification_candidate(text, index, manifest, exact_values))
+
+    if verdicts:
+        best, _best_original_index = _pick_best_candidate_verdict(verdicts)
+        if best is not None and best.get("solutionCoverage") == "full":
+            return best
+
+    repaired = simplification_equals_repair_verdict(candidates, manifest, exact_values)
+    if repaired is not None:
+        return repaired
+
+    if verdicts:
+        best, _best_original_index = _pick_best_candidate_verdict(verdicts)
+        if best is not None:
+            return best
+
+    has_any_text = any(str(latex or "").strip() for latex in candidates[:MAX_OCR_CANDIDATES])
+    if not has_any_text:
+        return selected_line(first_latex, "unrecognized", 0 if candidates else None, "none", ())
+    return selected_line(first_latex, "other", 0 if candidates else None, "none", ())
+
+
+def classify_simplification_candidate(
+    text: str,
+    index: int,
+    manifest: dict[str, Any],
+    exact_values: Sequence[sympy.Expr],
+) -> dict[str, Any]:
+    try:
+        expression_parts = parse_expression_sequence(text)
+    except GradingParseFailure:
+        return selected_line(text, "other", index, "none", ())
+
+    if not expression_parts:
+        return selected_line(text, "other", index, "none", ())
+
+    broken = first_broken_expression_parts_index(expression_parts, manifest)
+    if broken is not None:
+        return selected_line(
+            text,
+            "invalid_step",
+            index,
+            "none",
+            (),
+            finality=invalid_format("adjacent expressions are not equivalent"),
+        )
+
+    final_raw, final_value = expression_parts[-1]
+    matched: set[int] = set()
+    for exact_index, exact in enumerate(exact_values):
+        if solution_values_equivalent(final_value, exact, manifest):
+            matched.add(exact_index)
+
+    if not matched:
+        return selected_line(
+            text,
+            "invalid_step",
+            index,
+            "none",
+            (),
+            finality=invalid_format("expression does not match the simplified target"),
+        )
+
+    target = exact_values[sorted(matched)[0]]
+    finality = simplification_value_finality(final_raw, final_value, target, manifest)
+    verdict = selected_line(
+        text,
+        "valid_step",
+        index,
+        "full",
+        tuple(sorted(matched)),
+        finality=finality,
+    )
+    verdict["_expression_elements"] = tuple(expression_parts)
+    return verdict
+
+
+def simplification_equals_repair_verdict(
+    candidates: Sequence[str],
+    manifest: dict[str, Any],
+    exact_values: Sequence[sympy.Expr],
+) -> Optional[dict[str, Any]]:
+    for index, latex in enumerate(candidates[:MAX_OCR_CANDIDATES]):
+        original = str(latex or "").strip()
+        if not original:
+            continue
+        for repaired in expression_equals_repair_candidates(original):
+            verdict = classify_simplification_candidate(repaired, index, manifest, exact_values)
+            if verdict.get("classification") != "valid_step" or verdict.get("solutionCoverage") != "full":
+                continue
+            return {
+                **verdict,
+                "studentLatex": original,
+                "repairedLatex": repaired,
+                "ocrRepair": {
+                    "source": "simplification-equals-repair",
+                    "originalLatex": original,
+                    "repairedLatex": repaired,
+                },
+            }
+    return None
 
 
 def expression_equals_repair_verdict(
@@ -1935,6 +2321,55 @@ def expression_value_finality(raw_text: str, evaluated: sympy.Expr) -> AnswerFin
     return final_answer()
 
 
+def simplification_value_finality(
+    raw_text: str,
+    evaluated: sympy.Expr,
+    target: sympy.Expr,
+    manifest: dict[str, Any],
+) -> AnswerFinality:
+    try:
+        unevaluated = parse_expression(raw_text, evaluate=False)
+    except GradingParseFailure:
+        return invalid_format("could not parse final expression")
+
+    if not solution_values_equivalent(evaluated, target, manifest):
+        return invalid_format("final expression is not equivalent to the simplified target")
+
+    if expressions_match_commutative_structure(unevaluated, target):
+        return final_answer()
+
+    return unsimplified_answer("expression is equivalent but not fully simplified")
+
+
+def expressions_match_commutative_structure(left: sympy.Expr, right: sympy.Expr) -> bool:
+    return commutative_structure_key(left) == commutative_structure_key(right)
+
+
+def commutative_structure_key(expression: sympy.Expr) -> tuple[Any, ...]:
+    if isinstance(expression, sympy.Add):
+        return (
+            "Add",
+            tuple(sorted(
+                (commutative_structure_key(arg) for arg in expression.args),
+                key=repr,
+            )),
+        )
+    if isinstance(expression, sympy.Mul):
+        return (
+            "Mul",
+            tuple(sorted(
+                (commutative_structure_key(arg) for arg in expression.args),
+                key=repr,
+            )),
+        )
+    if getattr(expression, "args", None):
+        return (
+            expression.func.__name__,
+            tuple(commutative_structure_key(arg) for arg in expression.args),
+        )
+    return (expression.func.__name__, sympy.sstr(expression))
+
+
 def expression_answer_string(value: sympy.Expr) -> str:
     if isinstance(value, sympy.Float):
         try:
@@ -2009,6 +2444,7 @@ def normalize_math_text(text: str) -> str:
     output = output.replace("$", "")
     for token in (r"\left", r"\right", r"\limits", r"\!", r"\,", r"\;", r"\:"):
         output = output.replace(token, "")
+    output = output.replace(r"\lvert", "|").replace(r"\rvert", "|")
     output = output.replace(r"\operatorname", "")
     output = re.sub(r"\\text\s*\{[^{}]*\}", "", output)
     output = re.sub(r"\\mathrm\s*\{\s*([A-Za-z])\s*\}", r"\1", output)
@@ -2024,6 +2460,7 @@ def normalize_math_text(text: str) -> str:
 
     output = replace_structural_latex(output)
     output = output.replace("{", "(").replace("}", ")")
+    output = normalize_absolute_value_notation(output)
     output = normalize_log_base_application(output)
     output = normalize_bare_function_application(output)
     output = normalize_spaced_implicit_multiplication(output)
@@ -2031,6 +2468,45 @@ def normalize_math_text(text: str) -> str:
     if "\\" in output:
         raise GradingParseFailure("unsupported LaTeX command")
     return output
+
+
+def normalize_absolute_value_notation(text: str) -> str:
+    result: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] != "|":
+            result.append(text[index])
+            index += 1
+            continue
+
+        closing = find_matching_absolute_value_bar(text, index + 1)
+        if closing is None:
+            result.append(text[index])
+            index += 1
+            continue
+
+        inner = text[index + 1:closing].strip()
+        if not inner:
+            result.append(text[index])
+            index += 1
+            continue
+        result.append(f"abs({inner})")
+        index = closing + 1
+
+    return "".join(result)
+
+
+def find_matching_absolute_value_bar(text: str, start: int) -> Optional[int]:
+    depth = 0
+    for index in range(start, len(text)):
+        char = text[index]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == "|" and depth == 0:
+            return index
+    return None
 
 
 def normalize_inverse_trig_notation(text: str) -> str:

@@ -152,6 +152,47 @@ class RecognitionAuditService:
                 }
             return dict(status_payload)
 
+    def add_personal_note(self, payload: dict[str, Any]) -> dict[str, Any]:
+        note = str(payload.get("note") or "").strip()
+        if not note:
+            raise ValueError("Personal note is required")
+        if len(note) > 2000:
+            raise ValueError("Personal note must be 2000 characters or fewer")
+
+        audit_id = str(payload.get("auditId") or "").strip() or None
+        problem_id = str(payload.get("problemId") or "").strip() or None
+        created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        record = {
+            "eventStage": "personal_note",
+            "createdAt": created_at,
+            "auditId": audit_id,
+            "problemId": problem_id,
+            "note": note,
+            "source": str(payload.get("source") or "debugger"),
+        }
+
+        audit_dir: Path | None = None
+        if audit_id:
+            with self._status_lock:
+                status_payload = self._statuses.get(audit_id, {})
+                audit_dir_value = status_payload.get("auditDir")
+            if audit_dir_value:
+                audit_dir = Path(str(audit_dir_value))
+                record["auditDir"] = str(audit_dir)
+
+        append_jsonl(self.log_dir / "personal_notes.jsonl", record)
+        if audit_dir is not None:
+            append_jsonl(audit_dir / "personal_notes.jsonl", record)
+        if audit_id:
+            self._set_status(audit_id, {
+                "auditId": audit_id,
+                "problemId": problem_id,
+                "personalNote": note,
+                "personalNoteAt": created_at,
+                "personalNoteCount": int(self.status(audit_id).get("personalNoteCount") or 0) + 1,
+            })
+        return record
+
     def run_audit(self, payload: dict[str, Any], audit_id: Optional[str] = None) -> dict[str, Any]:
         audit_id = audit_id or build_audit_id(payload)
         now = datetime.now(timezone.utc)

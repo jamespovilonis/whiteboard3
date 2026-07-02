@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 
 
 router = APIRouter()
@@ -14,6 +14,16 @@ router = APIRouter()
 def audit_recognition(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     service = request.app.state.audit_service
     return service.enqueue(payload or {})
+
+
+@router.post("/audit-recognition-note", status_code=status.HTTP_201_CREATED)
+@router.post("/audit-recognition/notes", status_code=status.HTTP_201_CREATED)
+def add_audit_note(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    service = request.app.state.audit_service
+    try:
+        return service.add_personal_note(payload or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.get("/audit-recognition/{audit_id}")

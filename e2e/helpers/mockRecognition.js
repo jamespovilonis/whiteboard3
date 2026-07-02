@@ -54,7 +54,7 @@ export async function installMockRecognitionRoutes(page, options = {}) {
       const problemType = payload.problemType || payload.problemMetadata?.problemType || 'equation-solving';
       const answerManifest = options.answerManifest || {
         problem_raw: payload.problemLatex || '',
-        responseKind: problemType === 'evaluate-expression' ? 'numeric_value' : 'solution_set',
+        responseKind: responseKindForProblemType(problemType),
         variable: payload.problemMetadata?.solveVariable || 'x',
         cardinality: 'finite',
         exact_set: ['4'],
@@ -94,7 +94,7 @@ export async function installMockRecognitionRoutes(page, options = {}) {
             decimalSet: [],
             tolerance: 0.005,
             manifest: {
-              responseKind: problemType === 'evaluate-expression' ? 'numeric_value' : 'solution_set',
+              responseKind: responseKindForProblemType(problemType),
               problem_raw: payload.problemLatex || '',
               cardinality: 'finite'
             }
@@ -133,6 +133,12 @@ export async function installMockRecognitionRoutes(page, options = {}) {
       return calls.map((call) => call.endpoint);
     }
   };
+}
+
+function responseKindForProblemType(problemType) {
+  if (problemType === 'evaluate-expression') return 'numeric_value';
+  if (problemType === 'simplify-expression') return 'simplified_expression';
+  return 'solution_set';
 }
 
 function parsePostData(postData) {

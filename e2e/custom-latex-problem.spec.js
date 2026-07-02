@@ -24,6 +24,7 @@ test('opens a handwriting prompt before rendering a custom problem', async ({ pa
   await expect(page.getByTestId('latex-equation-input')).toHaveCount(0);
   await expect(page.getByTestId('handwritten-problem-type-solve')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByTestId('handwritten-problem-type-evaluate')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('handwritten-problem-type-simplify')).toHaveAttribute('aria-pressed', 'false');
   const snapshot = await getE2ESnapshot(page);
   expect(snapshot.activeProblem).toBeNull();
   expect(snapshot.problemFlow.problems).toHaveLength(0);
@@ -114,5 +115,44 @@ test('creates evaluate-expression custom problems and sends the type to grading'
     call.endpoint === '/grade-math-work' &&
     call.postDataJson?.problemLatex === latex &&
     call.postDataJson?.problemMetadata?.problemType === 'evaluate-expression'
+  ))).toBe(true);
+});
+
+test('creates simplify-expression custom problems and sends the type to grading', async ({ page }) => {
+  await installInvalidProblemSourceRoute(page, { problems: [] });
+  const latex = 'x + x';
+  const mockRecognition = await installMockRecognitionRoutes(page, {
+    latexLines: [latex, '2x']
+  });
+
+  await page.goto('/');
+  await waitForE2EBridge(page);
+  await waitForProblemSourceLoaded(page);
+
+  const initial = await enterHandwrittenProblem(page, latex, {
+    problemType: 'simplify-expression'
+  });
+  expect(initial.activeProblem.id).toBe('problem-1');
+  expect(initial.activeProblem.kind).toBe('simplify-expression');
+  expect(initial.activeProblem.latex).toBe(latex);
+  expect(initial.activeProblem.metadata.source).toBe('user-handwriting');
+  expect(initial.activeProblem.metadata.problemType).toBe('simplify-expression');
+  await page.waitForFunction(() => (
+    window.__whiteboardE2E?.snapshot?.().activeProblem?.initialGrading
+  ));
+  expect(mockRecognition.calls.some((call) => (
+    call.endpoint === '/grade-math-work' &&
+    call.postDataJson?.problemLatex === latex &&
+    call.postDataJson?.problemMetadata?.problemType === 'simplify-expression' &&
+    (call.postDataJson?.lines || []).length === 0
+  ))).toBe(true);
+
+  await drawAnswerStrokeInsideProblemBox(page, initial.activeProblem.problemBox);
+  await waitForRecognitionComplete(page, initial.activeProblem.id);
+
+  expect(mockRecognition.calls.some((call) => (
+    call.endpoint === '/grade-math-work' &&
+    call.postDataJson?.problemLatex === latex &&
+    call.postDataJson?.problemMetadata?.problemType === 'simplify-expression'
   ))).toBe(true);
 });

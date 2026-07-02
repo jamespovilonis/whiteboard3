@@ -201,6 +201,50 @@ class LatexSemanticsTests(unittest.TestCase):
         self.assertEqual(score["grading"]["classification"], "valid_step")
         self.assertEqual(score["grading"]["matchedSolutions"], ["0.8"])
 
+    def test_semantic_payload_uses_simplification_manifest(self):
+        payload = score_semantic_payload({
+            "problemType": "simplify-expression",
+            "problemLatex": "x + x",
+            "candidateGroups": [{
+                "candidateId": "line-1",
+                "latex": "x + x",
+                "candidates": [
+                    {"latex": "x + x", "score": 1.0},
+                    {"latex": "2x", "score": -5.0},
+                ],
+            }],
+        })
+
+        self.assertEqual(payload["answerManifest"]["responseKind"], "simplified_expression")
+        self.assertEqual(payload["answerManifest"]["exact_set"], ["2*x"])
+        score = payload["candidateScores"][0]
+        self.assertEqual(score["bestLatex"], "2x")
+        self.assertEqual(score["grading"]["classification"], "valid_step")
+        self.assertEqual(score["grading"]["answerFinality"], "final")
+        self.assertEqual(score["grading"]["selectedCandidateIndex"], 1)
+
+    def test_semantic_payload_regenerates_stale_manifest_for_simplification_problems(self):
+        payload = score_semantic_payload({
+            "problemMetadata": {"problemType": "simplify-expression"},
+            "problemLatex": "x + x",
+            "answerManifest": {
+                "problem_raw": "x + x",
+                "responseKind": "numeric_value",
+                "error": "expression prompts must be numeric only",
+                "exact_set": [],
+            },
+            "candidateGroups": [{
+                "candidateId": "line-1",
+                "latex": "2x",
+                "candidates": [{"latex": "2x", "score": 1.0}],
+            }],
+        })
+
+        self.assertEqual(payload["answerManifest"]["responseKind"], "simplified_expression")
+        score = payload["candidateScores"][0]
+        self.assertEqual(score["grading"]["classification"], "valid_step")
+        self.assertEqual(score["grading"]["matchedSolutions"], ["2*x"])
+
     def test_scores_transformed_first_student_line_against_explicit_prompt(self):
         scored = score_ocr_predictions(
             [

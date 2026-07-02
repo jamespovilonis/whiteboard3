@@ -7,7 +7,7 @@ import {
 import { bboxOverlap, padBbox, unionBbox } from '../whiteboard/geometry.js';
 import { getInitialProblemPosition } from '../whiteboard/viewport.js';
 
-const PROBLEM_TYPES = new Set(['equation-solving', 'evaluate-expression']);
+const PROBLEM_TYPES = new Set(['equation-solving', 'evaluate-expression', 'simplify-expression']);
 
 export function createInitialProblemFlow(viewportWidth, problemDefinitions = []) {
   const definitions = normalizeProblemDefinitions(problemDefinitions);
@@ -66,7 +66,7 @@ export function getActiveModelResponse(flow) {
   return activeProblem?.modelResponse || {
     before: 'All done.',
     latex: '\\checkmark',
-    after: 'You have submitted every equation.'
+    after: 'You have submitted every problem.'
   };
 }
 
@@ -433,7 +433,41 @@ function normalizeProblemType(value) {
 
 function resolveCustomProblemType(latex, requestedProblemType = 'equation-solving') {
   if (requestedProblemType === 'evaluate-expression') return requestedProblemType;
-  return looksLikeNumericEvaluationPrompt(latex) ? 'evaluate-expression' : requestedProblemType;
+  if (requestedProblemType === 'simplify-expression') return requestedProblemType;
+  if (looksLikeNumericEvaluationPrompt(latex)) return 'evaluate-expression';
+  if (looksLikeSymbolicSimplificationPrompt(latex)) return 'simplify-expression';
+  return requestedProblemType;
+}
+
+function looksLikeSymbolicSimplificationPrompt(latex) {
+  const text = String(latex || '').trim();
+  if (!text || text.includes('=')) return false;
+
+  const variableCommands = new Set([
+    'alpha',
+    'beta',
+    'delta',
+    'epsilon',
+    'gamma',
+    'lambda',
+    'mu',
+    'omega',
+    'phi',
+    'rho',
+    'sigma',
+    'tau',
+    'theta',
+    'varepsilon',
+    'varphi'
+  ]);
+  const commands = [...text.matchAll(/\\([A-Za-z]+)/g)].map((match) => match[1]);
+  if (commands.some((command) => variableCommands.has(command))) return true;
+
+  const withoutCommands = text.replace(/\\[A-Za-z]+/g, ' ');
+  const withoutKnownNames = withoutCommands
+    .replace(/\b(?:arccos|arcsin|arctan|acos|asin|atan|sqrt|sin|cos|tan|sec|csc|cot|log|ln|exp|abs)\b/g, ' ')
+    .replace(/\b(?:pi|e)\b/g, ' ');
+  return /[A-Za-z]/.test(withoutKnownNames);
 }
 
 function looksLikeNumericEvaluationPrompt(latex) {
@@ -471,13 +505,6 @@ function looksLikeNumericEvaluationPrompt(latex) {
   return residue.length === 0 && /(?:\d|\\(?:frac|dfrac|tfrac|sqrt|pi)|\b(?:pi|e)\b)/.test(text);
 }
 
-function submissionRecognitionStatus(problem) {
-  if (!problem.answerStrokeIds.length) return 'empty';
-  const status = problem.recognition?.status || 'idle';
-  if (status === 'complete' || status === 'error') return status;
-  return 'pending';
-}
-
 function normalizeModelResponse(modelResponse, latex, index, problemType = 'equation-solving') {
   if (
     modelResponse &&
@@ -491,6 +518,14 @@ function normalizeModelResponse(modelResponse, latex, index, problemType = 'equa
   if (problemType === 'evaluate-expression') {
     return {
       before: index === 0 ? 'Evaluate the expression.' : 'Continue evaluating the next expression.',
+      latex,
+      after: 'Submit your work when you are ready.'
+    };
+  }
+
+  if (problemType === 'simplify-expression') {
+    return {
+      before: index === 0 ? 'Simplify the expression.' : 'Continue simplifying the next expression.',
       latex,
       after: 'Submit your work when you are ready.'
     };
@@ -591,6 +626,13 @@ function strokeContinuesAnswerColumn(stroke, answerBox) {
     centerX <= horizontalRange.xMax &&
     centerY >= verticalRange.yMin &&
     centerY <= verticalRange.yMax;
+}
+
+function submissionRecognitionStatus(problem) {
+  if (!problem.answerStrokeIds.length) return 'empty';
+  const status = problem.recognition?.status || 'idle';
+  if (status === 'complete' || status === 'error') return status;
+  return 'pending';
 }
 
 function updateProblem(flow, problemId, updater) {

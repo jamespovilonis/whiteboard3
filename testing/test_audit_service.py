@@ -248,6 +248,34 @@ class AuditServiceTests(unittest.TestCase):
             event_log = (Path(directory) / "audit_events.jsonl").read_text()
             self.assertIn("audit_internal_error", event_log)
 
+    def test_personal_note_writes_global_and_audit_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": ["x = 4"],
+                "lineObservations": [{"lineIndex": 0, "latex": "x = 4", "confidence": 0.9}],
+                "visualMarks": [],
+                "overallConfidence": 0.9,
+                "notes": "clear",
+            })
+            summary = service.run_audit(audit_payload(), "audit_note")
+
+            note = service.add_personal_note({
+                "auditId": "audit_note",
+                "problemId": "problem-1",
+                "note": "Check the circled answer handling.",
+                "source": "test",
+            })
+
+            self.assertEqual(note["eventStage"], "personal_note")
+            self.assertEqual(note["note"], "Check the circled answer handling.")
+            global_notes = (Path(directory) / "personal_notes.jsonl").read_text()
+            audit_notes = (Path(summary["auditDir"]) / "personal_notes.jsonl").read_text()
+            self.assertIn("Check the circled answer handling.", global_notes)
+            self.assertIn("Check the circled answer handling.", audit_notes)
+            status = service.status("audit_note")
+            self.assertEqual(status["personalNote"], "Check the circled answer handling.")
+            self.assertEqual(status["personalNoteCount"], 1)
+
     def test_normalize_vlm_response_accepts_fenced_json(self):
         normalized = normalize_vlm_response({
             "choices": [{

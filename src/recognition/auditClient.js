@@ -84,6 +84,21 @@ export async function getRecognitionAuditStatus(auditId, options = {}) {
   return body || {};
 }
 
+export async function addRecognitionAuditNote(payload, options = {}) {
+  const apiUrl = String(options.apiUrl || '').replace(/\/$/, '');
+  const url = `${apiUrl}/audit-recognition-note`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(body?.detail || `HTTP ${response.status} from ${url}`);
+  }
+  return body || {};
+}
+
 export function buildRecognitionAuditPayload({
   problem = {},
   result = {},

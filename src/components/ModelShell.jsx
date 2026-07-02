@@ -13,7 +13,8 @@ export default function ModelShell({
   submitDisabled = false,
   nextProblemDisabled = false,
   onNextProblem,
-  onSubmitAnswer
+  onSubmitAnswer,
+  onAuditNoteSubmit
 }) {
   const [mode, setMode] = useState('open');
   const closeTimerRef = useRef(null);
@@ -88,6 +89,7 @@ export default function ModelShell({
             <RecognitionDebugInspector
               results={recognitionResults}
               auditByProblemId={auditByProblemId}
+              onAuditNoteSubmit={onAuditNoteSubmit}
             />
           ) : (
             <>
@@ -133,7 +135,7 @@ export default function ModelShell({
   );
 }
 
-function RecognitionDebugInspector({ results = [], auditByProblemId = {} }) {
+function RecognitionDebugInspector({ results = [], auditByProblemId = {}, onAuditNoteSubmit }) {
   const submitted = results.slice().reverse();
 
   return (
@@ -152,13 +154,14 @@ function RecognitionDebugInspector({ results = [], auditByProblemId = {} }) {
           key={entry.problemId}
           entry={entry}
           audit={auditByProblemId[entry.problemId] || null}
+          onAuditNoteSubmit={onAuditNoteSubmit}
         />
       ))}
     </div>
   );
 }
 
-function DebugRecognitionResult({ entry, audit = null }) {
+function DebugRecognitionResult({ entry, audit = null, onAuditNoteSubmit }) {
   const recognition = entry.recognition || {};
   const status = recognition.status || 'idle';
   const result = recognition.result || null;
@@ -187,7 +190,11 @@ function DebugRecognitionResult({ entry, audit = null }) {
       {result && (
         <>
           <DebugMetrics result={result} />
-          <AuditDebugPanel audit={audit} />
+          <AuditDebugPanel
+            audit={audit}
+            problemId={entry.problemId}
+            onAuditNoteSubmit={onAuditNoteSubmit}
+          />
           <GradingDebugPanel grading={result.grading} />
           {candidates.length > 0 && (
             <div className="recognition-debug-candidates">
@@ -207,11 +214,40 @@ function DebugRecognitionResult({ entry, audit = null }) {
   );
 }
 
-function AuditDebugPanel({ audit = null }) {
+function AuditDebugPanel({ audit = null, problemId = '', onAuditNoteSubmit }) {
   const status = audit?.status || 'waiting';
   const triggerReasons = audit?.triggerReasons || [];
   const discrepancyCount = Number(audit?.discrepancyCount);
   const label = audit?.label || (status === 'waiting' ? 'Audit waiting' : auditStatusDebugLabel(status));
+  const [note, setNote] = useState('');
+  const [submitState, setSubmitState] = useState('idle');
+  const [submitError, setSubmitError] = useState('');
+
+  useEffect(() => {
+    setNote('');
+    setSubmitState('idle');
+    setSubmitError('');
+  }, [audit?.auditId, problemId]);
+
+  const handleSubmitNote = async (event) => {
+    event.preventDefault();
+    const trimmed = note.trim();
+    if (!trimmed || submitState === 'saving') return;
+    setSubmitState('saving');
+    setSubmitError('');
+    try {
+      await onAuditNoteSubmit?.({
+        auditId: audit?.auditId || null,
+        problemId,
+        note: trimmed
+      });
+      setNote('');
+      setSubmitState('saved');
+    } catch (error) {
+      setSubmitError(error?.message || 'Could not save note.');
+      setSubmitState('error');
+    }
+  };
 
   return (
     <div className="audit-debug" data-status={status}>
@@ -246,6 +282,36 @@ function AuditDebugPanel({ audit = null }) {
       {triggerReasons.length > 0 && (
         <p className="audit-debug-reasons">{triggerReasons.join(', ')}</p>
       )}
+      <form className="audit-debug-note" onSubmit={handleSubmitNote}>
+        <textarea
+          value={note}
+          maxLength={2000}
+          rows={2}
+          placeholder="Add a personal audit note..."
+          aria-label="Personal audit note"
+          onChange={(event) => {
+            setNote(event.target.value);
+            if (submitState !== 'saving') {
+              setSubmitState('idle');
+              setSubmitError('');
+            }
+          }}
+        />
+        <div className="audit-debug-note-actions">
+          <span role={submitState === 'error' ? 'alert' : 'status'}>
+            {submitState === 'saving' && 'Saving note'}
+            {submitState === 'saved' && 'Note saved'}
+            {submitState === 'error' && submitError}
+            {submitState === 'idle' && audit?.personalNote && `Last note: ${audit.personalNote}`}
+          </span>
+          <button
+            type="submit"
+            disabled={!note.trim() || submitState === 'saving' || !onAuditNoteSubmit}
+          >
+            Submit
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
