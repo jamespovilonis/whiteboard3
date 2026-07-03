@@ -55,6 +55,25 @@ export function getActiveModelResponse(flow) {
 
   const activeProblem = getActiveProblem(flow);
   if (activeProblem?.status === 'submitted') {
+    const feedback = activeProblem.feedback || {};
+    if (feedback.status === 'pending') {
+      return {
+        before: 'Getting feedback...',
+        latex: '',
+        after: '',
+        statusOnly: true,
+        feedbackText: 'Getting feedback...'
+      };
+    }
+    if (feedback.status === 'complete' && feedback.text) {
+      return {
+        before: feedback.text,
+        latex: '',
+        after: '',
+        statusOnly: true,
+        feedbackText: feedback.text
+      };
+    }
     return {
       before: submittedProblemStatusLabel(activeProblem),
       latex: '',
@@ -108,7 +127,8 @@ export function reconcileProblemFlowWithStrokes(flow, strokes) {
       ...problem,
       answerStrokeIds: answer.strokeIds,
       answerContentBox: answer.contentBox,
-      answerBox: answer.answerBox
+      answerBox: answer.answerBox,
+      feedback: normalizeFeedbackState()
     };
   });
 }
@@ -328,6 +348,13 @@ export function applyProblemGradingProgress(flow, problemId, grading) {
   }));
 }
 
+export function applyProblemFeedbackProgress(flow, problemId, feedback) {
+  return updateProblem(flow, problemId, (problem) => ({
+    ...problem,
+    feedback: normalizeFeedbackState(feedback)
+  }));
+}
+
 export function isProblemReadyForNext(problem) {
   if (!problem) return false;
   if (problem.status === 'submitted' && ['complete', 'empty', 'error'].includes(problem.recognition?.status)) return true;
@@ -383,7 +410,23 @@ function createProblemSession({ definition, index, boardPosition, viewportWidth,
       error: null,
       result: null,
       realtime: null
-    }
+    },
+    feedback: normalizeFeedbackState()
+  };
+}
+
+function normalizeFeedbackState(feedback = {}) {
+  return {
+    status: feedback.status || 'idle',
+    text: feedback.text || '',
+    source: feedback.source || '',
+    model: feedback.model || '',
+    promptVersion: feedback.promptVersion || '',
+    attemptId: feedback.attemptId || null,
+    inputSignature: feedback.inputSignature || '',
+    error: feedback.error || null,
+    skippedReason: feedback.skippedReason || null,
+    updatedAt: Date.now()
   };
 }
 

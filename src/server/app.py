@@ -10,8 +10,9 @@ import uvicorn
 
 from src.grading import grade_equation_payload, grade_math_payload
 from src.server.config import ServerSettings, settings_from_env
-from src.server.routes import audit, grading, health, recognition
+from src.server.routes import audit, feedback, grading, health, recognition
 from src.server.services.audit import RecognitionAuditService
+from src.server.services.feedback import MathFeedbackService
 from testing.latex_semantics import score_semantic_payload
 
 
@@ -28,6 +29,7 @@ def create_app(
     app.state.grading_scorer = grading_scorer
     app.state.math_grading_scorer = math_grading_scorer
     app.state.audit_service = RecognitionAuditService(app.state.settings)
+    app.state.feedback_service = MathFeedbackService(app.state.settings)
 
     app.add_middleware(
         CORSMiddleware,
@@ -38,6 +40,7 @@ def create_app(
 
     app.include_router(health.router)
     app.include_router(grading.router)
+    app.include_router(feedback.router)
     app.include_router(audit.router)
     app.include_router(recognition.router)
     return app
@@ -94,6 +97,9 @@ def main() -> int:
         vlm_audit_normal_sample_rate=args.vlm_audit_normal_sample_rate if args.vlm_audit_normal_sample_rate is not None else env_settings.vlm_audit_normal_sample_rate,
         vlm_audit_circuit_failures=args.vlm_audit_circuit_failures if args.vlm_audit_circuit_failures is not None else env_settings.vlm_audit_circuit_failures,
         vlm_audit_circuit_seconds=args.vlm_audit_circuit_seconds if args.vlm_audit_circuit_seconds is not None else env_settings.vlm_audit_circuit_seconds,
+        feedback_base_url=env_settings.feedback_base_url,
+        feedback_model=env_settings.feedback_model,
+        feedback_timeout_seconds=env_settings.feedback_timeout_seconds,
     )
 
     print(f"Recognition API listening on http://{settings.host}:{settings.port}")

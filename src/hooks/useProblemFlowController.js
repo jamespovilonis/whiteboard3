@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getRecognitionApiUrl } from '../recognition/config.js';
 import {
+  attachRecognitionAuditFeedback,
+  buildAttemptId,
   buildRecognitionAuditPayload,
+  compactRecognitionResult,
   enqueueRecognitionAudit,
   getRecognitionAuditStatus,
   getRecognitionAuditDecision
 } from '../recognition/auditClient.js';
+import {
+  createCorrectFeedback,
+  requestMathFeedback,
+  trimFeedbackText
+} from '../feedback/feedbackClient.js';
 import { IncrementalRecognitionScheduler } from '../recognition/incrementalRecognitionScheduler.js';
 import {
   E2E_PROBLEM_SOURCE_ENABLED,
@@ -13,6 +21,7 @@ import {
 } from '../state/equationProblemSource.js';
 import {
   applyProblemGradingProgress,
+  applyProblemFeedbackProgress,
   applyProblemRecognitionProgress,
   createInitialProblemFlow,
   getActiveProblem,
@@ -36,6 +45,10 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
   const auditInputSignaturesRef = useRef(new Set());
   const initializedGradingProblemIdsRef = useRef(new Set());
   const problemFlowRef = useRef(problemFlow);
+  const feedbackControllersRef = useRef(new Map());
+  const feedbackGenerationsRef = useRef(new Map());
+  const feedbackByAttemptRef = useRef(new Map());
+  const auditByAttemptRef = useRef(new Map());
 
   useEffect(() => {
     problemFlowRef.current = problemFlow;
@@ -112,6 +125,19 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
             problemFlow: problemFlowRef.current,
             strokes: latestStrokesRef.current,
             auditInputSignaturesRef,
+            feedbackByAttemptRef,
+            auditByAttemptRef,
+            onRecognitionEvent
+          });
+          maybeStartMathFeedback({
+            snapshot,
+            inputSignature,
+            problemFlow: problemFlowRef.current,
+            feedbackControllersRef,
+            feedbackGenerationsRef,
+            feedbackByAttemptRef,
+            auditByAttemptRef,
+            setProblemFlow,
             onRecognitionEvent
           });
         }
@@ -120,6 +146,10 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
     schedulerRef.current = scheduler;
 
     return () => {
+      for (const controller of feedbackControllersRef.current.values()) {
+        controller.abort();
+      }
+      feedbackControllersRef.current.clear();
       scheduler.dispose();
       if (schedulerRef.current === scheduler) schedulerRef.current = null;
     };
@@ -175,11 +205,13 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
   }, [problemFlow]);
 
   const reconcileStrokes = useCallback((strokes) => {
+    invalidateFeedbackForActiveProblem(problemFlowRef.current, feedbackControllersRef, feedbackGenerationsRef);
     latestStrokesRef.current = strokes || [];
     setProblemFlow((currentFlow) => reconcileProblemFlowWithStrokes(currentFlow, strokes));
   }, []);
 
   const beginStroke = useCallback(() => {
+    invalidateFeedbackForActiveProblem(problemFlowRef.current, feedbackControllersRef, feedbackGenerationsRef);
     schedulerRef.current?.beginStroke();
   }, []);
 
@@ -279,6 +311,8 @@ function maybeEnqueueRecognitionAudit({
   problemFlow,
   strokes,
   auditInputSignaturesRef,
+  feedbackByAttemptRef,
+  auditByAttemptRef,
   onRecognitionEvent
 }) {
   const result = snapshot?.result || null;
@@ -309,14 +343,17 @@ function maybeEnqueueRecognitionAudit({
     result,
     strokes,
     inputSignature,
-    triggerReasons: decision.triggerReasons
+    triggerReasons: decision.triggerReasons,
+    feedback: feedbackByAttemptRef.current.get(buildAttemptId(problem.id, inputSignature)) || null
   });
 
   enqueueRecognitionAudit(payload, { apiUrl: getRecognitionApiUrl() })
     .then((response) => {
+      const attemptId = payload.attemptId;
       onRecognitionEvent?.('recognition-audit-queued', {
         problemId: snapshot.problemId,
         inputSignature,
+        attemptId,
         auditId: response.auditId || null,
         triggerReasons: decision.triggerReasons,
         sampled: decision.sampled,
@@ -332,6 +369,22 @@ function maybeEnqueueRecognitionAudit({
         return null;
       }
       if (response.auditId) {
+        auditByAttemptRef.current.set(attemptId, {
+          auditId: response.auditId,
+          problemId: snapshot.problemId,
+          inputSignature
+        });
+        const feedback = feedbackByAttemptRef.current.get(attemptId);
+        if (feedback) {
+          attachFeedbackToAudit({
+            auditId: response.auditId,
+            problemId: snapshot.problemId,
+            inputSignature,
+            attemptId,
+            feedback,
+            onRecognitionEvent
+          });
+        }
         return pollRecognitionAuditStatus({
           auditId: response.auditId,
           problemId: snapshot.problemId,
@@ -347,6 +400,181 @@ function maybeEnqueueRecognitionAudit({
         problemId: snapshot.problemId,
         inputSignature,
         triggerReasons: decision.triggerReasons,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+}
+
+function maybeStartMathFeedback({
+  snapshot,
+  inputSignature,
+  problemFlow,
+  feedbackControllersRef,
+  feedbackGenerationsRef,
+  feedbackByAttemptRef,
+  auditByAttemptRef,
+  setProblemFlow,
+  onRecognitionEvent
+}) {
+  const result = snapshot?.result || null;
+  if (!result || result.realtime?.allFinal === false || snapshot?.realtime?.allFinal === false) return;
+  const grading = result.grading || null;
+  if (!grading || grading.status === 'pending' || grading.failed) return;
+  const problem = (problemFlow?.problems || []).find((item) => item.id === snapshot.problemId);
+  if (!problem) return;
+
+  const attemptId = buildAttemptId(problem.id, inputSignature);
+  if (feedbackByAttemptRef.current.has(attemptId)) return;
+
+  const problemId = problem.id;
+  const generation = feedbackGenerationsRef.current.get(problemId) || 0;
+  const problemStatus = grading?.result?.problemStatus || '';
+
+  if (problemStatus === 'correct') {
+    const feedback = createCorrectFeedback({ attemptId, inputSignature });
+    feedbackByAttemptRef.current.set(attemptId, feedback);
+    setProblemFlow((currentFlow) => (
+      shouldAcceptFeedback(currentFlow, problemId, inputSignature, generation, feedbackGenerationsRef)
+        ? applyProblemFeedbackProgress(currentFlow, problemId, feedback)
+        : currentFlow
+    ));
+    attachFeedbackToQueuedAudit({
+      auditByAttemptRef,
+      attemptId,
+      feedback,
+      onRecognitionEvent
+    });
+    return;
+  }
+
+  const controller = new AbortController();
+  feedbackControllersRef.current.set(attemptId, controller);
+  setProblemFlow((currentFlow) => (
+    shouldAcceptFeedback(currentFlow, problemId, inputSignature, generation, feedbackGenerationsRef)
+      ? applyProblemFeedbackProgress(currentFlow, problemId, {
+          status: 'pending',
+          attemptId,
+          inputSignature,
+          source: 'ollama'
+        })
+      : currentFlow
+  ));
+
+  requestMathFeedback(buildMathFeedbackRequest({ problem, result, grading, inputSignature, attemptId }), {
+    apiUrl: getRecognitionApiUrl(),
+    signal: controller.signal
+  }).then((feedback) => {
+    feedbackControllersRef.current.delete(attemptId);
+    if (!feedback || feedback.status === 'aborted') return;
+    const normalizedFeedback = {
+      ...feedback,
+      attemptId,
+      inputSignature,
+      status: 'complete',
+      text: trimFeedbackText(feedback.text)
+    };
+    if (!normalizedFeedback.text) return;
+    feedbackByAttemptRef.current.set(attemptId, normalizedFeedback);
+    setProblemFlow((currentFlow) => (
+      shouldAcceptFeedback(currentFlow, problemId, inputSignature, generation, feedbackGenerationsRef)
+        ? applyProblemFeedbackProgress(currentFlow, problemId, normalizedFeedback)
+        : currentFlow
+    ));
+    attachFeedbackToQueuedAudit({
+      auditByAttemptRef,
+      attemptId,
+      feedback: normalizedFeedback,
+      onRecognitionEvent
+    });
+  }).catch((error) => {
+    feedbackControllersRef.current.delete(attemptId);
+    onRecognitionEvent?.('feedback-error', {
+      problemId,
+      inputSignature,
+      attemptId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  });
+}
+
+function buildMathFeedbackRequest({ problem, result, grading, inputSignature, attemptId }) {
+  return {
+    problemId: problem.id,
+    problemLatex: problem.latex || '',
+    problemMetadata: problem.metadata || {},
+    inputSignature,
+    attemptId,
+    grading,
+    fastResult: compactRecognitionResult(result)
+  };
+}
+
+function shouldAcceptFeedback(flow, problemId, inputSignature, generation, feedbackGenerationsRef) {
+  if ((feedbackGenerationsRef.current.get(problemId) || 0) !== generation) return false;
+  const problem = (flow?.problems || []).find((item) => item.id === problemId);
+  if (!problem) return false;
+  const currentSignature = problem.recognition?.result?.realtime?.inputSignature ||
+    problem.recognition?.realtime?.inputSignature ||
+    '';
+  return !currentSignature || currentSignature === inputSignature;
+}
+
+function invalidateFeedbackForActiveProblem(flow, feedbackControllersRef, feedbackGenerationsRef) {
+  const problem = getActiveProblem(flow);
+  if (!problem || problem.status !== 'solving') return;
+  feedbackGenerationsRef.current.set(
+    problem.id,
+    (feedbackGenerationsRef.current.get(problem.id) || 0) + 1
+  );
+  for (const [attemptId, controller] of feedbackControllersRef.current.entries()) {
+    if (String(attemptId || '').startsWith('attempt_')) {
+      controller.abort();
+      feedbackControllersRef.current.delete(attemptId);
+    }
+  }
+}
+
+function attachFeedbackToQueuedAudit({ auditByAttemptRef, attemptId, feedback, onRecognitionEvent }) {
+  const audit = auditByAttemptRef.current.get(attemptId);
+  if (!audit?.auditId) return;
+  attachFeedbackToAudit({
+    ...audit,
+    attemptId,
+    feedback,
+    onRecognitionEvent
+  });
+}
+
+function attachFeedbackToAudit({
+  auditId,
+  problemId,
+  inputSignature,
+  attemptId,
+  feedback,
+  onRecognitionEvent
+}) {
+  attachRecognitionAuditFeedback({
+    auditId,
+    problemId,
+    inputSignature,
+    attemptId,
+    feedback
+  }, { apiUrl: getRecognitionApiUrl() })
+    .then((response) => {
+      onRecognitionEvent?.('recognition-audit-feedback-attached', {
+        problemId,
+        inputSignature,
+        attemptId,
+        auditId,
+        ...response
+      });
+    })
+    .catch((error) => {
+      onRecognitionEvent?.('recognition-audit-error', {
+        problemId,
+        inputSignature,
+        attemptId,
+        auditId,
         error: error instanceof Error ? error.message : String(error)
       });
     });

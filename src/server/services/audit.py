@@ -146,6 +146,9 @@ class RecognitionAuditService:
                 "queued": False,
                 "done": True,
                 "disabled": True,
+                "problemId": payload.get("problemId"),
+                "inputSignature": payload.get("inputSignature"),
+                "attemptId": payload.get("attemptId"),
             }
             self._set_status(audit_id, status_payload)
             return {"auditId": audit_id, "queued": False, "disabled": True}
@@ -155,6 +158,8 @@ class RecognitionAuditService:
             "queued": True,
             "done": False,
             "problemId": payload.get("problemId"),
+            "inputSignature": payload.get("inputSignature"),
+            "attemptId": payload.get("attemptId"),
             "triggerReasons": payload.get("triggerReasons") or [],
             "queuedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         })
@@ -215,6 +220,61 @@ class RecognitionAuditService:
             })
         return record
 
+    def attach_feedback(self, payload: dict[str, Any]) -> dict[str, Any]:
+        audit_id = str(payload.get("auditId") or "").strip() or None
+        if not audit_id:
+            raise ValueError("Audit ID is required")
+        feedback = sanitize_json(payload.get("feedback") or {})
+        if not isinstance(feedback, dict) or not str(feedback.get("text") or "").strip():
+            raise ValueError("Feedback text is required")
+
+        problem_id = payload.get("problemId") or feedback.get("problemId")
+        input_signature = str(feedback.get("inputSignature") or payload.get("inputSignature") or "")
+        attempt_id = str(feedback.get("attemptId") or payload.get("attemptId") or "")
+        created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        with self._status_lock:
+            status_payload = dict(self._statuses.get(audit_id, {}))
+
+        expected_signature = str(status_payload.get("inputSignature") or "")
+        expected_attempt = str(status_payload.get("attemptId") or "")
+        if expected_signature and input_signature and expected_signature != input_signature:
+            raise ValueError("Feedback input signature does not match audit")
+        if expected_attempt and attempt_id and expected_attempt != attempt_id:
+            raise ValueError("Feedback attempt ID does not match audit")
+
+        record = {
+            "eventStage": "feedback",
+            "createdAt": created_at,
+            "auditId": audit_id,
+            "problemId": problem_id,
+            "inputSignature": input_signature,
+            "attemptId": attempt_id,
+            "feedback": feedback,
+            **feedback_summary_fields(feedback),
+        }
+
+        audit_dir_value = status_payload.get("auditDir")
+        audit_dir = Path(str(audit_dir_value)) if audit_dir_value else None
+        if audit_dir is not None:
+            record["auditDir"] = str(audit_dir)
+
+        append_jsonl(self.log_dir / "feedback_events.jsonl", record)
+        if audit_dir is not None:
+            write_json(audit_dir / "feedback.json", feedback)
+            append_jsonl(audit_dir / "feedback_events.jsonl", record)
+            merge_audit_metadata_feedback(audit_dir / "audit_metadata.json", feedback)
+
+        self._set_status(audit_id, {
+            "auditId": audit_id,
+            "problemId": problem_id,
+            "inputSignature": input_signature or expected_signature,
+            "attemptId": attempt_id or expected_attempt,
+            "pendingFeedback": feedback if audit_dir is None else None,
+            **feedback_summary_fields(feedback),
+        })
+        return record
+
     def run_audit(self, payload: dict[str, Any], audit_id: Optional[str] = None) -> dict[str, Any]:
         audit_id = audit_id or build_audit_id(payload)
         started_at = datetime.now(timezone.utc)
@@ -232,6 +292,8 @@ class RecognitionAuditService:
                 "queued": True,
                 "done": True,
                 "problemId": payload.get("problemId"),
+                "inputSignature": payload.get("inputSignature"),
+                "attemptId": payload.get("attemptId"),
                 "triggerReasons": payload.get("triggerReasons") or [],
                 "comparisonStatus": "skipped",
                 "failureKind": "vlm_circuit_open",
@@ -248,6 +310,8 @@ class RecognitionAuditService:
             "queued": True,
             "done": False,
             "problemId": payload.get("problemId"),
+            "inputSignature": payload.get("inputSignature"),
+            "attemptId": payload.get("attemptId"),
             "triggerReasons": payload.get("triggerReasons") or [],
             "auditDir": str(audit_dir),
             "queuedAt": queued_at.isoformat().replace("+00:00", "Z"),
@@ -258,6 +322,23 @@ class RecognitionAuditService:
         fast_result = sanitize_json(payload.get("fastResult") or {})
         write_json(audit_dir / "input.json", input_payload)
         write_json(audit_dir / "fast_result.json", fast_result)
+        feedback = matching_feedback_for_audit(
+            payload.get("feedback") or self.status(audit_id).get("pendingFeedback"),
+            payload,
+        )
+        if feedback:
+            write_json(audit_dir / "feedback.json", feedback)
+            append_jsonl(audit_dir / "feedback_events.jsonl", {
+                "eventStage": "feedback",
+                "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "auditId": audit_id,
+                "problemId": payload.get("problemId"),
+                "inputSignature": payload.get("inputSignature"),
+                "attemptId": payload.get("attemptId"),
+                "feedback": feedback,
+                "auditDir": str(audit_dir),
+                **feedback_summary_fields(feedback),
+            })
 
         artifact_paths: dict[str, str] = {}
         crop_boxes: dict[str, Any] = {}
@@ -360,6 +441,7 @@ class RecognitionAuditService:
                 failure_stage=failure_stage,
                 prompt_version=prompt_version,
                 normalized=normalized,
+                feedback=feedback,
                 attached_images=attached_images,
                 queued_at=queued_at,
                 started_at=started_at,
@@ -375,6 +457,7 @@ class RecognitionAuditService:
                 audit_dir=audit_dir,
                 artifact_paths=artifact_paths,
                 normalized=normalized,
+                feedback=feedback,
                 vlm_grading=vlm_grading,
                 failure_kind=failure_kind,
                 failure_stage=failure_stage,
@@ -420,6 +503,7 @@ class RecognitionAuditService:
             "comparisonStatus": comparison.get("status"),
             "failureKind": failure_kind,
             "retryAfterSeconds": retry_after_seconds,
+            **feedback_summary_fields(feedback),
             "completedAt": summary.get("completedAt"),
         })
         return summary
@@ -1105,6 +1189,7 @@ def build_event_summary(
     prompt_version: str,
     attempts: list[dict[str, Any]],
     attached_images: list[str],
+    feedback: Optional[dict[str, Any]],
     queued_at: datetime,
     started_at: datetime,
     completed_at: datetime,
@@ -1157,6 +1242,7 @@ def build_event_summary(
         "inference_ms": last_attempt.get("inference_ms"),
         "attached_images": list(attached_images),
         "vlmRequestProfile": vlm_request_profile,
+        **feedback_summary_fields(feedback),
         **({"retryAfterSeconds": retry_after_seconds} if retry_after_seconds is not None else {}),
     }
 
@@ -1175,6 +1261,7 @@ def build_audit_metadata(
     prompt_version: str,
     normalized: Optional[dict[str, Any]],
     attached_images: list[str],
+    feedback: Optional[dict[str, Any]],
     queued_at: datetime,
     started_at: datetime,
     completed_at: datetime,
@@ -1225,6 +1312,7 @@ def build_audit_metadata(
         "attachedImages": list(attached_images),
         "attached_images": list(attached_images),
         "vlmRequestProfile": vlm_request_profile,
+        **feedback_summary_fields(feedback),
         **({"retryAfterSeconds": retry_after_seconds} if retry_after_seconds is not None else {}),
         "annotationAttachments": flattened_attachments,
         "annotation_attachments": flattened_attachments,
@@ -1524,6 +1612,54 @@ def sanitize_json(value: Any) -> Any:
         if isinstance(value, list):
             return [sanitize_json(item) for item in value]
         return str(value)
+
+
+def matching_feedback_for_audit(feedback: Any, payload: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(feedback, dict):
+        return None
+    feedback = sanitize_json(feedback)
+    if not str(feedback.get("text") or "").strip():
+        return None
+    expected_signature = str(payload.get("inputSignature") or "")
+    expected_attempt = str(payload.get("attemptId") or "")
+    feedback_signature = str(feedback.get("inputSignature") or "")
+    feedback_attempt = str(feedback.get("attemptId") or "")
+    if expected_signature and feedback_signature and expected_signature != feedback_signature:
+        return None
+    if expected_attempt and feedback_attempt and expected_attempt != feedback_attempt:
+        return None
+    return feedback
+
+
+def feedback_summary_fields(feedback: Any) -> dict[str, Any]:
+    if not isinstance(feedback, dict):
+        return {}
+    fields = {
+        "feedbackText": str(feedback.get("text") or ""),
+        "feedbackSource": str(feedback.get("source") or ""),
+        "feedbackModel": str(feedback.get("model") or ""),
+        "feedbackPromptVersion": str(feedback.get("promptVersion") or ""),
+        "feedbackAttemptId": feedback.get("attemptId"),
+        "feedbackInputSignature": feedback.get("inputSignature"),
+    }
+    if feedback.get("error"):
+        fields["feedbackError"] = str(feedback.get("error"))
+    if feedback.get("skippedReason"):
+        fields["feedbackSkippedReason"] = str(feedback.get("skippedReason"))
+    return fields
+
+
+def merge_audit_metadata_feedback(path: Path, feedback: dict[str, Any]) -> None:
+    if not path.exists():
+        return
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(metadata, dict):
+        return
+    metadata.update(feedback_summary_fields(feedback))
+    write_json(path, metadata)
 
 
 def write_json(path: Path, payload: Any) -> None:

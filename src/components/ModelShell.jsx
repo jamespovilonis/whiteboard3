@@ -52,6 +52,9 @@ export default function ModelShell({
 
   const panelVisible = debugMode || mode !== 'closed';
   const shouldShowToggle = !debugMode && (mode === 'closed' || mode === 'closing');
+  const statusText = activeProblem?.status === 'submitted' && response.feedbackText
+    ? response.feedbackText
+    : problemStatus.text;
 
   return (
     <>
@@ -98,7 +101,7 @@ export default function ModelShell({
                   className="model-shell-status"
                   data-status={problemStatus.status}
                 >
-                  {problemStatus.text}
+                  {statusText}
                 </p>
                 {activeProblem?.status !== 'submitted' && (
                   <div

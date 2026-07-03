@@ -102,12 +102,28 @@ export async function addRecognitionAuditNote(payload, options = {}) {
   return body || {};
 }
 
+export async function attachRecognitionAuditFeedback(payload, options = {}) {
+  const apiUrl = String(options.apiUrl || '').replace(/\/$/, '');
+  const url = `${apiUrl}/audit-recognition-feedback`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(body?.detail || `HTTP ${response.status} from ${url}`);
+  }
+  return body || {};
+}
+
 export function buildRecognitionAuditPayload({
   problem = {},
   result = {},
   strokes = [],
   inputSignature = '',
-  triggerReasons = []
+  triggerReasons = [],
+  feedback = null
 } = {}) {
   const problemId = problem.id || null;
   const previousAuditId = problemId ? previousAuditIdByProblemId.get(String(problemId)) || null : null;
@@ -123,6 +139,10 @@ export function buildRecognitionAuditPayload({
     previousAuditId,
     triggerReasons: triggerReasons.slice(),
     strokes: compactStrokes(strokes),
+    feedback: feedback && feedback.attemptId === buildAttemptId(problemId, inputSignature) &&
+      feedback.inputSignature === inputSignature
+      ? clonePlain(feedback)
+      : null,
     fastResult: compactRecognitionResult(result)
   };
 }
@@ -742,7 +762,7 @@ function unique(items) {
   return [...new Set(items)];
 }
 
-function buildAttemptId(problemId, inputSignature) {
+export function buildAttemptId(problemId, inputSignature) {
   const key = `${problemId || 'problem'}::${inputSignature || 'input'}`;
   return `attempt_${stableHash32(key).toString(16).padStart(8, '0')}`;
 }

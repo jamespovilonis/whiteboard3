@@ -353,6 +353,74 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(status["personalNote"], "Check the circled answer handling.")
             self.assertEqual(status["personalNoteCount"], 1)
 
+    def test_attach_feedback_writes_audit_artifacts_and_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": ["x = 4"],
+                "lineObservations": [{"lineIndex": 0, "latex": "x = 4", "confidence": 0.9}],
+                "visualMarks": [],
+                "overallConfidence": 0.9,
+                "notes": "clear",
+            })
+            payload = audit_payload()
+            summary = service.run_audit(payload, "audit_feedback")
+
+            record = service.attach_feedback({
+                "auditId": "audit_feedback",
+                "problemId": payload["problemId"],
+                "inputSignature": payload["inputSignature"],
+                "attemptId": payload["attemptId"],
+                "feedback": {
+                    "attemptId": payload["attemptId"],
+                    "inputSignature": payload["inputSignature"],
+                    "status": "complete",
+                    "source": "deterministic",
+                    "text": "Correct! Great job!",
+                    "model": "qwen3:1.7b",
+                    "promptVersion": "math-feedback-v1",
+                    "skippedReason": "correct",
+                },
+            })
+
+            self.assertEqual(record["eventStage"], "feedback")
+            self.assertEqual(record["feedbackText"], "Correct! Great job!")
+            audit_dir = Path(summary["auditDir"])
+            feedback = json.loads((audit_dir / "feedback.json").read_text())
+            self.assertEqual(feedback["text"], "Correct! Great job!")
+            metadata = json.loads((audit_dir / "audit_metadata.json").read_text())
+            self.assertEqual(metadata["feedbackText"], "Correct! Great job!")
+            self.assertEqual(metadata["feedbackSource"], "deterministic")
+            self.assertIn("Correct! Great job!", (Path(directory) / "feedback_events.jsonl").read_text())
+            self.assertIn("Correct! Great job!", (audit_dir / "feedback_events.jsonl").read_text())
+
+    def test_attach_feedback_rejects_mismatched_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": ["x = 4"],
+                "lineObservations": [{"lineIndex": 0, "latex": "x = 4", "confidence": 0.9}],
+                "visualMarks": [],
+                "overallConfidence": 0.9,
+                "notes": "clear",
+            })
+            payload = audit_payload()
+            service.run_audit(payload, "audit_feedback_mismatch")
+
+            with self.assertRaises(ValueError):
+                service.attach_feedback({
+                    "auditId": "audit_feedback_mismatch",
+                    "problemId": payload["problemId"],
+                    "inputSignature": "different",
+                    "attemptId": payload["attemptId"],
+                    "feedback": {
+                        "attemptId": payload["attemptId"],
+                        "inputSignature": "different",
+                        "status": "complete",
+                        "source": "fallback",
+                        "text": "Stale feedback",
+                        "promptVersion": "math-feedback-v1",
+                    },
+                })
+
     def test_problem_input_adjustment_audit_skips_grading_and_compares_lines(self):
         with tempfile.TemporaryDirectory() as directory:
             service = service_for(directory, {
@@ -421,6 +489,7 @@ def audit_payload() -> dict[str, Any]:
         "problemBox": {"xMin": 0, "yMin": 0, "xMax": 500, "yMax": 160},
         "answerBox": {"xMin": 0, "yMin": 160, "xMax": 500, "yMax": 360},
         "inputSignature": "problem-a::stroke-a",
+        "attemptId": "attempt_test",
         "triggerReasons": ["normal_sample"],
         "promptVersion": "recognition-audit-v2",
         "strokes": [{

@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import {
   buildProblemInputAuditPayload,
+  buildAttemptId,
   buildRecognitionAuditPayload,
   deterministicSample,
   getRecognitionAuditDecision,
@@ -29,6 +30,7 @@ import {
 } from '../src/recognition/lineSegmentation.js';
 import {
   applyProblemRecognitionError,
+  applyProblemFeedbackProgress,
   applyProblemRecognitionProgress,
   applyProblemRecognitionResult,
   createInitialProblemFlow,
@@ -6066,6 +6068,84 @@ test('model response reveals grading status only after submit', () => {
   assert.equal(getActiveModelResponse(completedAfterSubmit).before, 'Incorrect');
 });
 
+test('model response reveals feedback only after submit', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const inputSignature = 'sig-feedback';
+  const attemptId = buildAttemptId(active.id, inputSignature);
+  const withFeedbackBeforeSubmit = applyProblemFeedbackProgress(initial, active.id, {
+    status: 'complete',
+    source: 'ollama',
+    text: 'Try subtracting 1 from both sides.',
+    attemptId,
+    inputSignature
+  });
+
+  assert.equal(getActiveModelResponse(withFeedbackBeforeSubmit).before, 'Solve the equation.');
+
+  const submitted = submitActiveProblem({
+    ...withFeedbackBeforeSubmit,
+    problems: withFeedbackBeforeSubmit.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            answerStrokeIds: ['a'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 20, yMax: 20 }
+          }
+        : problem
+    ))
+  }, 1200).flow;
+
+  assert.equal(getActiveModelResponse(submitted).before, 'Try subtracting 1 from both sides.');
+  assert.equal(getActiveModelResponse(submitted).feedbackText, 'Try subtracting 1 from both sides.');
+});
+
+test('submitted model response shows pending feedback while llm is running', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const submitted = submitActiveProblem({
+    ...initial,
+    problems: initial.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            answerStrokeIds: ['a'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 20, yMax: 20 }
+          }
+        : problem
+    ))
+  }, 1200).flow;
+  const pending = applyProblemFeedbackProgress(submitted, active.id, {
+    status: 'pending',
+    source: 'ollama',
+    attemptId: buildAttemptId(active.id, 'sig-pending'),
+    inputSignature: 'sig-pending'
+  });
+
+  assert.equal(getActiveModelResponse(pending).before, 'Getting feedback...');
+  assert.equal(getActiveModelResponse(pending).feedbackText, 'Getting feedback...');
+});
+
+test('reconciling changed strokes clears stale feedback', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const withFeedback = applyProblemFeedbackProgress(initial, active.id, {
+    status: 'complete',
+    source: 'ollama',
+    text: 'Old hint',
+    attemptId: buildAttemptId(active.id, 'old'),
+    inputSignature: 'old'
+  });
+  const reconciled = reconcileProblemFlowWithStrokes(withFeedback, [{
+    id: 'new-stroke',
+    canvasBbox: { xMin: active.problemBox.xMin, yMin: active.problemBox.yMax + 10, xMax: active.problemBox.xMin + 30, yMax: active.problemBox.yMax + 40 }
+  }]);
+  const updated = getActiveProblem(reconciled);
+
+  assert.equal(updated.feedback.status, 'idle');
+  assert.equal(updated.feedback.text, '');
+});
+
 test('submitted model response shows correct before all recognition is complete', () => {
   const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
   const active = getActiveProblem(initial);
@@ -7138,6 +7218,49 @@ test('VLM audit payload preserves candidate rescue summary for review', () => {
     lineIndex: 1,
     reason: 'candidate_rescue:full_final'
   }]);
+});
+
+test('VLM audit payload includes only same-attempt feedback', () => {
+  const problem = {
+    id: 'problem-feedback',
+    latex: 'x + 1 = 5',
+    metadata: {}
+  };
+  const inputSignature = 'sig-feedback';
+  const attemptId = buildAttemptId(problem.id, inputSignature);
+  const sameAttempt = buildRecognitionAuditPayload({
+    problem,
+    result: auditResult(),
+    strokes: [],
+    inputSignature,
+    triggerReasons: ['normal_sample'],
+    feedback: {
+      attemptId,
+      inputSignature,
+      status: 'complete',
+      source: 'deterministic',
+      text: 'Correct! Great job!',
+      promptVersion: 'math-feedback-v1'
+    }
+  });
+  const staleAttempt = buildRecognitionAuditPayload({
+    problem,
+    result: auditResult(),
+    strokes: [],
+    inputSignature,
+    triggerReasons: ['normal_sample'],
+    feedback: {
+      attemptId: buildAttemptId(problem.id, 'old-sig'),
+      inputSignature: 'old-sig',
+      status: 'complete',
+      source: 'ollama',
+      text: 'Old hint',
+      promptVersion: 'math-feedback-v1'
+    }
+  });
+
+  assert.equal(sameAttempt.feedback.text, 'Correct! Great job!');
+  assert.equal(staleAttempt.feedback, null);
 });
 
 test('VLM audit payload carries structured annotation attachments', () => {
