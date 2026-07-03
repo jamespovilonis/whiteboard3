@@ -51,6 +51,24 @@ from local VLM audit logs. They preserve anonymized board-space strokes,
 relative timing, reviewed line groups, visual-mark metadata, and both the fast
 pipeline transcript and VLM transcript.
 
+For generated stress fixtures that stay calibrated to real user input, use the
+realistic stroke harness instead of the LaTeX-to-contour renderer:
+
+```sh
+python3 testing/realistic_handwriting.py \
+  --scenario mixed-marks \
+  --seed 17 \
+  --audit-limit 50 \
+  --output testing/results/generated-mixed-marks.json
+```
+
+The harness samples and transforms committed real traces, preserving raw point
+trajectories, pressure, timing gaps, multi-stroke groups, visual-only circled or
+crossed-out marks, scratch annotations, and non-sequential writing order. Its
+validation report compares generated per-stroke metrics against local audit
+`input.json` distributions when available, falling back to the committed
+distilled traces for CI.
+
 Regenerate the curated seed drafts from the local audit log directory:
 
 ```sh
