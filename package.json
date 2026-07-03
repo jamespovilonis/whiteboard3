@@ -18,7 +18,9 @@
     "test:segmentation": "python3 -m unittest testing.test_real_handwriting_fixtures testing.test_realistic_handwriting testing.test_line_segmentation_pipeline testing.test_latex_semantics testing.test_equation_grader && node --test testing/test_recognition_pipeline.mjs",
     "test:segmentation:matrix": "python3 testing/run_segmentation_matrix.py",
     "fixtures:real-handwriting": "python3 testing/distill_real_handwriting_fixtures.py",
-    "audit:real-handwriting": "python3 testing/summarize_real_audit_logs.py"
+    "audit:real-handwriting": "python3 testing/summarize_real_audit_logs.py",
+    "handwriting:calibration": "python3 testing/realistic_handwriting.py --calibration-only --print-calibration",
+    "handwriting:hybrid-linear": "python3 testing/realistic_handwriting.py --hybrid-linear --include-fixture"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

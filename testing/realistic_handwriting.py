@@ -17,12 +17,13 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Optional, Sequence
 
 
 TESTING_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTING_DIR.parent
 DEFAULT_REAL_FIXTURE_DIR = TESTING_DIR / "fixtures" / "real_handwriting"
+DEFAULT_HANDWRITING_CATALOG = TESTING_DIR / "fixtures" / "handwriting_catalog" / "linear_equation_atoms.json"
 DEFAULT_AUDIT_LOG_DIR = Path(
     os.environ.get("WHITEBOARD_AUDIT_LOG_DIR", "/Users/jpovj/Documents/dev/log_whiteboard_3")
 ).expanduser()
@@ -41,6 +42,52 @@ SCENARIO_SLUGS: dict[str, tuple[str, ...]] = {
     "crossout-scratch": ("crossout-scratch-division", "detached-circled-zero-annotation"),
     "non-sequential": ("rational-detached-parenthetical-annotations", "radical-fraction-simplification"),
 }
+
+METRIC_KEYS = (
+    "stroke_count",
+    "line_count",
+    "visual_only_count",
+    "point_count",
+    "stroke_duration_ms",
+    "inter_stroke_gap_ms",
+    "stroke_width_px",
+    "stroke_height_px",
+    "path_length_px",
+    "pressure_mean",
+    "line_width_px",
+    "line_height_px",
+    "line_gap_px",
+    "multi_stroke_group_size",
+    "non_sequential_inversions",
+    "answer_width_px",
+    "answer_height_px",
+    "board_width_px",
+    "board_height_px",
+)
+
+FEATURE_KEYS = (
+    "has_pressure",
+    "has_multi_stroke_symbols",
+    "has_visual_only_marks",
+    "has_circled_answer",
+    "has_crossout_or_scratch",
+    "has_non_sequential_writing",
+)
+
+
+@dataclass(frozen=True)
+class CorpusRecord:
+    source_kind: str
+    source_id: str
+    path: str
+    payload: dict[str, Any]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "sourceKind": self.source_kind,
+            "sourceId": self.source_id,
+            "path": self.path,
+        }
 
 
 @dataclass(frozen=True)
@@ -89,6 +136,28 @@ class CalibrationSummary:
         }
 
 
+@dataclass(frozen=True)
+class HandwritingAtom:
+    label: str
+    kind: str
+    source_fixture_slug: str
+    source_stroke_ids: tuple[str, ...]
+    width: float
+    height: float
+    strokes: tuple[dict[str, Any], ...]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "label": self.label,
+            "kind": self.kind,
+            "sourceFixtureSlug": self.source_fixture_slug,
+            "sourceStrokeIds": list(self.source_stroke_ids),
+            "width": round_float(self.width, 2),
+            "height": round_float(self.height, 2),
+            "strokeCount": len(self.strokes),
+        }
+
+
 def load_real_handwriting_fixtures(fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR) -> list[dict[str, Any]]:
     return [
         json.loads(path.read_text(encoding="utf-8"))
@@ -96,8 +165,29 @@ def load_real_handwriting_fixtures(fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR)
     ]
 
 
+def load_real_handwriting_records(fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR) -> list[CorpusRecord]:
+    records: list[CorpusRecord] = []
+    for path in sorted(Path(fixture_dir).glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("strokes"), list):
+            records.append(CorpusRecord(
+                source_kind="distilled-real-fixtures",
+                source_id=str(payload.get("slug") or path.stem),
+                path=relative_path_for_report(path),
+                payload=payload,
+            ))
+    return records
+
+
 def load_audit_input_payloads(audit_log_dir: Path = DEFAULT_AUDIT_LOG_DIR, limit: Optional[int] = None) -> list[dict[str, Any]]:
-    payloads: list[dict[str, Any]] = []
+    return [record.payload for record in load_audit_input_records(audit_log_dir, limit=limit)]
+
+
+def load_audit_input_records(audit_log_dir: Path = DEFAULT_AUDIT_LOG_DIR, limit: Optional[int] = None) -> list[CorpusRecord]:
+    records: list[CorpusRecord] = []
     paths = sorted(Path(audit_log_dir).glob("**/input.json"))
     if limit is not None:
         paths = paths[: int(limit)]
@@ -107,8 +197,98 @@ def load_audit_input_payloads(audit_log_dir: Path = DEFAULT_AUDIT_LOG_DIR, limit
         except Exception:
             continue
         if isinstance(payload, dict) and isinstance(payload.get("strokes"), list):
-            payloads.append(payload)
-    return payloads
+            records.append(CorpusRecord(
+                source_kind="audit-input-json",
+                source_id=path.parent.name,
+                path=relative_path_for_report(path),
+                payload=payload,
+            ))
+    return records
+
+
+def load_corpus_records(
+    *,
+    audit_log_dir: Path = DEFAULT_AUDIT_LOG_DIR,
+    fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR,
+    audit_limit: Optional[int] = None,
+    include_fixtures_with_audits: bool = False,
+) -> list[CorpusRecord]:
+    audit_records = load_audit_input_records(audit_log_dir, limit=audit_limit)
+    fixture_records = load_real_handwriting_records(fixture_dir)
+    if audit_records and not include_fixtures_with_audits:
+        return audit_records
+    if audit_records:
+        return [*audit_records, *fixture_records]
+    return fixture_records
+
+
+def load_handwriting_atom_catalog(
+    catalog_path: Path = DEFAULT_HANDWRITING_CATALOG,
+    *,
+    fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR,
+) -> dict[str, list[HandwritingAtom]]:
+    manifest = json.loads(Path(catalog_path).read_text(encoding="utf-8"))
+    fixtures_by_slug = {fixture["slug"]: fixture for fixture in load_real_handwriting_fixtures(fixture_dir)}
+    catalog: dict[str, list[HandwritingAtom]] = {}
+    for entry in manifest.get("atoms") or []:
+        atom = atom_from_manifest_entry(entry, fixtures_by_slug)
+        catalog.setdefault(atom.label, []).append(atom)
+    return catalog
+
+
+def atom_from_manifest_entry(entry: dict[str, Any], fixtures_by_slug: dict[str, dict[str, Any]]) -> HandwritingAtom:
+    label = str(entry["label"])
+    source_slug = str(entry["sourceFixtureSlug"])
+    source = fixtures_by_slug[source_slug]
+    stroke_ids = [str(stroke_id) for stroke_id in entry.get("strokeIds") or []]
+    strokes_by_id = {str(stroke.get("id")): stroke for stroke in source.get("strokes") or []}
+    source_strokes = [strokes_by_id[stroke_id] for stroke_id in stroke_ids]
+    source_box = bbox_for_strokes(source_strokes) or {"xMin": 0, "yMin": 0, "xMax": 1, "yMax": 1}
+    transform = entry.get("transform") or {}
+    scale = float(transform.get("scale") or 1.0)
+    x_origin = source_box["xMin"]
+    y_origin = source_box["yMin"]
+    time_base = min((number_or_zero(stroke.get("startTime")) for stroke in source_strokes), default=0.0)
+    normalized_strokes: list[dict[str, Any]] = []
+    for index, stroke in enumerate(source_strokes, start=1):
+        raw_points = normalize_atom_points(stroke.get("rawPoints") or [], x_origin, y_origin, scale)
+        outline_points = normalize_atom_points(stroke.get("outlinePoints") or stroke.get("rawPoints") or [], x_origin, y_origin, scale)
+        normalized_strokes.append({
+            "id": f"a{index:03d}",
+            "rawPoints": raw_points,
+            "outlinePoints": outline_points or raw_points,
+            "startOffset": round_float(number_or_zero(stroke.get("startTime")) - time_base, 1),
+            "duration": round_float(max(1.0, number_or_zero(stroke.get("endTime")) - number_or_zero(stroke.get("startTime"))), 1),
+            "color": stroke.get("color") or "#000000",
+            "sourceStrokeId": str(stroke.get("id") or index),
+        })
+    atom_box = bbox_for_strokes([
+        {"canvasBbox": bbox_for_points(stroke["rawPoints"])}
+        for stroke in normalized_strokes
+    ]) or {"xMin": 0, "yMin": 0, "xMax": 1, "yMax": 1}
+    return HandwritingAtom(
+        label=label,
+        kind=str(entry.get("kind") or "symbol"),
+        source_fixture_slug=source_slug,
+        source_stroke_ids=tuple(stroke_ids),
+        width=max(1.0, atom_box["xMax"] - atom_box["xMin"]),
+        height=max(1.0, atom_box["yMax"] - atom_box["yMin"]),
+        strokes=tuple(normalized_strokes),
+    )
+
+
+def normalize_atom_points(points: Sequence[Any], x_origin: float, y_origin: float, scale: float) -> list[dict[str, float]]:
+    out: list[dict[str, float]] = []
+    for point in points:
+        if not isinstance(point, dict) or not is_finite(point.get("x")) or not is_finite(point.get("y")):
+            continue
+        pressure = float(point.get("pressure")) if is_finite(point.get("pressure")) else 0.5
+        out.append({
+            "x": round_float((float(point["x"]) - x_origin) * scale, 2),
+            "y": round_float((float(point["y"]) - y_origin) * scale, 2),
+            "pressure": round_float(pressure, 3),
+        })
+    return out
 
 
 def build_calibration_summary(
@@ -117,35 +297,56 @@ def build_calibration_summary(
     fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR,
     audit_limit: Optional[int] = None,
 ) -> CalibrationSummary:
-    audit_payloads = load_audit_input_payloads(audit_log_dir, limit=audit_limit)
-    if audit_payloads:
-        return summarize_distribution(audit_payloads, source_kind="audit-input-json")
-    return summarize_distribution(load_real_handwriting_fixtures(fixture_dir), source_kind="distilled-real-fixtures")
+    records = load_corpus_records(
+        audit_log_dir=audit_log_dir,
+        fixture_dir=fixture_dir,
+        audit_limit=audit_limit,
+    )
+    source_kind = records[0].source_kind if records else "empty-corpus"
+    if len({record.source_kind for record in records}) > 1:
+        source_kind = "mixed-real-corpus"
+    return summarize_distribution([record.payload for record in records], source_kind=source_kind)
+
+
+def build_calibration_report(
+    *,
+    audit_log_dir: Path = DEFAULT_AUDIT_LOG_DIR,
+    fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR,
+    audit_limit: Optional[int] = None,
+    include_fixtures_with_audits: bool = False,
+    sample_limit: int = 12,
+) -> dict[str, Any]:
+    records = load_corpus_records(
+        audit_log_dir=audit_log_dir,
+        fixture_dir=fixture_dir,
+        audit_limit=audit_limit,
+        include_fixtures_with_audits=include_fixtures_with_audits,
+    )
+    source_kinds = sorted({record.source_kind for record in records})
+    source_kind = source_kinds[0] if len(source_kinds) == 1 else "mixed-real-corpus"
+    calibration = summarize_distribution([record.payload for record in records], source_kind=source_kind)
+    summaries = [
+        {
+            **record.to_json(),
+            "summary": fixture_summary(record.payload),
+        }
+        for record in records[:sample_limit]
+    ]
+    return {
+        "schemaVersion": 1,
+        "reportKind": "real-handwriting-calibration",
+        "sourceKinds": source_kinds,
+        "recordCount": len(records),
+        "calibration": calibration.to_json(),
+        "metricKeys": list(METRIC_KEYS),
+        "featureKeys": list(FEATURE_KEYS),
+        "sampleRecords": summaries,
+    }
 
 
 def summarize_distribution(payloads: Sequence[dict[str, Any]], *, source_kind: str) -> CalibrationSummary:
-    metric_values: dict[str, list[float]] = {
-        "stroke_count": [],
-        "line_count": [],
-        "visual_only_count": [],
-        "point_count": [],
-        "stroke_duration_ms": [],
-        "inter_stroke_gap_ms": [],
-        "stroke_width_px": [],
-        "stroke_height_px": [],
-        "path_length_px": [],
-        "pressure_mean": [],
-        "multi_stroke_group_size": [],
-        "non_sequential_inversions": [],
-    }
-    feature_counts = {
-        "has_pressure": 0,
-        "has_multi_stroke_symbols": 0,
-        "has_visual_only_marks": 0,
-        "has_circled_answer": 0,
-        "has_crossout_or_scratch": 0,
-        "has_non_sequential_writing": 0,
-    }
+    metric_values: dict[str, list[float]] = {key: [] for key in METRIC_KEYS}
+    feature_counts = {key: 0 for key in FEATURE_KEYS}
 
     usable_payloads = [payload for payload in payloads if payload.get("strokes")]
     for payload in usable_payloads:
@@ -172,6 +373,312 @@ def summarize_distribution(payloads: Sequence[dict[str, Any]], *, source_kind: s
         source_count=len(usable_payloads),
         bands=bands,
         feature_rates={key: count / denominator for key, count in feature_counts.items()},
+    )
+
+
+def build_hybrid_linear_equation_fixture(
+    *,
+    a: int = 3,
+    b: int = 2,
+    x_value: int = 4,
+    seed: int = 0,
+    catalog_path: Path = DEFAULT_HANDWRITING_CATALOG,
+    fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR,
+    include_circle: bool = True,
+    include_crossout: bool = False,
+    non_sequential_final: bool = False,
+) -> dict[str, Any]:
+    catalog = load_handwriting_atom_catalog(catalog_path, fixture_dir=fixture_dir)
+    c_value = a * x_value + b
+    problem_latex = f"{a}x + {b} = {c_value}"
+    rows = linear_equation_rows(a, b, c_value, x_value)
+    ensure_catalog_labels(catalog, sorted({token for row in rows for token in row["tokens"]}))
+
+    rng = random.Random(seed)
+    fixture = empty_generated_fixture("hybrid-linear-equation", seed)
+    fixture["fixtureKind"] = "hybrid-real-stroke-linear-equation"
+    fixture["slug"] = f"hybrid-linear-{a}x-plus-{b}-equals-{c_value}-seed-{seed}"
+    fixture["description"] = "Hybrid fixture composed from curated real handwriting atoms for a generated linear equation."
+    fixture["sourceAuditId"] = "generated-from-real-stroke-atom-catalog"
+    fixture["problemLatex"] = problem_latex
+    fixture["problemMetadata"] = {
+        "problemType": "equation-solving",
+        "solveVariable": "x",
+        "scenario": "hybrid-linear-equation",
+        "seed": seed,
+        "a": a,
+        "b": b,
+        "c": c_value,
+        "solution": x_value,
+    }
+    fixture["expectedLatexLines"] = [row["latex"] for row in rows]
+
+    base_x = 116.0
+    base_y = 96.0
+    line_gap = 116.0
+    row_indexes = list(range(len(rows)))
+    if non_sequential_final and len(row_indexes) > 2:
+        row_indexes = [*row_indexes[:-1], row_indexes[-1]]
+
+    time_cursor = 0.0
+    row_boxes: dict[int, dict[str, float]] = {}
+    for row_index in row_indexes:
+        row = rows[row_index]
+        row_x = base_x + row.get("xOffset", 0.0) + rng.uniform(-8.0, 8.0)
+        row_y = base_y + row_index * line_gap + rng.uniform(-5.0, 5.0)
+        row_stroke_ids, row_box, time_cursor = append_token_row(
+            fixture,
+            catalog,
+            row["tokens"],
+            row_index=row_index,
+            x=row_x,
+            y=row_y,
+            start_time=time_cursor,
+            rng=rng,
+            wide_gap_after=set(row.get("wideGapAfter") or []),
+        )
+        row_boxes[row_index] = row_box
+        fixture["expectedLineGroups"].append({
+            "lineIndex": row_index,
+            "latex": row["latex"],
+            "strokeIds": row_stroke_ids,
+            "source": "hybrid-real-stroke-atom-catalog",
+            "sourceCandidateId": f"hybrid-linear-row-{row_index + 1}",
+        })
+        time_cursor += rng.uniform(520.0, 980.0)
+
+    if include_circle and rows:
+        final_index = len(rows) - 1
+        final_box = row_boxes.get(final_index)
+        if final_box:
+            visual_ids, _, time_cursor = append_visual_atom_around_box(
+                fixture,
+                catalog,
+                "circle",
+                final_box,
+                start_time=time_cursor + rng.uniform(180.0, 420.0),
+                rng=rng,
+            )
+            fixture["visualOnlyStrokeIds"].extend(visual_ids)
+            fixture["visualMarks"].append({
+                "type": "circled_answer",
+                "latex": rows[-1]["latex"],
+                "lineIndex": final_index,
+                "notes": "Hybrid generator circled the final answer using a real visual mark.",
+                "confidence": 1.0,
+            })
+
+    if include_crossout and row_boxes.get(0):
+        visual_ids, _, _ = append_visual_atom_around_box(
+            fixture,
+            catalog,
+            "crossout",
+            row_boxes[0],
+            start_time=time_cursor + rng.uniform(200.0, 480.0),
+            rng=rng,
+            fit_mode="diagonal",
+        )
+        fixture["visualOnlyStrokeIds"].extend(visual_ids)
+        fixture["visualMarks"].append({
+            "type": "crossed_out",
+            "latex": rows[0]["latex"],
+            "lineIndex": 0,
+            "notes": "Hybrid generator added a real crossed-out visual mark.",
+            "confidence": 1.0,
+        })
+
+    finish_generated_fixture(fixture)
+    fixture["sourceStats"] = {
+        **fixture.get("sourceStats", {}),
+        "catalogPath": relative_path_for_report(catalog_path),
+        "catalogAtomCount": sum(len(values) for values in catalog.values()),
+        "generatedProblemLatex": problem_latex,
+    }
+    return fixture
+
+
+def linear_equation_rows(a: int, b: int, c_value: int, x_value: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "latex": f"{a}x+{b}={c_value}",
+            "tokens": compact_coefficient_tokens(a) + ["+", *digits_for(b), "=", *digits_for(c_value)],
+        },
+        {
+            "latex": f"-{b}\\quad -{b}",
+            "tokens": ["-", *digits_for(b), "-", *digits_for(b)],
+            "xOffset": 56.0,
+            "wideGapAfter": [1],
+        },
+        {
+            "latex": f"{a}x={c_value - b}",
+            "tokens": compact_coefficient_tokens(a) + ["=", *digits_for(c_value - b)],
+            "xOffset": 18.0,
+        },
+        {
+            "latex": f"/{a}\\quad /{a}",
+            "tokens": ["/", *digits_for(a), "/", *digits_for(a)],
+            "xOffset": 78.0,
+            "wideGapAfter": [1],
+        },
+        {
+            "latex": f"x={x_value}",
+            "tokens": [f"x={x_value}"] if x_value == 4 else ["x", "=", *digits_for(x_value)],
+            "xOffset": 48.0,
+        },
+    ]
+
+
+def compact_coefficient_tokens(value: int) -> list[str]:
+    compact = f"{value}x"
+    if compact == "3x":
+        return [compact]
+    return [*digits_for(value), "x"]
+
+
+def digits_for(value: int) -> list[str]:
+    return list(str(abs(int(value))))
+
+
+def ensure_catalog_labels(catalog: dict[str, list[HandwritingAtom]], labels: Sequence[str]) -> None:
+    missing = [label for label in labels if label not in catalog]
+    if missing:
+        known = ", ".join(sorted(catalog))
+        raise KeyError(f"Missing handwriting atoms for labels {missing}. Known labels: {known}")
+
+
+def append_token_row(
+    fixture: dict[str, Any],
+    catalog: dict[str, list[HandwritingAtom]],
+    tokens: Sequence[str],
+    *,
+    row_index: int,
+    x: float,
+    y: float,
+    start_time: float,
+    rng: random.Random,
+    wide_gap_after: set[int],
+) -> tuple[list[str], dict[str, float], float]:
+    stroke_ids: list[str] = []
+    boxes: list[dict[str, float]] = []
+    cursor_x = x
+    time_cursor = start_time
+    row_scale = rng.uniform(0.94, 1.06)
+    for token_index, token in enumerate(tokens):
+        atom = choose_atom(catalog, token, rng)
+        token_scale = row_scale * rng.uniform(0.92, 1.08)
+        baseline_y = y + max(0.0, 82.0 - atom.height * token_scale)
+        placed_ids, box, time_cursor = append_atom(
+            fixture,
+            atom,
+            prefix=f"r{row_index + 1:02d}t{token_index + 1:02d}",
+            x=cursor_x,
+            y=baseline_y,
+            scale=token_scale,
+            start_time=time_cursor,
+            rng=rng,
+        )
+        stroke_ids.extend(placed_ids)
+        boxes.append(box)
+        gap = rng.uniform(13.0, 24.0)
+        if token_index in wide_gap_after:
+            gap += rng.uniform(62.0, 96.0)
+        cursor_x += (atom.width * token_scale) + gap
+        time_cursor += rng.uniform(46.0, 135.0)
+    return stroke_ids, union_boxes(boxes), time_cursor
+
+
+def choose_atom(catalog: dict[str, list[HandwritingAtom]], label: str, rng: random.Random) -> HandwritingAtom:
+    choices = catalog[label]
+    return choices[rng.randrange(len(choices))]
+
+
+def append_atom(
+    fixture: dict[str, Any],
+    atom: HandwritingAtom,
+    *,
+    prefix: str,
+    x: float,
+    y: float,
+    scale: float,
+    start_time: float,
+    rng: random.Random,
+) -> tuple[list[str], dict[str, float], float]:
+    stroke_ids: list[str] = []
+    boxes: list[dict[str, float]] = []
+    last_end = start_time
+    for index, stroke in enumerate(atom.strokes, start=1):
+        stroke_id = f"{prefix}s{index:03d}"
+        raw_points = place_atom_points(stroke.get("rawPoints") or [], x, y, scale, rng)
+        outline_points = place_atom_points(stroke.get("outlinePoints") or stroke.get("rawPoints") or [], x, y, scale, rng)
+        box = bbox_for_points(raw_points)
+        start = start_time + number_or_zero(stroke.get("startOffset")) + rng.uniform(0.0, 18.0)
+        end = start + max(1.0, number_or_zero(stroke.get("duration"))) * rng.uniform(0.88, 1.15)
+        fixture["strokes"].append({
+            "id": stroke_id,
+            "startTime": round_float(start, 1),
+            "endTime": round_float(end, 1),
+            "rawPoints": raw_points,
+            "outlinePoints": outline_points or raw_points,
+            "color": stroke.get("color") or "#000000",
+            "canvasBbox": box,
+            "sourceFixtureSlug": atom.source_fixture_slug,
+            "sourceStrokeId": stroke.get("sourceStrokeId"),
+            "sourceAtomLabel": atom.label,
+            "sourceAtomKind": atom.kind,
+        })
+        stroke_ids.append(stroke_id)
+        boxes.append(box)
+        last_end = max(last_end, end)
+    return stroke_ids, union_boxes(boxes), last_end
+
+
+def place_atom_points(points: Sequence[dict[str, Any]], x: float, y: float, scale: float, rng: random.Random) -> list[dict[str, float]]:
+    out: list[dict[str, float]] = []
+    for point in points:
+        if not is_finite(point.get("x")) or not is_finite(point.get("y")):
+            continue
+        pressure = float(point.get("pressure")) if is_finite(point.get("pressure")) else 0.5
+        out.append({
+            "x": round_float(x + float(point["x"]) * scale + rng.uniform(-0.9, 0.9), 2),
+            "y": round_float(y + float(point["y"]) * scale + rng.uniform(-0.9, 0.9), 2),
+            "pressure": round_float(min(1.0, max(0.0, pressure + rng.uniform(-0.018, 0.018))), 3),
+        })
+    return out
+
+
+def append_visual_atom_around_box(
+    fixture: dict[str, Any],
+    catalog: dict[str, list[HandwritingAtom]],
+    label: str,
+    target_box: dict[str, float],
+    *,
+    start_time: float,
+    rng: random.Random,
+    fit_mode: str = "around",
+) -> tuple[list[str], dict[str, float], float]:
+    atom = choose_atom(catalog, label, rng)
+    target_width = max(1.0, target_box["xMax"] - target_box["xMin"])
+    target_height = max(1.0, target_box["yMax"] - target_box["yMin"])
+    if fit_mode == "diagonal":
+        scale = min(
+            (target_width * 1.12) / max(1.0, atom.width),
+            (target_height * 1.45) / max(1.0, atom.height),
+        )
+        x = target_box["xMin"] - target_width * 0.06
+        y = center_y(target_box) - (atom.height * scale) / 2
+    else:
+        scale = max((target_width + 48.0) / max(1.0, atom.width), (target_height + 34.0) / max(1.0, atom.height))
+        x = target_box["xMin"] - 24.0
+        y = target_box["yMin"] - 18.0
+    return append_atom(
+        fixture,
+        atom,
+        prefix=f"v{len(fixture.get('visualOnlyStrokeIds') or []) + 1:02d}",
+        x=x,
+        y=y,
+        scale=scale,
+        start_time=start_time,
+        rng=rng,
     )
 
 
@@ -275,6 +782,7 @@ def validate_fixture_against_calibration(
 def fixture_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     strokes = [stroke for stroke in payload.get("strokes") or [] if isinstance(stroke, dict)]
     ordered = sorted(strokes, key=lambda stroke: number_or_zero(stroke.get("startTime")))
+    strokes_by_id = {str(stroke.get("id")): stroke for stroke in strokes}
     point_counts: list[float] = []
     durations: list[float] = []
     gaps: list[float] = []
@@ -304,14 +812,29 @@ def fixture_metrics(payload: dict[str, Any]) -> dict[str, Any]:
             pressure_means.append(mean(pressures))
 
     groups = [group for group in payload.get("expectedLineGroups") or [] if isinstance(group, dict)]
+    if not groups:
+        groups = line_groups_from_fast_result(payload)
     group_sizes = [len(group.get("strokeIds") or []) for group in groups if group.get("strokeIds")]
+    line_boxes = [
+        box
+        for group in groups
+        for box in [bbox_for_strokes([strokes_by_id[str(stroke_id)] for stroke_id in group.get("strokeIds") or [] if str(stroke_id) in strokes_by_id])]
+        if box
+    ]
+    line_boxes.sort(key=lambda box: center_y(box))
+    line_gaps = [
+        max(0.0, line_boxes[index + 1]["yMin"] - line_boxes[index]["yMax"])
+        for index in range(len(line_boxes) - 1)
+    ]
+    answer_box = bbox_or_none(payload.get("answerBox")) or bbox_for_strokes(strokes)
+    board_size = board_size_for_payload(payload, answer_box)
     visual_only = payload.get("visualOnlyStrokeIds") or [
         stroke.get("id") for stroke in strokes if stroke.get("visualOnly")
     ]
 
     return {
         "stroke_count": float(len(strokes)),
-        "line_count": float(len(groups) or len(payload.get("expectedLatexLines") or [])),
+        "line_count": float(len(groups) or len(payload.get("expectedLatexLines") or []) or len((payload.get("fastResult") or {}).get("latexLines") or [])),
         "visual_only_count": float(len(visual_only)),
         "point_count": point_counts,
         "stroke_duration_ms": durations,
@@ -320,17 +843,43 @@ def fixture_metrics(payload: dict[str, Any]) -> dict[str, Any]:
         "stroke_height_px": heights,
         "path_length_px": path_lengths,
         "pressure_mean": pressure_means,
+        "line_width_px": [box["xMax"] - box["xMin"] for box in line_boxes],
+        "line_height_px": [box["yMax"] - box["yMin"] for box in line_boxes],
+        "line_gap_px": line_gaps,
         "multi_stroke_group_size": group_sizes,
         "non_sequential_inversions": float(non_sequential_inversions(strokes)),
+        "answer_width_px": (answer_box["xMax"] - answer_box["xMin"]) if answer_box else 0.0,
+        "answer_height_px": (answer_box["yMax"] - answer_box["yMin"]) if answer_box else 0.0,
+        "board_width_px": board_size["width"],
+        "board_height_px": board_size["height"],
+    }
+
+
+def fixture_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    metrics = fixture_metrics(payload)
+    features = classify_features(payload)
+    return {
+        "fixtureKind": str(payload.get("fixtureKind") or "audit-input-json"),
+        "slug": payload.get("slug"),
+        "problemLatex": payload.get("problemLatex") or "",
+        "strokeCount": int(metrics["stroke_count"]),
+        "lineCount": int(metrics["line_count"]),
+        "visualOnlyCount": int(metrics["visual_only_count"]),
+        "pointCountMedian": round_float(quantile(sorted(metrics["point_count"]), 0.5), 4) if metrics["point_count"] else 0,
+        "strokeDurationMedianMs": round_float(quantile(sorted(metrics["stroke_duration_ms"]), 0.5), 4) if metrics["stroke_duration_ms"] else 0,
+        "interStrokeGapMedianMs": round_float(quantile(sorted(metrics["inter_stroke_gap_ms"]), 0.5), 4) if metrics["inter_stroke_gap_ms"] else 0,
+        "features": sorted(key for key, present in features.items() if present),
     }
 
 
 def classify_features(payload: dict[str, Any]) -> dict[str, bool]:
     strokes = [stroke for stroke in payload.get("strokes") or [] if isinstance(stroke, dict)]
+    groups = [group for group in payload.get("expectedLineGroups") or [] if isinstance(group, dict)]
+    if not groups:
+        groups = line_groups_from_fast_result(payload)
     group_sizes = [
         len(group.get("strokeIds") or [])
-        for group in payload.get("expectedLineGroups") or []
-        if isinstance(group, dict)
+        for group in groups
     ]
     text = json.dumps({
         "slug": payload.get("slug"),
@@ -351,6 +900,38 @@ def classify_features(payload: dict[str, Any]) -> dict[str, bool]:
         "has_circled_answer": "circle" in text or "circled" in text or "oval" in text,
         "has_crossout_or_scratch": "cross" in text or "scratch" in text or "discard" in text,
         "has_non_sequential_writing": non_sequential_inversions(strokes) > 0,
+    }
+
+
+def line_groups_from_fast_result(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    fast_result = payload.get("fastResult") or {}
+    groups: list[dict[str, Any]] = []
+    for index, line in enumerate(fast_result.get("lines") or []):
+        if not isinstance(line, dict):
+            continue
+        stroke_ids = [str(stroke_id) for stroke_id in line.get("strokeIds") or []]
+        if not stroke_ids:
+            continue
+        groups.append({
+            "lineIndex": index,
+            "latex": str(line.get("acceptedLatex") or line.get("latex") or line.get("bestLatex") or ""),
+            "strokeIds": stroke_ids,
+            "source": "fastResult.lines",
+        })
+    return groups
+
+
+def board_size_for_payload(payload: dict[str, Any], fallback_box: Optional[dict[str, float]]) -> dict[str, float]:
+    board_size = payload.get("boardSize")
+    if isinstance(board_size, dict) and is_finite(board_size.get("width")) and is_finite(board_size.get("height")):
+        return {
+            "width": float(board_size["width"]),
+            "height": float(board_size["height"]),
+        }
+    box = fallback_box or bbox_for_strokes(payload.get("strokes") or [])
+    return {
+        "width": round_float(max(1.0, float(box["xMax"]) + 24.0), 2) if box else 1.0,
+        "height": round_float(max(1.0, float(box["yMax"]) + 24.0), 2) if box else 1.0,
     }
 
 
@@ -596,6 +1177,12 @@ def bbox_for_strokes(strokes: Sequence[dict[str, Any]]) -> Optional[dict[str, fl
     boxes = [box for box in boxes if box]
     if not boxes:
         return None
+    return union_boxes(boxes)
+
+
+def union_boxes(boxes: Sequence[dict[str, float]]) -> dict[str, float]:
+    if not boxes:
+        return {"xMin": 0, "yMin": 0, "xMax": 1, "yMax": 1}
     return {
         "xMin": min(box["xMin"] for box in boxes),
         "yMin": min(box["yMin"] for box in boxes),
@@ -698,13 +1285,44 @@ def round_float(value: float, digits: int) -> float:
     return round(float(value), digits)
 
 
+def relative_path_for_report(path: Path) -> str:
+    try:
+        return str(Path(path).resolve().relative_to(REPO_ROOT))
+    except Exception:
+        return str(path)
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=REALISTIC_SCENARIOS, default="mixed-marks")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--fixture-dir", type=Path, default=DEFAULT_REAL_FIXTURE_DIR)
+    parser.add_argument("--catalog-path", type=Path, default=DEFAULT_HANDWRITING_CATALOG)
     parser.add_argument("--audit-log-dir", type=Path, default=DEFAULT_AUDIT_LOG_DIR)
     parser.add_argument("--audit-limit", type=int, default=None)
+    parser.add_argument("--hybrid-linear", action="store_true", help="Generate a hybrid real-stroke linear-equation fixture.")
+    parser.add_argument("--linear-a", type=int, default=3)
+    parser.add_argument("--linear-b", type=int, default=2)
+    parser.add_argument("--linear-x", type=int, default=4)
+    parser.add_argument("--include-crossout", action="store_true")
+    parser.add_argument("--no-circle", action="store_true")
+    parser.add_argument("--non-sequential-final", action="store_true")
+    parser.add_argument(
+        "--include-fixtures-with-audits",
+        action="store_true",
+        help="Include committed distilled fixtures even when live audit input.json records are available.",
+    )
+    parser.add_argument(
+        "--calibration-only",
+        action="store_true",
+        help="Print only the Phase 1 corpus and distribution report; do not generate a fixture.",
+    )
+    parser.add_argument(
+        "--calibration-output",
+        type=Path,
+        default=None,
+        help="Write the Phase 1 corpus and distribution report to this JSON path.",
+    )
     parser.add_argument("--output", type=Path, default=None, help="Write generated fixture JSON to this path.")
     parser.add_argument("--include-fixture", action="store_true", help="Print the full generated fixture JSON.")
     parser.add_argument("--print-calibration", action="store_true")
@@ -713,11 +1331,47 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    fixture = build_realistic_fixture(args.scenario, seed=args.seed, fixture_dir=args.fixture_dir)
-    calibration = build_calibration_summary(
+    calibration_report = build_calibration_report(
         audit_log_dir=args.audit_log_dir,
         fixture_dir=args.fixture_dir,
         audit_limit=args.audit_limit,
+        include_fixtures_with_audits=args.include_fixtures_with_audits,
+    )
+    if args.calibration_output:
+        args.calibration_output.parent.mkdir(parents=True, exist_ok=True)
+        args.calibration_output.write_text(
+            json.dumps(calibration_report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    if args.calibration_only:
+        print(json.dumps(calibration_report, indent=2, sort_keys=True))
+        return 0
+
+    if args.hybrid_linear:
+        fixture = build_hybrid_linear_equation_fixture(
+            a=args.linear_a,
+            b=args.linear_b,
+            x_value=args.linear_x,
+            seed=args.seed,
+            catalog_path=args.catalog_path,
+            fixture_dir=args.fixture_dir,
+            include_circle=not args.no_circle,
+            include_crossout=args.include_crossout,
+            non_sequential_final=args.non_sequential_final,
+        )
+    else:
+        fixture = build_realistic_fixture(args.scenario, seed=args.seed, fixture_dir=args.fixture_dir)
+    calibration = summarize_distribution(
+        [
+            record.payload
+            for record in load_corpus_records(
+                audit_log_dir=args.audit_log_dir,
+                fixture_dir=args.fixture_dir,
+                audit_limit=args.audit_limit,
+                include_fixtures_with_audits=args.include_fixtures_with_audits,
+            )
+        ],
+        source_kind=calibration_report["calibration"]["sourceKind"],
     )
     report = validate_fixture_against_calibration(
         fixture,
@@ -733,8 +1387,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.output.write_text(json.dumps(fixture, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     fixture_summary = {
         "slug": fixture["slug"],
-        "scenario": args.scenario,
+        "scenario": fixture.get("problemMetadata", {}).get("scenario") or args.scenario,
         "seed": args.seed,
+        "problemLatex": fixture.get("problemLatex") or "",
         "strokeCount": len(fixture.get("strokes") or []),
         "lineCount": len(fixture.get("expectedLineGroups") or []),
         "visualOnlyStrokeCount": len(fixture.get("visualOnlyStrokeIds") or []),
@@ -748,6 +1403,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "sourceKind": calibration.source_kind,
             "sourceCount": calibration.source_count,
         },
+        "calibrationReportPath": str(args.calibration_output) if args.calibration_output else None,
         "validation": report,
     }
     print(json.dumps(payload, indent=2, sort_keys=True))

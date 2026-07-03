@@ -55,6 +55,25 @@ For generated stress fixtures that stay calibrated to real user input, use the
 realistic stroke harness instead of the LaTeX-to-contour renderer:
 
 ```sh
+npm run handwriting:calibration
+```
+
+This Phase 1 report scans local audit `input.json` records when available and
+falls back to committed distilled traces in CI. It summarizes stroke count,
+point count, pressure, timing gaps, stroke and line geometry, answer/board
+extents, visual-mark rates, and non-sequential writing behavior. To save a
+report for review:
+
+```sh
+python3 testing/realistic_handwriting.py \
+  --calibration-only \
+  --audit-limit 100 \
+  --calibration-output testing/results/real-handwriting-calibration.json
+```
+
+To also create a generated stress fixture from real strokes:
+
+```sh
 python3 testing/realistic_handwriting.py \
   --scenario mixed-marks \
   --seed 17 \
@@ -68,6 +87,34 @@ crossed-out marks, scratch annotations, and non-sequential writing order. Its
 validation report compares generated per-stroke metrics against local audit
 `input.json` distributions when available, falling back to the committed
 distilled traces for CI.
+
+## Hybrid Real-Stroke Linear Equations
+
+The Phase 2/3 hybrid path starts with a curated catalog manifest:
+
+```text
+testing/fixtures/handwriting_catalog/linear_equation_atoms.json
+```
+
+Each catalog atom points at source fixture stroke IDs, so generated work still
+uses real point trajectories, pressure, timing, and multi-stroke symbol shapes.
+Generate a linear-equation trace from those atoms:
+
+```sh
+npm run handwriting:hybrid-linear -- \
+  --linear-a 3 \
+  --linear-b 2 \
+  --linear-x 4 \
+  --seed 31 \
+  --include-crossout \
+  --output testing/results/hybrid_handwriting/linear.json
+```
+
+This emits a stroke-level solution for `3x + 2 = 14`, including subtraction,
+division, a final `x=4`, and optional visual annotations such as a circled final
+answer or crossed-out row. The normal regression suite validates the catalog,
+generated fixture schema, exact segmentation groups, calibration bands, and a
+mocked browser E2E flow that segments, reads, and grades the generated work.
 
 Regenerate the curated seed drafts from the local audit log directory:
 

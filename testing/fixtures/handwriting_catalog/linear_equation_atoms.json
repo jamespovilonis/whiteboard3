@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "catalogKind": "real-stroke-atom-manifest",
+  "description": "Curated real handwriting atoms for early hybrid linear-equation generation. Entries reference existing distilled real handwriting fixtures and stroke IDs instead of duplicating raw point data.",
+  "atoms": [
+    {
+      "label": "x",
+      "kind": "symbol",
+      "sourceFixtureSlug": "circled-x-equals-four",
+      "strokeIds": ["s001", "s002"]
+    },
+    {
+      "label": "=",
+      "kind": "operator",
+      "sourceFixtureSlug": "circled-x-equals-four",
+      "strokeIds": ["s003", "s004"]
+    },
+    {
+      "label": "1",
+      "kind": "digit",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s013"]
+    },
+    {
+      "label": "2",
+      "kind": "digit",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s014"]
+    },
+    {
+      "label": "3",
+      "kind": "digit",
+      "sourceFixtureSlug": "problem-input-simple-fraction-addition",
+      "strokeIds": ["s006"]
+    },
+    {
+      "label": "4",
+      "kind": "digit",
+      "sourceFixtureSlug": "circled-x-equals-four",
+      "strokeIds": ["s005", "s006"]
+    },
+    {
+      "label": "5",
+      "kind": "digit",
+      "sourceFixtureSlug": "crossout-scratch-division",
+      "strokeIds": ["s024"]
+    },
+    {
+      "label": "6",
+      "kind": "digit",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s037"]
+    },
+    {
+      "label": "+",
+      "kind": "operator",
+      "sourceFixtureSlug": "problem-input-simple-fraction-addition",
+      "strokeIds": ["s004", "s005"]
+    },
+    {
+      "label": "-",
+      "kind": "operator",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s022"]
+    },
+    {
+      "label": "/",
+      "kind": "operator",
+      "sourceFixtureSlug": "crossout-scratch-division",
+      "strokeIds": ["s012"],
+      "transform": {"scale": 0.34}
+    },
+    {
+      "label": "3x",
+      "kind": "cluster",
+      "sourceFixtureSlug": "problem-input-fraction-3x-over-x-plus-1-equals-8",
+      "strokeIds": ["s001", "s002", "s003"]
+    },
+    {
+      "label": "12",
+      "kind": "cluster",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s013", "s014"]
+    },
+    {
+      "label": "x=4",
+      "kind": "cluster",
+      "sourceFixtureSlug": "circled-x-equals-four",
+      "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006"]
+    },
+    {
+      "label": "circle",
+      "kind": "visual-mark",
+      "sourceFixtureSlug": "circled-x-equals-four",
+      "strokeIds": ["s007"]
+    },
+    {
+      "label": "crossout",
+      "kind": "visual-mark",
+      "sourceFixtureSlug": "crossout-scratch-division",
+      "strokeIds": ["s012"],
+      "transform": {"scale": 0.62}
+    }
+  ]
+}
