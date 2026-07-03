@@ -28,6 +28,8 @@ VLM_TIMEOUT_CIRCUIT_FAILURES = 2
 VLM_TIMEOUT_CIRCUIT_SECONDS = 300.0
 AUDIT_PROMPT_VERSION = "recognition-audit-v2"
 AUDIT_IMAGE_NAMES = ("problemCrop", "answerCrop", "answerContext")
+ANSWER_AUDIT_IMAGE_NAMES = ("answerCrop", "answerContext")
+PROBLEM_INPUT_AUDIT_IMAGE_NAMES = ("answerCrop", "problemCrop")
 
 
 class AuditSchemaError(ValueError):
@@ -36,6 +38,16 @@ class AuditSchemaError(ValueError):
     def __init__(self, message: str, *, raw_response: Any = None):
         super().__init__(message)
         self.raw_response = raw_response
+
+
+class VlmCircuitOpenError(RuntimeError):
+    """Raised when the local VLM circuit breaker is open."""
+
+    def __init__(self, retry_after_seconds: float):
+        self.retry_after_seconds = max(0.0, float(retry_after_seconds or 0.0))
+        super().__init__(
+            f"VLM audit circuit open after repeated timeouts; retry in {self.retry_after_seconds:.0f}s"
+        )
 
 
 class OpenAICompatibleVlmClient:
@@ -115,6 +127,15 @@ class RecognitionAuditService:
         self._vlm_health_lock = Lock()
         self._consecutive_vlm_timeouts = 0
         self._vlm_circuit_open_until = 0.0
+        self._circuit_signature_suppression: dict[str, str] = {}
+        self.vlm_timeout_circuit_failures = max(
+            1,
+            int(getattr(settings, "vlm_audit_circuit_failures", VLM_TIMEOUT_CIRCUIT_FAILURES) or VLM_TIMEOUT_CIRCUIT_FAILURES),
+        )
+        self.vlm_timeout_circuit_seconds = max(
+            0.0,
+            float(getattr(settings, "vlm_audit_circuit_seconds", VLM_TIMEOUT_CIRCUIT_SECONDS) or VLM_TIMEOUT_CIRCUIT_SECONDS),
+        )
 
     def enqueue(self, payload: dict[str, Any]) -> dict[str, Any]:
         audit_id = build_audit_id(payload)
@@ -135,6 +156,7 @@ class RecognitionAuditService:
             "done": False,
             "problemId": payload.get("problemId"),
             "triggerReasons": payload.get("triggerReasons") or [],
+            "queuedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         })
         self.executor.submit(self.run_audit, payload, audit_id)
         return {"auditId": audit_id, "queued": True}
@@ -195,8 +217,30 @@ class RecognitionAuditService:
 
     def run_audit(self, payload: dict[str, Any], audit_id: Optional[str] = None) -> dict[str, Any]:
         audit_id = audit_id or build_audit_id(payload)
-        now = datetime.now(timezone.utc)
-        audit_dir = self.log_dir / now.strftime("%Y-%m-%d") / audit_id
+        started_at = datetime.now(timezone.utc)
+        queued_at = self._queued_at_for(audit_id) or started_at
+        if self._should_suppress_circuit_duplicate(payload):
+            summary = self._write_suppressed_circuit_event(
+                audit_id=audit_id,
+                payload=payload,
+                queued_at=queued_at,
+                started_at=started_at,
+            )
+            self._set_status(audit_id, {
+                "auditId": audit_id,
+                "status": "suppressed",
+                "queued": True,
+                "done": True,
+                "problemId": payload.get("problemId"),
+                "triggerReasons": payload.get("triggerReasons") or [],
+                "comparisonStatus": "skipped",
+                "failureKind": "vlm_circuit_open",
+                "retryAfterSeconds": summary.get("retryAfterSeconds"),
+                "suppressedByAuditId": summary.get("suppressedByAuditId"),
+            })
+            return summary
+
+        audit_dir = self.log_dir / started_at.strftime("%Y-%m-%d") / audit_id
         audit_dir.mkdir(parents=True, exist_ok=True)
         self._set_status(audit_id, {
             "auditId": audit_id,
@@ -206,6 +250,8 @@ class RecognitionAuditService:
             "problemId": payload.get("problemId"),
             "triggerReasons": payload.get("triggerReasons") or [],
             "auditDir": str(audit_dir),
+            "queuedAt": queued_at.isoformat().replace("+00:00", "Z"),
+            "startedAt": started_at.isoformat().replace("+00:00", "Z"),
         })
 
         input_payload = sanitize_json(payload)
@@ -224,6 +270,8 @@ class RecognitionAuditService:
         raw_vlm: dict[str, Any] | None = None
         prompt_version = str(payload.get("promptVersion") or AUDIT_PROMPT_VERSION)
         attached_images: list[str] = []
+        vlm_request_profile = vlm_request_profile_for_payload(payload)
+        retry_after_seconds: float | None = None
 
         try:
             failure_stage = "rendering_artifacts"
@@ -232,7 +280,7 @@ class RecognitionAuditService:
             crops = {key: path for key, path in rendered.items() if isinstance(path, Path)}
             artifact_paths.update({key: str(path) for key, path in crops.items()})
             prompt = build_vlm_prompt(payload)
-            attached_images = [name for name in AUDIT_IMAGE_NAMES if name in crops]
+            attached_images = attached_image_names_for_payload(payload, crops)
             failure_stage = "requesting_vlm"
             self._raise_if_vlm_circuit_open()
             raw_vlm, normalized = self._complete_and_normalize_vlm(
@@ -243,6 +291,7 @@ class RecognitionAuditService:
                 attempts=audit_attempts,
                 prompt_version=prompt_version,
                 audit_id=audit_id,
+                vlm_request_profile=vlm_request_profile,
             )
             self._record_vlm_success()
             write_json(audit_dir / "vlm_raw.json", raw_vlm)
@@ -264,7 +313,12 @@ class RecognitionAuditService:
                 vlm_grading = {"status": "complete", "failed": False, **vlm_grading}
             write_json(audit_dir / "vlm_grading.json", vlm_grading)
             failure_stage = "comparing_results"
-            comparison = compare_audit_results(fast_result, normalized, vlm_grading)
+            comparison = compare_audit_results(
+                fast_result,
+                normalized,
+                vlm_grading,
+                audit_subject=(payload.get("problemMetadata") or {}).get("auditSubject"),
+            )
         except AuditSchemaError as exc:
             failure_kind = "vlm_schema_error"
             failure_stage = "normalizing_vlm"
@@ -272,10 +326,17 @@ class RecognitionAuditService:
             write_json(audit_dir / "vlm_raw.json", schema_error_payload(exc, raw_vlm))
         except Exception as exc:
             if failure_stage in {"requesting_vlm", "normalizing_vlm"}:
-                failure_kind = "vlm_unavailable"
-                self._record_vlm_unavailable(str(exc))
-                comparison = failure_comparison("vlm_unavailable", str(exc), fast_result)
-                write_json(audit_dir / "vlm_raw.json", unavailable_error_payload(exc, failure_stage))
+                failure_kind, retry_after_seconds = classify_vlm_runtime_failure(exc)
+                self._record_vlm_unavailable(failure_kind, str(exc))
+                if failure_kind == "vlm_circuit_open":
+                    self._remember_circuit_signature(payload, audit_id)
+                comparison = failure_comparison(
+                    failure_kind,
+                    str(exc),
+                    fast_result,
+                    retry_after_seconds=retry_after_seconds,
+                )
+                write_json(audit_dir / "vlm_raw.json", unavailable_error_payload(exc, failure_stage, failure_kind))
             else:
                 failure_kind = "audit_internal_error"
                 comparison = failure_comparison("audit_internal_error", str(exc), fast_result)
@@ -285,6 +346,7 @@ class RecognitionAuditService:
 
         failure_kind = failure_kind or first_failure_kind(comparison)
         try:
+            completed_at = datetime.now(timezone.utc)
             write_json(audit_dir / "comparison.json", comparison)
             write_json(audit_dir / "audit_metadata.json", build_audit_metadata(
                 settings=self.settings,
@@ -299,10 +361,15 @@ class RecognitionAuditService:
                 prompt_version=prompt_version,
                 normalized=normalized,
                 attached_images=attached_images,
+                queued_at=queued_at,
+                started_at=started_at,
+                completed_at=completed_at,
+                vlm_request_profile=vlm_request_profile,
+                retry_after_seconds=retry_after_seconds,
             ))
             summary = build_event_summary(
                 audit_id=audit_id,
-                created_at=now,
+                created_at=completed_at,
                 payload=payload,
                 comparison=comparison,
                 audit_dir=audit_dir,
@@ -314,12 +381,18 @@ class RecognitionAuditService:
                 prompt_version=prompt_version,
                 attempts=audit_attempts,
                 attached_images=attached_images,
+                queued_at=queued_at,
+                started_at=started_at,
+                completed_at=completed_at,
+                vlm_request_profile=vlm_request_profile,
+                retry_after_seconds=retry_after_seconds,
             )
             append_jsonl(self.log_dir / "audit_events.jsonl", summary)
         except Exception as exc:
+            completed_at = datetime.now(timezone.utc)
             summary = {
                 "auditId": audit_id,
-                "createdAt": now.isoformat().replace("+00:00", "Z"),
+                "createdAt": completed_at.isoformat().replace("+00:00", "Z"),
                 "eventStage": "terminal",
                 "problemId": payload.get("problemId"),
                 "comparisonStatus": "failed",
@@ -328,6 +401,10 @@ class RecognitionAuditService:
                 "description": f"Failed to persist audit artifacts: {exc}",
                 "auditDir": str(audit_dir),
                 "prompt_version": prompt_version,
+                "queuedAt": queued_at.isoformat().replace("+00:00", "Z"),
+                "startedAt": started_at.isoformat().replace("+00:00", "Z"),
+                "completedAt": completed_at.isoformat().replace("+00:00", "Z"),
+                "runElapsedSeconds": round((completed_at - started_at).total_seconds(), 3),
             }
             append_jsonl(self.log_dir / "audit_events.jsonl", summary)
         self._set_status(audit_id, {
@@ -342,31 +419,102 @@ class RecognitionAuditService:
             "discrepancyCount": len(comparison.get("discrepancies") or []),
             "comparisonStatus": comparison.get("status"),
             "failureKind": failure_kind,
+            "retryAfterSeconds": retry_after_seconds,
+            "completedAt": summary.get("completedAt"),
         })
         return summary
 
     def _raise_if_vlm_circuit_open(self) -> None:
+        remaining = self._vlm_circuit_remaining_seconds()
+        if remaining > 0:
+            raise VlmCircuitOpenError(remaining)
+
+    def _vlm_circuit_remaining_seconds(self) -> float:
         now = time.monotonic()
         with self._vlm_health_lock:
-            remaining = self._vlm_circuit_open_until - now
-        if remaining > 0:
-            raise RuntimeError(f"VLM audit circuit open after repeated timeouts; retry in {remaining:.0f}s")
+            return max(0.0, self._vlm_circuit_open_until - now)
 
     def _record_vlm_success(self) -> None:
         with self._vlm_health_lock:
             self._consecutive_vlm_timeouts = 0
             self._vlm_circuit_open_until = 0.0
+            self._circuit_signature_suppression.clear()
 
-    def _record_vlm_unavailable(self, error: str) -> None:
-        normalized_error = str(error).lower()
-        if "circuit open" in normalized_error:
+    def _record_vlm_unavailable(self, failure_kind: str, error: str) -> None:
+        if failure_kind == "vlm_circuit_open":
             return
-        if "timeout" not in normalized_error and "timed out" not in normalized_error:
+        normalized_error = str(error).lower()
+        if failure_kind != "vlm_timeout" and "timeout" not in normalized_error and "timed out" not in normalized_error:
             return
         with self._vlm_health_lock:
             self._consecutive_vlm_timeouts += 1
-            if self._consecutive_vlm_timeouts >= VLM_TIMEOUT_CIRCUIT_FAILURES:
-                self._vlm_circuit_open_until = time.monotonic() + VLM_TIMEOUT_CIRCUIT_SECONDS
+            if self._consecutive_vlm_timeouts >= self.vlm_timeout_circuit_failures:
+                self._vlm_circuit_open_until = time.monotonic() + self.vlm_timeout_circuit_seconds
+            if self._consecutive_vlm_timeouts < self.vlm_timeout_circuit_failures:
+                self._circuit_signature_suppression.clear()
+
+    def _queued_at_for(self, audit_id: str) -> datetime | None:
+        with self._status_lock:
+            queued_at = self._statuses.get(audit_id, {}).get("queuedAt")
+        if not queued_at:
+            return None
+        try:
+            return datetime.fromisoformat(str(queued_at).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def _should_suppress_circuit_duplicate(self, payload: dict[str, Any]) -> bool:
+        if self._vlm_circuit_remaining_seconds() <= 0:
+            return False
+        signature = str(payload.get("inputSignature") or "").strip()
+        return bool(signature and self._circuit_signature_suppression.get(signature))
+
+    def _remember_circuit_signature(self, payload: dict[str, Any], audit_id: str) -> None:
+        signature = str(payload.get("inputSignature") or "").strip()
+        if not signature:
+            return
+        self._circuit_signature_suppression.setdefault(signature, audit_id)
+
+    def _write_suppressed_circuit_event(
+        self,
+        *,
+        audit_id: str,
+        payload: dict[str, Any],
+        queued_at: datetime,
+        started_at: datetime,
+    ) -> dict[str, Any]:
+        completed_at = datetime.now(timezone.utc)
+        signature = str(payload.get("inputSignature") or "").strip()
+        retry_after_seconds = round(self._vlm_circuit_remaining_seconds(), 3)
+        summary = {
+            "auditId": audit_id,
+            "auditIdTimestamp": audit_id_timestamp(audit_id),
+            "createdAt": completed_at.isoformat().replace("+00:00", "Z"),
+            "queuedAt": queued_at.isoformat().replace("+00:00", "Z"),
+            "startedAt": started_at.isoformat().replace("+00:00", "Z"),
+            "completedAt": completed_at.isoformat().replace("+00:00", "Z"),
+            "queueMs": round((started_at - queued_at).total_seconds() * 1000, 1),
+            "runElapsedSeconds": round((completed_at - started_at).total_seconds(), 3),
+            "eventStage": "suppressed",
+            "problemId": payload.get("problemId"),
+            "inputSignature": payload.get("inputSignature"),
+            "attemptId": payload.get("attemptId"),
+            "previousAuditId": payload.get("previousAuditId"),
+            "triggerReasons": payload.get("triggerReasons") or [],
+            "auditSubject": (payload.get("problemMetadata") or {}).get("auditSubject"),
+            "comparisonStatus": "skipped",
+            "failureKind": "vlm_circuit_open",
+            "failureStage": "requesting_vlm",
+            "failure_stage": "requesting_vlm",
+            "discrepancyCount": 0,
+            "discrepancyTypes": [],
+            "description": "Suppressed duplicate audit while local VLM circuit was open.",
+            "retryAfterSeconds": retry_after_seconds,
+            "suppressedByAuditId": self._circuit_signature_suppression.get(signature),
+            "vlmRequestProfile": vlm_request_profile_for_payload(payload),
+        }
+        append_jsonl(self.log_dir / "audit_events.jsonl", summary)
+        return summary
 
     def _complete_and_normalize_vlm(
         self,
@@ -378,6 +526,7 @@ class RecognitionAuditService:
         attempts: list[dict[str, Any]],
         prompt_version: str,
         audit_id: str,
+        vlm_request_profile: str,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         last_schema_error: AuditSchemaError | None = None
         for attempt_index in range(2):
@@ -398,6 +547,7 @@ class RecognitionAuditService:
                     "promptVersion": prompt_version,
                     "prompt_version": prompt_version,
                     "attachedImages": list(image_names),
+                    "vlmRequestProfile": vlm_request_profile,
                     "queueMs": None,
                     "queue_ms": None,
                     "inferenceMs": round(elapsed * 1000, 1),
@@ -422,6 +572,7 @@ class RecognitionAuditService:
                     "promptVersion": prompt_version,
                     "prompt_version": prompt_version,
                     "attachedImages": list(image_names),
+                    "vlmRequestProfile": vlm_request_profile,
                     "queueMs": None,
                     "queue_ms": None,
                     "inferenceMs": round(elapsed * 1000, 1),
@@ -431,10 +582,11 @@ class RecognitionAuditService:
                     write_json(audit_dir / f"vlm_raw_attempt_{attempt_index + 1}.json", raw_vlm)
             except Exception as exc:
                 elapsed = time.perf_counter() - started
+                attempt_failure_kind, attempt_retry_after_seconds = classify_vlm_runtime_failure(exc)
                 attempts.append({
                     "attempt": attempt_index + 1,
                     "status": "failed",
-                    "failureKind": "vlm_unavailable",
+                    "failureKind": attempt_failure_kind,
                     "error": str(exc),
                     "elapsedSeconds": round(elapsed, 3),
                     "failureStage": "requesting_vlm",
@@ -443,10 +595,12 @@ class RecognitionAuditService:
                     "promptVersion": prompt_version,
                     "prompt_version": prompt_version,
                     "attachedImages": list(image_names),
+                    "vlmRequestProfile": vlm_request_profile,
                     "queueMs": None,
                     "queue_ms": None,
                     "inferenceMs": round(elapsed * 1000, 1),
                     "inference_ms": round(elapsed * 1000, 1),
+                    **({"retryAfterSeconds": attempt_retry_after_seconds} if attempt_retry_after_seconds is not None else {}),
                 })
                 raise
         if last_schema_error is not None:
@@ -497,7 +651,7 @@ def build_vlm_prompt(payload: dict[str, Any]) -> str:
     return (
         "Read the student's handwritten math answer from the attached images. "
         "The printed problem is not rendered in the image; it is provided here as LaTeX. "
-        "The third image includes wider answer context only for interpreting detached operation marks.\n\n"
+        "Attached image 1 is the answer crop. Attached image 2 is wider answer context for interpreting detached operation marks.\n\n"
         f"Problem LaTeX: {problem_latex}\n"
         f"Audit trigger reasons: {', '.join(map(str, trigger_reasons)) or 'none'}\n\n"
         f"{attachment_context}"
@@ -524,6 +678,7 @@ def build_problem_input_vlm_prompt(payload: dict[str, Any]) -> str:
     return (
         "Read the user's handwritten math problem input from the attached images. "
         "This is the problem-entry box, not a student's answer to a printed problem. "
+        "Attached image 1 is the handwritten input crop. Attached image 2 is the full problem-input crop.\n"
         "The app's fast OCR thought the input was: "
         f"{json.dumps(fast_lines, sort_keys=True)}\n"
         f"Audit trigger reasons: {', '.join(map(str, trigger_reasons)) or 'none'}\n\n"
@@ -700,6 +855,8 @@ def compare_audit_results(
     fast_result: dict[str, Any],
     normalized_vlm: dict[str, Any],
     vlm_grading: dict[str, Any],
+    *,
+    audit_subject: Optional[str] = None,
 ) -> dict[str, Any]:
     discrepancies: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
@@ -715,6 +872,14 @@ def compare_audit_results(
             "fast": fast_status,
             "slow": vlm_status,
         })
+        if simplification_policy_disagreement(fast_grading, vlm_grading):
+            discrepancies.append({
+                "type": "simplification_policy_disagreement",
+                "source": "grading",
+                "description": "Fast and VLM grading disagree on whether an equivalent simplification is final.",
+                "fast": fast_status,
+                "slow": vlm_status,
+            })
 
     fast_found = sorted(map(str, nested_get(fast_grading, ["result", "foundSolutions"], []) or []))
     vlm_found = sorted(map(str, nested_get(vlm_grading, ["result", "foundSolutions"], []) or []))
@@ -729,7 +894,9 @@ def compare_audit_results(
 
     fast_lines = [str(item or "").strip() for item in fast_result.get("latexLines") or []]
     vlm_lines = normalized_vlm.get("latexLines") or []
+    problem_input_line_mismatch = False
     if len(fast_lines) != len(vlm_lines):
+        problem_input_line_mismatch = True
         discrepancies.append({
             "type": "line_count_mismatch",
             "source": "ocr",
@@ -739,6 +906,7 @@ def compare_audit_results(
         })
     for index, (fast_line, vlm_line) in enumerate(zip(fast_lines, vlm_lines)):
         if normalize_latex_for_compare(fast_line) != normalize_latex_for_compare(vlm_line):
+            problem_input_line_mismatch = True
             discrepancies.append({
                 "type": "line_latex_mismatch",
                 "source": "ocr",
@@ -747,6 +915,31 @@ def compare_audit_results(
                 "fast": fast_line,
                 "slow": vlm_line,
             })
+    empty_lines = empty_ocr_lines_with_ink(fast_result)
+    if empty_lines:
+        discrepancies.append({
+            "type": "line_segmentation_empty",
+            "source": "ocr",
+            "description": "Fast pipeline selected line segment(s) with ink but no OCR text.",
+            "lineIndexes": empty_lines,
+        })
+    if audit_subject == "problem-input" and problem_input_line_mismatch:
+        discrepancies.append({
+            "type": "problem_input_ocr_mismatch",
+            "source": "ocr",
+            "description": "Problem-input OCR differs from VLM problem-input transcript.",
+            "fast": fast_lines,
+            "slow": vlm_lines,
+        })
+
+    candidate_conflicts = candidate_present_not_selected(fast_result)
+    if candidate_conflicts:
+        discrepancies.append({
+            "type": "candidate_present_not_selected",
+            "source": "selection",
+            "description": "A discarded OCR candidate appears to contain a valid/full answer.",
+            "candidates": candidate_conflicts,
+        })
 
     fast_attachments = flatten_annotation_attachments(
         fast_result.get("annotationAttachments") or extract_fast_annotation_attachments(fast_result),
@@ -800,12 +993,87 @@ def is_problem_input_audit(payload: dict[str, Any]) -> bool:
     return metadata.get("auditSubject") == "problem-input"
 
 
-def failure_comparison(kind: str, error: str, fast_result: dict[str, Any]) -> dict[str, Any]:
+def empty_ocr_lines_with_ink(fast_result: dict[str, Any]) -> list[int]:
+    empty: list[int] = []
+    for index, line in enumerate(fast_result.get("lines") or []):
+        if not isinstance(line, dict):
+            continue
+        latex = str(line.get("acceptedLatex") or line.get("latex") or line.get("ocrLatex") or "").strip()
+        stroke_ids = line.get("strokeIds") or []
+        if not latex and stroke_ids:
+            empty.append(safe_int(line.get("lineIndex")) if safe_int(line.get("lineIndex")) is not None else index)
+    return empty
+
+
+def candidate_present_not_selected(fast_result: dict[str, Any]) -> list[dict[str, Any]]:
+    summary_items = nested_get(fast_result, ["selectionSummary", "highConfidenceDiscarded"], []) or []
+    candidates: list[dict[str, Any]] = []
+    for item in summary_items:
+        if not isinstance(item, dict):
+            continue
+        grading = item.get("grading") or {}
+        if not grading_preferred_for_audit(grading):
+            continue
+        candidates.append(sanitize_json({
+            "candidateId": item.get("candidateId"),
+            "latex": item.get("latex"),
+            "solutionCoverage": grading.get("solutionCoverage"),
+            "matchedSolutions": grading.get("matchedSolutions") or [],
+            "selectedCandidateIndex": grading.get("selectedCandidateIndex"),
+        }))
+    return candidates[:8]
+
+
+def grading_preferred_for_audit(grading: dict[str, Any]) -> bool:
+    if not isinstance(grading, dict):
+        return False
+    return (
+        grading.get("solutionCoverage") in {"full", "partial"} or
+        bool(grading.get("matchedSolutions")) or
+        grading.get("classification") == "valid_step"
+    )
+
+
+def simplification_policy_disagreement(fast_grading: dict[str, Any], vlm_grading: dict[str, Any]) -> bool:
+    if nested_get(fast_grading, ["problem", "manifestResponseKind"]) != "simplified_expression" and (
+        nested_get(vlm_grading, ["problem", "manifestResponseKind"]) != "simplified_expression"
+    ):
+        return False
+    fast_steps = fast_grading.get("steps") or []
+    vlm_steps = vlm_grading.get("steps") or []
+    steps = [item for item in [*fast_steps, *vlm_steps] if isinstance(item, dict)]
+    return any(
+        step.get("answerFinality") == "unsimplified" and (
+            step.get("solutionCoverage") == "full" or bool(step.get("matchedSolutions"))
+        )
+        for step in steps
+    )
+
+
+def failure_comparison(
+    kind: str,
+    error: str,
+    fast_result: dict[str, Any],
+    *,
+    retry_after_seconds: float | None = None,
+) -> dict[str, Any]:
     source = "requesting_vlm"
     if kind == "vlm_schema_error":
         source = "vlm_normalization"
     elif kind == "audit_internal_error":
         source = "audit_internal"
+    if kind == "vlm_circuit_open":
+        return {
+            "status": "skipped",
+            "fastProblemStatus": nested_get(fast_result.get("grading") or {}, ["result", "problemStatus"]),
+            "vlmProblemStatus": None,
+            "discrepancies": [],
+            "observations": [],
+            "observation_only_discrepancies": [],
+            "description": error,
+            "skipReason": kind,
+            "retryAfterSeconds": retry_after_seconds,
+        }
     return {
         "status": "failed",
         "fastProblemStatus": nested_get(fast_result.get("grading") or {}, ["result", "problemStatus"]),
@@ -818,6 +1086,7 @@ def failure_comparison(kind: str, error: str, fast_result: dict[str, Any]) -> di
         "observations": [],
         "observation_only_discrepancies": [],
         "description": error,
+        **({"retryAfterSeconds": retry_after_seconds} if retry_after_seconds is not None else {}),
     }
 
 
@@ -836,6 +1105,11 @@ def build_event_summary(
     prompt_version: str,
     attempts: list[dict[str, Any]],
     attached_images: list[str],
+    queued_at: datetime,
+    started_at: datetime,
+    completed_at: datetime,
+    vlm_request_profile: str,
+    retry_after_seconds: float | None,
 ) -> dict[str, Any]:
     discrepancies = comparison.get("discrepancies") or []
     observations = comparison.get("observations") or []
@@ -843,7 +1117,13 @@ def build_event_summary(
     flattened_attachments = flatten_annotation_attachments((normalized or {}).get("annotationAttachments") or [], source="vlm")
     return {
         "auditId": audit_id,
+        "auditIdTimestamp": audit_id_timestamp(audit_id),
         "createdAt": created_at.isoformat().replace("+00:00", "Z"),
+        "queuedAt": queued_at.isoformat().replace("+00:00", "Z"),
+        "startedAt": started_at.isoformat().replace("+00:00", "Z"),
+        "completedAt": completed_at.isoformat().replace("+00:00", "Z"),
+        "queueMs": round((started_at - queued_at).total_seconds() * 1000, 1),
+        "runElapsedSeconds": round((completed_at - started_at).total_seconds(), 3),
         "eventStage": "terminal",
         "problemId": payload.get("problemId"),
         "inputSignature": payload.get("inputSignature"),
@@ -876,6 +1156,8 @@ def build_event_summary(
         "queue_ms": last_attempt.get("queue_ms"),
         "inference_ms": last_attempt.get("inference_ms"),
         "attached_images": list(attached_images),
+        "vlmRequestProfile": vlm_request_profile,
+        **({"retryAfterSeconds": retry_after_seconds} if retry_after_seconds is not None else {}),
     }
 
 
@@ -893,11 +1175,17 @@ def build_audit_metadata(
     prompt_version: str,
     normalized: Optional[dict[str, Any]],
     attached_images: list[str],
+    queued_at: datetime,
+    started_at: datetime,
+    completed_at: datetime,
+    vlm_request_profile: str,
+    retry_after_seconds: float | None,
 ) -> dict[str, Any]:
     last_attempt = attempts[-1] if attempts else {}
     flattened_attachments = flatten_annotation_attachments((normalized or {}).get("annotationAttachments") or [], source="vlm")
     return {
         "auditId": audit_id,
+        "auditIdTimestamp": audit_id_timestamp(audit_id),
         "model": settings.vlm_audit_model,
         "timeoutSeconds": settings.vlm_audit_timeout_seconds,
         "attempts": attempts,
@@ -909,6 +1197,11 @@ def build_audit_metadata(
         "failureKind": failure_kind,
         "failureStage": failure_stage,
         "failure_stage": failure_stage,
+        "queuedAt": queued_at.isoformat().replace("+00:00", "Z"),
+        "startedAt": started_at.isoformat().replace("+00:00", "Z"),
+        "completedAt": completed_at.isoformat().replace("+00:00", "Z"),
+        "queueMs": round((started_at - queued_at).total_seconds() * 1000, 1),
+        "runElapsedSeconds": round((completed_at - started_at).total_seconds(), 3),
         "comparisonStatus": comparison.get("status"),
         "observations": comparison.get("observations") or [],
         "observation_only_discrepancies": comparison.get("observation_only_discrepancies") or [],
@@ -925,12 +1218,14 @@ def build_audit_metadata(
         "prompt_version": prompt_version,
         "requestId": last_attempt.get("request_id"),
         "request_id": last_attempt.get("request_id"),
-        "queueMs": last_attempt.get("queue_ms"),
-        "queue_ms": last_attempt.get("queue_ms"),
+        "vlmQueueMs": last_attempt.get("queue_ms"),
+        "vlm_queue_ms": last_attempt.get("queue_ms"),
         "inferenceMs": last_attempt.get("inference_ms"),
         "inference_ms": last_attempt.get("inference_ms"),
         "attachedImages": list(attached_images),
         "attached_images": list(attached_images),
+        "vlmRequestProfile": vlm_request_profile,
+        **({"retryAfterSeconds": retry_after_seconds} if retry_after_seconds is not None else {}),
         "annotationAttachments": flattened_attachments,
         "annotation_attachments": flattened_attachments,
     }
@@ -955,6 +1250,42 @@ def request_id_for_response(raw_vlm: Any) -> Optional[str]:
     return None
 
 
+def audit_id_timestamp(audit_id: str) -> Optional[str]:
+    match = re.match(r"^audit_(\d{8})T(\d{6})(\d{6})Z_", str(audit_id or ""))
+    if not match:
+        return None
+    raw = "".join(match.groups())
+    try:
+        return datetime.strptime(raw, "%Y%m%d%H%M%S%f").replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+    except ValueError:
+        return None
+
+
+def attached_image_names_for_payload(payload: dict[str, Any], crops: dict[str, Path]) -> list[str]:
+    preferred = PROBLEM_INPUT_AUDIT_IMAGE_NAMES if is_problem_input_audit(payload) else ANSWER_AUDIT_IMAGE_NAMES
+    names = [name for name in preferred if name in crops]
+    if names:
+        return names
+    return [name for name in AUDIT_IMAGE_NAMES if name in crops]
+
+
+def vlm_request_profile_for_payload(payload: dict[str, Any]) -> str:
+    return "problem-input-local-compact" if is_problem_input_audit(payload) else "answer-local-compact"
+
+
+def classify_vlm_runtime_failure(exc: Exception) -> tuple[str, float | None]:
+    if isinstance(exc, VlmCircuitOpenError):
+        return "vlm_circuit_open", round(exc.retry_after_seconds, 3)
+    message = str(exc).lower()
+    if "circuit open" in message:
+        match = re.search(r"retry in ([0-9.]+)s", str(exc), re.IGNORECASE)
+        retry_after = float(match.group(1)) if match else None
+        return "vlm_circuit_open", retry_after
+    if "timed out" in message or "timeout" in message:
+        return "vlm_timeout", None
+    return "vlm_unavailable", None
+
+
 def schema_error_payload(exc: AuditSchemaError, raw_vlm: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "error": str(exc),
@@ -968,10 +1299,10 @@ def schema_error_payload(exc: AuditSchemaError, raw_vlm: Any) -> dict[str, Any]:
     return payload
 
 
-def unavailable_error_payload(exc: Exception, failure_stage: str) -> dict[str, Any]:
+def unavailable_error_payload(exc: Exception, failure_stage: str, failure_kind: str) -> dict[str, Any]:
     return {
         "error": str(exc),
-        "failureKind": "vlm_unavailable",
+        "failureKind": failure_kind,
         "failureStage": failure_stage,
     }
 

@@ -590,7 +590,7 @@ def create_simplification_manifest(
             "error": "simplification prompts must contain at least one variable",
         }
 
-    exact = _simplify_with_budget(parsed.left)
+    exact = preferred_simplification_target(parsed.left)
     if exact is None:
         return {
             **manifest,
@@ -608,6 +608,17 @@ def create_simplification_manifest(
         "decimal_set": [round(decimal, 3)] if decimal is not None else [],
         "acceptable_strings": [compact_answer_text(exact_set[0])],
     }
+
+
+def preferred_simplification_target(expression: sympy.Expr) -> Optional[sympy.Expr]:
+    simplified = _simplify_with_budget(expression)
+    if simplified is None:
+        return None
+    expanded = sympy.expand(simplified)
+    symbols = tuple(sorted(expression.free_symbols, key=lambda symbol: symbol.name))
+    if symbols and expanded != simplified and expanded.is_polynomial(*symbols) and isinstance(expanded, sympy.Add):
+        return expanded
+    return simplified
 
 
 def grade_simplification_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2316,6 +2327,8 @@ def expression_value_finality(raw_text: str, evaluated: sympy.Expr) -> AnswerFin
 
     simplified = _simplify_with_budget(unevaluated - evaluated)
     if simplified == 0:
+        if is_numeric_power_literal(finality_normalized):
+            return final_answer()
         return unsimplified_answer("answer is equivalent but not fully simplified")
 
     return final_answer()
@@ -2334,6 +2347,9 @@ def simplification_value_finality(
 
     if not solution_values_equivalent(evaluated, target, manifest):
         return invalid_format("final expression is not equivalent to the simplified target")
+
+    if compact_math_form(raw_text) == compact_math_form(expression_answer_string(target)):
+        return final_answer()
 
     if expressions_match_commutative_structure(unevaluated, target):
         return final_answer()
@@ -2392,6 +2408,17 @@ def normalize_e_power_text(text: str) -> str:
 
 def is_decimal_or_integer_literal(text: str) -> bool:
     return bool(re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", str(text or "").strip()))
+
+
+def is_numeric_power_literal(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    previous = None
+    while previous != cleaned:
+        previous = cleaned
+        cleaned = strip_outer_parentheses(cleaned)
+    number = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
+    exponent = rf"(?:{number}|\(?[+-]?\d+/\d+\)?)"
+    return bool(re.fullmatch(rf"{number}\^\({exponent}\)", cleaned))
 
 
 def is_reduced_fraction_literal(text: str, evaluated: sympy.Expr) -> bool:

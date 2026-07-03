@@ -18,6 +18,9 @@ export function getRecognitionAuditDecision(result = {}, options = {}) {
   if (hasUnreadLine(result)) {
     triggerReasons.push('unread_or_empty_line');
   }
+  if (hasLineSegmentationEmpty(result)) {
+    triggerReasons.push('line_segmentation_empty');
+  }
   if (hasOcrFailure(result)) {
     triggerReasons.push('ocr_failure_or_timeout');
   }
@@ -185,6 +188,44 @@ export function buildProblemInputAuditPayload({
     strokes: compactStrokes(strokes),
     fastResult: compactRecognitionResult(normalizedResult)
   };
+}
+
+export function normalizeProblemInputRecognitionResult(result = {}) {
+  const lines = Array.isArray(result?.lines) ? result.lines : [];
+  const normalizedLines = lines.map((line) => {
+    const accepted = chooseProblemInputLineLatex(line);
+    return {
+      ...line,
+      latex: accepted,
+      acceptedLatex: accepted,
+      ocrLatex: accepted || line?.ocrLatex || ''
+    };
+  });
+  let latexLines = normalizedLines
+    .map((line) => String(line.acceptedLatex || line.latex || '').trim())
+    .filter((latex) => latex && !containsSplitLineNoise(latex));
+
+  if (!latexLines.length && Array.isArray(result?.latexLines)) {
+    latexLines = result.latexLines
+      .map((latex) => String(latex || '').trim())
+      .filter((latex) => latex && !containsSplitLineNoise(latex));
+  }
+
+  if (!latexLines.length) {
+    const fallback = firstCleanProblemInputCandidate(result);
+    if (fallback) latexLines = [fallback];
+  }
+
+  return {
+    ...result,
+    lines: normalizedLines,
+    latexLines,
+    latex: latexLines.join(' \\\\ ')
+  };
+}
+
+export function containsProblemInputSplitLineNoise(latex = '') {
+  return containsSplitLineNoise(latex);
 }
 
 export function hasCorrectAnswerWithInvalidStep(grading = null) {
@@ -421,6 +462,7 @@ function compactSelectionSummary(result = {}) {
       selectionReason: selectionReasonForLine(line || {}),
     })),
     highConfidenceDiscarded,
+    rescueSummary: clonePlain(result.selectionRescue || []),
   };
 }
 
@@ -478,6 +520,32 @@ function compactOcrCandidate(candidate = null) {
     score: Number.isFinite(Number(candidate.score)) ? Number(candidate.score) : null,
     confidence: Number.isFinite(Number(candidate.confidence)) ? Number(candidate.confidence) : null
   };
+}
+
+function chooseProblemInputLineLatex(line = {}) {
+  const current = String(line?.acceptedLatex || line?.latex || '').trim();
+  if (current && !containsSplitLineNoise(current)) return current;
+  const candidates = Array.isArray(line?.candidates) ? line.candidates : [];
+  const candidate = candidates
+    .slice(0, 5)
+    .map((item) => String(item?.latex || '').trim())
+    .find((latex) => latex && !containsSplitLineNoise(latex));
+  return candidate || '';
+}
+
+function firstCleanProblemInputCandidate(result = {}) {
+  const candidatePredictions = Array.isArray(result?.candidatePredictions)
+    ? result.candidatePredictions
+    : [];
+  for (const prediction of candidatePredictions) {
+    const latex = chooseProblemInputLineLatex(prediction);
+    if (latex) return latex;
+  }
+  return '';
+}
+
+function containsSplitLineNoise(latex = '') {
+  return String(latex || '').includes('//');
 }
 
 function compactStrokes(strokes = []) {
@@ -549,6 +617,14 @@ function hasUnreadLine(result = {}) {
     !String(line?.acceptedLatex || line?.latex || '').trim() ||
     line?.realtimeStatus === 'unread'
   ));
+}
+
+function hasLineSegmentationEmpty(result = {}) {
+  const lines = Array.isArray(result.lines) ? result.lines : [];
+  return lines.some((line) => {
+    const latex = String(line?.acceptedLatex || line?.latex || line?.ocrLatex || '').trim();
+    return !latex && Array.isArray(line?.strokeIds) && line.strokeIds.length > 0;
+  });
 }
 
 function hasOcrFailure(result = {}) {

@@ -960,6 +960,26 @@ class ExpressionGraderTests(unittest.TestCase):
         self.assertEqual(result["steps"][-1]["answerFinality"], "unsimplified")
         self.assertEqual(result["steps"][-1]["countsTowardCompletion"], False)
 
+    def test_expression_accepts_equivalent_numeric_power_final(self):
+        decimal_power = grade_expression_payload({
+            "problemLatex": r"\frac { \sqrt { 2 ^ { 3 } } } { 2 }",
+            "lines": [{"latex": r"2 ^ { 0 . 5 }"}],
+        })
+        rational_power = grade_expression_payload({
+            "problemLatex": r"\frac { \sqrt { 2 ^ { 3 } } } { 2 }",
+            "lines": [{"latex": r"2 ^ { 1 / 2 }"}],
+        })
+        wrong_decimal = grade_expression_payload({
+            "problemLatex": r"\frac { \sqrt { 2 ^ { 3 } } } { 2 }",
+            "lines": [{"latex": "1.5"}],
+        })
+
+        self.assertEqual(decimal_power["result"]["problemStatus"], "correct")
+        self.assertEqual(decimal_power["steps"][0]["answerFinality"], "final")
+        self.assertEqual(rational_power["result"]["problemStatus"], "correct")
+        self.assertEqual(rational_power["steps"][0]["answerFinality"], "final")
+        self.assertEqual(wrong_decimal["result"]["problemStatus"], "incorrect")
+
     def test_expression_chain_with_broken_middle_link_is_incorrect(self):
         result = grade_expression_payload({
             "problemLatex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }",
@@ -1084,6 +1104,43 @@ class SimplificationGraderTests(unittest.TestCase):
         self.assertEqual(result["result"]["problemStatus"], "correct")
         self.assertEqual(result["steps"][0]["answerFinality"], "final")
         self.assertEqual(result["result"]["foundSolutions"], ["2*x + 1"])
+
+    def test_simplification_accepts_implicit_multiplication_final_expression(self):
+        result = grade_math_payload({
+            "problemType": "simplify-expression",
+            "problemLatex": "2 x - 3 + 5 x + 1",
+            "lines": [{"latex": "7x - 2"}],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][0]["answerFinality"], "final")
+        self.assertEqual(result["result"]["foundSolutions"], ["7*x - 2"])
+
+    def test_simplification_prefers_expanded_polynomial_over_factored_form(self):
+        manifest = create_simplification_manifest("x (x + 2) + 1")
+        expanded = grade_simplification_work(manifest, [{"latex": "x^2 + 2x + 1"}])
+        factored = grade_simplification_work(manifest, [{"latex": "(x + 1)^2"}])
+
+        self.assertEqual(manifest["exact_set"], ["x**2 + 2*x + 1"])
+        self.assertEqual(expanded["result"]["problemStatus"], "correct")
+        self.assertEqual(expanded["steps"][0]["answerFinality"], "final")
+        self.assertEqual(factored["steps"][0]["classification"], "valid_step")
+        self.assertEqual(factored["steps"][0]["answerFinality"], "unsimplified")
+        self.assertEqual(factored["result"]["problemStatus"], "incomplete")
+
+    def test_simplification_accepts_cancelled_rational_final_expression(self):
+        result = grade_math_payload({
+            "problemType": "simplify-expression",
+            "problemLatex": r"\frac { x ^ { 2 } - 6 x + 9 } { x - 3 }",
+            "lines": [
+                {"latex": r"\frac { ( x - 3 ) ^ { 2 } } { x - 3 }"},
+                {"latex": "x - 3"},
+            ],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][-1]["answerFinality"], "final")
+        self.assertEqual(result["result"]["foundSolutions"], ["x - 3"])
 
     def test_simplification_rejects_equivalent_unsimplified_final_as_incomplete(self):
         for problem_latex, repeated_latex, target in (

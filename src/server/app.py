@@ -69,6 +69,8 @@ def main() -> int:
     parser.add_argument("--vlm-audit-model", default=None)
     parser.add_argument("--vlm-audit-timeout", type=float, default=None)
     parser.add_argument("--vlm-audit-normal-sample-rate", type=float, default=None)
+    parser.add_argument("--vlm-audit-circuit-failures", type=int, default=None)
+    parser.add_argument("--vlm-audit-circuit-seconds", type=float, default=None)
     args = parser.parse_args()
 
     env_settings = settings_from_env()
@@ -90,6 +92,8 @@ def main() -> int:
         vlm_audit_model=args.vlm_audit_model if args.vlm_audit_model is not None else env_settings.vlm_audit_model,
         vlm_audit_timeout_seconds=args.vlm_audit_timeout if args.vlm_audit_timeout is not None else env_settings.vlm_audit_timeout_seconds,
         vlm_audit_normal_sample_rate=args.vlm_audit_normal_sample_rate if args.vlm_audit_normal_sample_rate is not None else env_settings.vlm_audit_normal_sample_rate,
+        vlm_audit_circuit_failures=args.vlm_audit_circuit_failures if args.vlm_audit_circuit_failures is not None else env_settings.vlm_audit_circuit_failures,
+        vlm_audit_circuit_seconds=args.vlm_audit_circuit_seconds if args.vlm_audit_circuit_seconds is not None else env_settings.vlm_audit_circuit_seconds,
     )
 
     print(f"Recognition API listening on http://{settings.host}:{settings.port}")

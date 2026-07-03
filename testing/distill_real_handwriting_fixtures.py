@@ -103,6 +103,106 @@ DEFAULT_FIXTURES: Sequence[dict[str, str]] = (
         "slug": "log-base-change-of-base-denominators",
         "description": "Change-of-base logarithm work where denominator base numerals were lost by OCR.",
     },
+    {
+        "audit_id": "audit_20260702T200347844299Z_fee1a5b1b5",
+        "slug": "sqrt-two-product-final-line",
+        "description": "Evaluation work where a discarded final 2sqrt(2) line must be retained.",
+    },
+    {
+        "audit_id": "audit_20260702T215813615519Z_3622a67128",
+        "slug": "readable-expansion-empty-ocr",
+        "description": "Readable polynomial expansion previously selected as ink with empty OCR.",
+    },
+    {
+        "audit_id": "audit_20260702T220544589424Z_e4f22ca2e5",
+        "slug": "rational-cancellation-final-answer",
+        "description": "Rational simplification whose cancelled final x - 3 should count as complete.",
+    },
+    {
+        "audit_id": "audit_20260702T220030852228Z_a31aa06673",
+        "slug": "power-product-top-five-final",
+        "description": "Power simplification where the usable exponent product appears in the top-five OCR candidates.",
+    },
+    {
+        "audit_id": "audit_20260702T214311827178Z_f5931328fc",
+        "slug": "problem-input-indexed-root",
+        "description": "Problem-input handwriting with an indexed radical that fast OCR flattened.",
+    },
+    {
+        "audit_id": "audit_20260703T141214622367Z_00171da20d",
+        "slug": "detached-circled-zero-annotation",
+        "description": "Evaluation work where an isolated circled annotation was graded as the final zero.",
+    },
+    {
+        "audit_id": "audit_20260703T130912395585Z_bbbd388b6e",
+        "slug": "semantic-alternate-absolute-value-denominator",
+        "description": "Final answer where the correct absolute-value denominator is a safe top-five OCR candidate.",
+    },
+    {
+        "audit_id": "audit_20260703T135904053464Z_fff4e46f6d",
+        "slug": "problem-input-fraction-with-decimal-denominator",
+        "description": "Problem-input fraction with a decimal denominator and inline continuation split into rows.",
+    },
+    {
+        "audit_id": "audit_20260703T145757428980Z_f097b2eb7b",
+        "slug": "problem-input-fraction-sqrt-numerator-equation",
+        "description": "Problem-input equation where fraction repair must preserve sqrt numerator and equals tail.",
+    },
+    {
+        "audit_id": "audit_20260703T145847809653Z_2c7ca1aee2",
+        "slug": "problem-input-fraction-linear-numerator-equals",
+        "description": "Problem-input equation where fraction repair must preserve x - 1 over 8 equals one.",
+    },
+    {
+        "audit_id": "audit_20260703T145944835679Z_f48367f5a6",
+        "slug": "problem-input-two-fraction-equation-tail",
+        "description": "Problem-input equation where repair must preserve the second fraction and equals tail.",
+    },
+    {
+        "audit_id": "audit_20260703T150343943838Z_76819e33e8",
+        "slug": "problem-input-two-fraction-denominator-18",
+        "description": "Problem-input two-fraction expression with a multi-token denominator.",
+    },
+    {
+        "audit_id": "audit_20260703T150432454382Z_ab2a6ebc05",
+        "slug": "problem-input-sqrt-fraction-over-x",
+        "description": "Problem-input sqrt numerator over x with malformed fast fraction braces.",
+    },
+    {
+        "audit_id": "audit_20260703T150449072590Z_6d58e8d860",
+        "slug": "problem-input-sqrt-fraction-over-x-squared",
+        "description": "Problem-input sqrt numerator over x squared with malformed fast fraction braces.",
+    },
+    {
+        "audit_id": "audit_20260703T150500335747Z_76031958ee",
+        "slug": "problem-input-negative-sqrt-fraction-over-x-squared",
+        "description": "Problem-input negative sqrt numerator where the radical stroke must stay in the selected line.",
+    },
+    {
+        "audit_id": "audit_20260703T160259082821Z_65b2bed88a",
+        "slug": "problem-input-sqrt-fraction-x10-over-x",
+        "description": "Problem-input sqrt numerator over x where top OCR drops the zero in x^10.",
+    },
+    {
+        "audit_id": "audit_20260703T162040163106Z_29aa7258fe",
+        "slug": "problem-input-sqrt-fraction-x10-over-x-second-pass",
+        "description": "Problem-input sqrt numerator over x where top OCR rewrites x^10 as x^0.",
+    },
+    {
+        "audit_id": "audit_20260703T162055470646Z_3ef1226787",
+        "slug": "problem-input-sqrt-fraction-x10-over-x-cubed",
+        "description": "Problem-input sqrt numerator over x cubed where related row evidence preserves the denominator exponent.",
+    },
+    {
+        "audit_id": "audit_20260703T162343115812Z_32d4775fe7",
+        "slug": "problem-input-fraction-3x-over-x-plus-1-equals-8",
+        "description": "Problem-input fraction equation where full parent OCR should beat split-row merge.",
+    },
+    {
+        "audit_id": "audit_20260703T162357500310Z_c8fb6a97f6",
+        "slug": "problem-input-fraction-3x-over-x-plus-1-equals-8-continuation",
+        "description": "Problem-input fraction equation with continuation strokes where full parent OCR should beat split-row merge.",
+    },
 )
 
 REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
@@ -315,6 +415,224 @@ REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
             "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011|s012|s013|s014|s015|s016|s017|s018|s019|s020|s021|s022|s023|s024|s025",
         },
     ],
+    "audit_20260702T200347844299Z_fee1a5b1b5": [
+        {
+            "lineIndex": 0,
+            "latex": "\\sqrt{2} \\cdot 2",
+            "strokeIds": ["s001", "s002", "s003", "s004"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "2\\sqrt{2}",
+            "strokeIds": ["s005", "s006", "s007"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s005|s006|s007",
+        },
+    ],
+    "audit_20260702T215813615519Z_3622a67128": [
+        {
+            "lineIndex": 0,
+            "latex": "2x^2 - 2x + 3x - 3",
+            "strokeIds": [
+                "s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010",
+                "s011", "s012", "s013", "s014", "s015", "s016", "s017", "s018", "s019",
+            ],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011|s012|s013|s014|s015|s016|s017|s018|s019",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "2x^2 + x - 3",
+            "strokeIds": ["s020", "s021", "s022", "s023", "s024", "s025", "s026", "s027", "s028", "s029"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s020|s021|s022|s023|s024|s025|s026|s027|s028|s029",
+        },
+    ],
+    "audit_20260702T220544589424Z_e4f22ca2e5": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac { ( x - 3 ) ^ { 2 } } { x - 3 }",
+            "strokeIds": ["s008", "s006", "s005", "s002", "s003", "s001", "s007", "s004", "s009", "s012", "s010", "s013", "s011"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011|s012|s013",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "x - 3",
+            "strokeIds": ["s014", "s015", "s016", "s017", "s018"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s014|s015|s016|s017|s018",
+        },
+    ],
+    "audit_20260702T220030852228Z_a31aa06673": [
+        {
+            "lineIndex": 0,
+            "latex": "3 ^ { 2 } x ^ { 5 \\cdot 2 }",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "9 x ^ { 10 }",
+            "strokeIds": ["s008", "s009", "s010", "s011", "s012"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s008|s009|s010|s011|s012",
+        },
+    ],
+    "audit_20260702T214311827178Z_f5931328fc": [
+        {
+            "lineIndex": 0,
+            "latex": "\\sqrt[4]{x^{12}y^{7}}",
+            "strokeIds": ["s001", "s002", "s003", "s005", "s006", "s007", "s008", "s009", "s010", "s011", "s012"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s005|s006|s007|s008|s009|s010|s011|s012",
+        },
+    ],
+    "audit_20260703T141214622367Z_00171da20d": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{12}{3} - 4",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "4 - 4",
+            "strokeIds": ["s008", "s009", "s010", "s011", "s012"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s008|s009|s010|s011|s012",
+        },
+    ],
+    "audit_20260703T130912395585Z_bbbd388b6e": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{5}{|x|}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007",
+        },
+    ],
+    "audit_20260703T135904053464Z_fff4e46f6d": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{8}{0.1} - \\sqrt{25}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009",
+        },
+    ],
+    "audit_20260703T145757428980Z_f097b2eb7b": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{\\sqrt{x - 1}}{x} = 2",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010", "s011"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011",
+        },
+    ],
+    "audit_20260703T145847809653Z_2c7ca1aee2": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{x - 1}{8} = 1",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009",
+        },
+    ],
+    "audit_20260703T145944835679Z_f48367f5a6": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{8}{x} - \\frac{8}{9} = 0",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010", "s011"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011",
+        },
+    ],
+    "audit_20260703T150343943838Z_76819e33e8": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{8}{18} - \\frac{8}{9}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008",
+        },
+    ],
+    "audit_20260703T150432454382Z_ab2a6ebc05": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{\\sqrt{x^{18}}}{x}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008",
+        },
+    ],
+    "audit_20260703T150449072590Z_6d58e8d860": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{\\sqrt{x^{18}}}{x^2}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010",
+        },
+    ],
+    "audit_20260703T150500335747Z_76031958ee": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{ - \\sqrt{x^{18}} }{x^2}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010", "s011"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011",
+        },
+    ],
+    "audit_20260703T160259082821Z_65b2bed88a": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{\\sqrt{x^{10}}}{x}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008",
+        },
+    ],
+    "audit_20260703T162040163106Z_29aa7258fe": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{\\sqrt{x^{10}}}{x}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010",
+        },
+    ],
+    "audit_20260703T162055470646Z_3ef1226787": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{\\sqrt{x^{10}}}{x^3}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010", "s011"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011",
+        },
+    ],
+    "audit_20260703T162343115812Z_32d4775fe7": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{3x}{x+1} = 8",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010", "s011", "s012"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011|s012",
+        },
+    ],
+    "audit_20260703T162357500310Z_c8fb6a97f6": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{3x}{x+1} = 8",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010", "s011", "s012", "s013", "s014"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011|s012|s013|s014",
+        },
+    ],
 }
 
 REVIEWED_VISUAL_ONLY_STROKES: dict[str, list[str]] = {
@@ -329,6 +647,7 @@ REVIEWED_VISUAL_ONLY_STROKES: dict[str, list[str]] = {
         "s025", "s026", "s027", "s028", "s029", "s030", "s031", "s032", "s033", "s034", "s035",
         "s045", "s046", "s047", "s048", "s049",
     ],
+    "audit_20260703T141214622367Z_00171da20d": ["s013"],
 }
 
 
@@ -455,10 +774,19 @@ def build_fixture(audit_dir: Path, spec: dict[str, str]) -> dict[str, Any]:
     )
 
     assign_relations(distilled_strokes)
-    line_groups = reviewed_line_groups(spec["audit_id"]) or build_line_groups(fast_result, id_map)
+    fast_line_groups = build_line_groups(fast_result, id_map)
+    line_groups = reviewed_line_groups(spec["audit_id"]) or fast_line_groups
     visual_only_stroke_ids = reviewed_visual_only_stroke_ids(spec["audit_id"])
     annotate_strokes(distilled_strokes, line_groups)
     annotate_visual_only_strokes(distilled_strokes, visual_only_stroke_ids)
+    fast_latex_lines = [
+        str(item or "").strip()
+        for item in (fast_result.get("latexLines") or input_payload.get("fastResult", {}).get("latexLines") or [])
+        if str(item or "").strip()
+    ]
+    known_discrepancy_types = discrepancy_types(comparison)
+    if not fast_latex_lines and line_groups:
+        known_discrepancy_types = sorted(set([*known_discrepancy_types, "line_segmentation_empty"]))
 
     return {
         "schemaVersion": 1,
@@ -469,12 +797,8 @@ def build_fixture(audit_dir: Path, spec: dict[str, str]) -> dict[str, Any]:
         "problemLatex": str(input_payload.get("problemLatex") or ""),
         "problemMetadata": sanitize_json(input_payload.get("problemMetadata") or {}),
         "triggerReasons": [str(item) for item in input_payload.get("triggerReasons") or []],
-        "knownDiscrepancyTypes": discrepancy_types(comparison),
-        "fastLatexLines": [
-            str(item or "").strip()
-            for item in (fast_result.get("latexLines") or input_payload.get("fastResult", {}).get("latexLines") or [])
-            if str(item or "").strip()
-        ],
+        "knownDiscrepancyTypes": known_discrepancy_types,
+        "fastLatexLines": fast_latex_lines,
         "expectedLatexLines": [
             str(item or "").strip()
             for item in (vlm.get("latexLines") or fast_result.get("latexLines") or [])
@@ -487,6 +811,7 @@ def build_fixture(audit_dir: Path, spec: dict[str, str]) -> dict[str, Any]:
         "detections": detections,
         "strokes": distilled_strokes,
         "expectedLineGroups": line_groups,
+        "fastLineGroups": fast_line_groups,
         "visualOnlyStrokeIds": visual_only_stroke_ids,
         "sourceStats": {
             "originalStrokeCount": len(source_strokes),

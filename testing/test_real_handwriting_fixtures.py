@@ -10,7 +10,7 @@ from typing import Any
 
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "real_handwriting"
-EXPECTED_FIXTURE_COUNT = 17
+EXPECTED_FIXTURE_COUNT = 37
 
 
 class RealHandwritingFixtureSchemaTests(unittest.TestCase):
@@ -79,7 +79,10 @@ class RealHandwritingFixtureSchemaTests(unittest.TestCase):
         mismatched = 0
         for fixture in load_fixtures():
             self.assertTrue(fixture["expectedLatexLines"], fixture["slug"])
-            self.assertTrue(fixture["fastLatexLines"], fixture["slug"])
+            if not fixture["fastLatexLines"]:
+                self.assertIn("line_segmentation_empty", fixture["knownDiscrepancyTypes"], fixture["slug"])
+            else:
+                self.assertTrue(fixture["fastLatexLines"], fixture["slug"])
             if fixture["expectedLatexLines"] != fixture["fastLatexLines"]:
                 mismatched += 1
 

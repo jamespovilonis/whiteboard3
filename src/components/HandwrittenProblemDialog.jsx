@@ -4,7 +4,8 @@ import { useToolbarCollapse } from '../hooks/useToolbarCollapse.js';
 import {
   buildProblemInputAuditPayload,
   enqueueRecognitionAudit,
-  getRecognitionAuditStatus
+  getRecognitionAuditStatus,
+  normalizeProblemInputRecognitionResult
 } from '../recognition/auditClient.js';
 import { getRecognitionApiUrl } from '../recognition/config.js';
 import { recognizeStudentWriting } from '../recognition/studentWritingPipeline.js';
@@ -148,14 +149,15 @@ export default function HandwrittenProblemDialog({ onSubmit, onAuditEvent }) {
         gradeWork: null,
         signal: controller?.signal
       });
-      const latex = String(result?.latex || '').trim();
+      const normalizedResult = normalizeProblemInputRecognitionResult(result);
+      const latex = String(normalizedResult?.latex || '').trim();
       if (!latex) {
         setStatus('error');
         setError('Unable to read the problem. Adjust the drawing and try again.');
         return;
       }
       lastRecognitionRef.current = {
-        result,
+        result: normalizedResult,
         strokes: currentStrokes,
         latex,
         mode,

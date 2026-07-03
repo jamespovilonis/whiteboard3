@@ -76,14 +76,16 @@ export async function recognizeStudentWriting(options = {}) {
     answerBox,
     detections: detection.detections,
     ignoredStrokeIds,
+    problemMetadata,
     problemLatex,
     previousLatex
   });
   const deterministicSegmentation = detection.detections?.length
-    ? segmentMathLines(strokes, {
+      ? segmentMathLines(strokes, {
         answerBox,
         detections: [],
         ignoredStrokeIds,
+        problemMetadata,
         problemLatex,
         previousLatex
       })
@@ -176,7 +178,7 @@ export async function recognizeStudentWriting(options = {}) {
     evidenceByCandidateId.set(entry.candidateId, entry.evidenceScore);
     const gradingLatex = gradingSelectedLatex(entry, semanticEntry);
     if (gradingLatex) {
-      entry.latex = gradingLatex;
+      applyGradingSelectedLatex(entry, gradingLatex);
     } else if (semanticLatexSafeForReplacement(entry, semanticEntry) && shouldUseSemanticLatex(entry.latex, semanticEntry)) {
       entry.latex = semanticEntry.bestLatex;
     }
@@ -223,7 +225,7 @@ export async function recognizeStudentWriting(options = {}) {
       evidenceByCandidateId.set(entry.candidateId, entry.evidenceScore);
       const gradingLatex = gradingSelectedLatex(entry, contextualEntry);
       if (gradingLatex) {
-        entry.latex = gradingLatex;
+        applyGradingSelectedLatex(entry, gradingLatex);
       } else if (semanticLatexSafeForReplacement(entry, contextualEntry) && shouldUseSemanticLatex(entry.latex, contextualEntry)) {
         entry.latex = contextualEntry.bestLatex;
       }
@@ -508,7 +510,7 @@ export async function recognizeStudentWriting(options = {}) {
     }
     const gradingLatex = gradingSelectedLatex(line, lineSemantic);
     if (gradingLatex) {
-      line.latex = gradingLatex;
+      applyGradingSelectedLatex(line, gradingLatex);
     } else if (semanticLatexSafeForReplacement(line, lineSemantic) && shouldUseSemanticLatex(line.latex, lineSemantic)) {
       line.latex = lineSemantic.bestLatex;
     }
@@ -545,6 +547,19 @@ export async function recognizeStudentWriting(options = {}) {
       submitToFinalPredictionSeconds: secondsSince(pipelineStartedAt)
     };
   }
+  const candidateRescue = rescueFullFinalCandidateLines(recognizedLines, candidatePredictions, candidatesToRecognize);
+  recognizedLines = candidateRescue.lines;
+  const problemInputMerge = mergeProblemInputFractionRows(recognizedLines, {
+    problemLatex,
+    problemMetadata,
+    candidatePredictions
+  });
+  recognizedLines = problemInputMerge.lines;
+  const finalSelectionAdjustments = [
+    ...candidateRescue.summary,
+    ...problemInputMerge.summary
+  ];
+  const annotationExclusion = excludeDetachedVisualAnnotationLines(recognizedLines, { strokes });
   applyFinalCandidateDebugState(candidatePredictions, recognizedLines, pipelineStartedAt);
   semantic = {
     ...semantic,
@@ -599,12 +614,14 @@ export async function recognizeStudentWriting(options = {}) {
   return {
     segmentation: {
       ...segmentation,
-      selected,
-      ocrSelectedCandidateIds: [...selectedIds]
+      selected: recognizedLines.map(lineAsSegmentationCandidate),
+      ocrSelectedCandidateIds: recognizedLines.map((line) => line.candidateId).filter(Boolean)
     },
     detection,
     semantic,
     candidatePredictions,
+    selectionRescue: finalSelectionAdjustments,
+    annotationExclusion: annotationExclusion.summary,
     lines: recognizedLines,
     latexLines: gradableLines.map((line) => line.acceptedLatex),
     latex: gradableLines.map((line) => line.acceptedLatex).filter(Boolean).join(' \\\\ '),
@@ -612,7 +629,8 @@ export async function recognizeStudentWriting(options = {}) {
     timing: {
       totalElapsedSeconds: secondsSince(pipelineStartedAt),
       ...(finalizationBudget.check() ? { finalizationBudgetExceeded: true } : {}),
-      ...(exhaustedWithInkButNoText ? { ocrTimeoutWithInk: true } : {})
+      ...(exhaustedWithInkButNoText ? { ocrTimeoutWithInk: true } : {}),
+      ...(annotationExclusion.summary.length ? { annotationExclusionCount: annotationExclusion.summary.length } : {})
     }
   };
 }
@@ -1580,6 +1598,1002 @@ function preferFullSolutionCandidates(selected = [], candidatePredictions = [], 
       tightBbox: replacement.tightBbox || candidate.tightBbox,
     };
   });
+}
+
+function rescueFullFinalCandidateLines(lines = [], candidatePredictions = [], candidates = []) {
+  const candidateById = new Map((candidates || []).map((candidate) => [candidate.candidateId, candidate]));
+  const output = (lines || []).map((line, index) => ({ ...line, lineIndex: index }));
+  const summary = [];
+  const selectedIds = new Set(output.map((line) => line.candidateId).filter(Boolean));
+
+  for (let index = 0; index < output.length; index += 1) {
+    const selectedLine = output[index];
+    if (fullFinalCandidateRank(selectedLine) >= 2) continue;
+    const replacement = (candidatePredictions || [])
+      .filter((entry) => entry?.candidateId && !selectedIds.has(entry.candidateId))
+      .filter((entry) => fullFinalCandidateRank(entry) >= 2)
+      .filter((entry) => bboxOverlapRatio(selectedLine.tightBbox, entry.tightBbox) >= 0.55)
+      .sort((a, b) => (
+        fullFinalCandidateRank(b) - fullFinalCandidateRank(a) ||
+        (Number(b.evidenceScore) || 0) - (Number(a.evidenceScore) || 0)
+      ))[0];
+    if (!replacement) continue;
+    selectedIds.delete(selectedLine.candidateId);
+    selectedIds.add(replacement.candidateId);
+    output[index] = rescuedLineFromCandidate(replacement, candidateById.get(replacement.candidateId), {
+      lineIndex: selectedLine.lineIndex ?? index,
+      replacedCandidateId: selectedLine.candidateId || null
+    });
+    summary.push({
+      action: 'replace',
+      selectedCandidateId: replacement.candidateId,
+      replacedCandidateId: selectedLine.candidateId || null,
+      lineIndex: output[index].lineIndex,
+      reason: 'candidate_rescue:full_final'
+    });
+  }
+
+  const coveredStrokeIds = new Set(output.flatMap((line) => line.strokeIds || []).map(String));
+  const appendable = (candidatePredictions || [])
+    .filter((entry) => entry?.candidateId && !selectedIds.has(entry.candidateId))
+    .filter((entry) => fullFinalCandidateRank(entry) >= 2)
+    .filter((entry) => candidateProfileAppendable(entry))
+    .filter((entry) => (entry.strokeIds || []).some((strokeId) => !coveredStrokeIds.has(String(strokeId))))
+    .sort((a, b) => (
+      (a.tightBbox?.yMin ?? 0) - (b.tightBbox?.yMin ?? 0) ||
+      (a.tightBbox?.xMin ?? 0) - (b.tightBbox?.xMin ?? 0)
+    ));
+
+  for (const entry of appendable) {
+    const line = rescuedLineFromCandidate(entry, candidateById.get(entry.candidateId), {
+      lineIndex: output.length,
+      appended: true
+    });
+    output.push(line);
+    selectedIds.add(entry.candidateId);
+    for (const strokeId of line.strokeIds || []) coveredStrokeIds.add(String(strokeId));
+    summary.push({
+      action: 'append',
+      selectedCandidateId: entry.candidateId,
+      lineIndex: line.lineIndex,
+      reason: 'candidate_rescue:full_final'
+    });
+  }
+
+  return {
+    lines: output
+      .sort((a, b) => (
+        (a.tightBbox?.yMin ?? 0) - (b.tightBbox?.yMin ?? 0) ||
+        (a.tightBbox?.xMin ?? 0) - (b.tightBbox?.xMin ?? 0)
+      ))
+      .map((line, index) => ({ ...line, lineIndex: index })),
+    summary
+  };
+}
+
+function rescuedLineFromCandidate(entry = {}, candidate = null, extra = {}) {
+  const grading = entry.grading || entry.contextualSemantic?.grading || entry.sequentialSemantic?.grading || entry.semantic?.grading || null;
+  const selectedLatex = gradingSelectedLatex(entry, { grading }) ||
+    String(entry.acceptedLatex || entry.latex || entry.ocrLatex || '').trim();
+  return {
+    ...entry,
+    candidateId: entry.candidateId,
+    profiles: entry.profiles || candidate?.profiles || [],
+    strokeIds: Array.isArray(entry.strokeIds) ? entry.strokeIds.slice() : (candidate?.strokeIds || []).slice(),
+    tightBbox: entry.tightBbox || candidate?.tightBbox || null,
+    lineIndex: extra.lineIndex ?? null,
+    selected: true,
+    discarded: false,
+    latex: selectedLatex,
+    acceptedLatex: selectedLatex,
+    selectionReason: 'candidate_rescue:full_final',
+    rescue: {
+      reason: 'candidate_rescue:full_final',
+      replacedCandidateId: extra.replacedCandidateId || null,
+      appended: Boolean(extra.appended)
+    }
+  };
+}
+
+function mergeProblemInputFractionRows(lines = [], { problemLatex = '', problemMetadata = {}, candidatePredictions = [] } = {}) {
+  if (!isProblemInputRecognition({ problemLatex, problemMetadata })) {
+    return { lines, summary: [] };
+  }
+
+  const output = (lines || []).map((line) => ({ ...line }));
+  const summary = [];
+  const fullParentCandidate = problemInputFullParentCandidateLine(output, candidatePredictions);
+  if (fullParentCandidate) {
+    return {
+      lines: [{ ...fullParentCandidate.line, lineIndex: 0 }],
+      summary: [fullParentCandidate.summary]
+    };
+  }
+
+  for (let index = 0; index < output.length - 1; index += 1) {
+    const upper = output[index];
+    const lower = output[index + 1];
+    const repair = problemInputFractionRepair(upper, lower);
+    if (!repair) continue;
+
+    const mergedLine = problemInputMergedLine(upper, lower, repair);
+    output.splice(index, 2, mergedLine);
+    summary.push({
+      action: 'merge',
+      selectedCandidateId: mergedLine.candidateId || null,
+      mergedCandidateIds: mergedLine.mergedLineIds,
+      lineIndex: index,
+      reason: 'problem_input_fraction_row_merge'
+    });
+  }
+
+  if (summary.length === 0) {
+    const pair = problemInputFractionCandidatePair(candidatePredictions);
+    if (pair && selectedProblemInputParentCanUsePair(output, pair)) {
+      const mergedLine = problemInputMergedLine(pair.upper, pair.lower, pair.repair, output[0] || pair.upper);
+      output.splice(0, output.length, mergedLine);
+      summary.push({
+        action: 'merge',
+        selectedCandidateId: mergedLine.candidateId || null,
+        mergedCandidateIds: mergedLine.mergedLineIds,
+        lineIndex: 0,
+        reason: 'problem_input_fraction_candidate_merge'
+      });
+    } else {
+      const latexRepair = repairMalformedProblemInputFractionLine(output, { candidatePredictions });
+      if (latexRepair) {
+        output.splice(0, output.length, latexRepair.line);
+        summary.push(latexRepair.summary);
+      }
+    }
+  }
+
+  for (let index = 0; index < output.length; index += 1) {
+    const sqrtRepair = repairProblemInputSqrtFractionLine(output[index], { candidatePredictions });
+    if (!sqrtRepair) continue;
+    output[index] = sqrtRepair.line;
+    summary.push({
+      action: 'repair',
+      selectedCandidateId: output[index].candidateId || null,
+      lineIndex: index,
+      reason: sqrtRepair.reason
+    });
+  }
+
+  return {
+    lines: output.map((line, index) => ({ ...line, lineIndex: index })),
+    summary
+  };
+}
+
+function repairMalformedProblemInputFractionLine(lines = [], { candidatePredictions = [] } = {}) {
+  if (!Array.isArray(lines) || lines.length !== 1) return null;
+  const line = lines[0] || {};
+  const latex = String(line.acceptedLatex || line.latex || '').trim();
+  if (!hasProblemInputFractionLatexRepairEvidence(line, candidatePredictions)) return null;
+  const repair = problemInputOuterFractionLatexRepair(latex);
+  if (!repair || sameLatexForGrading(repair.latex, latex)) return null;
+  return {
+    line: {
+      ...line,
+      latex: repair.latex,
+      acceptedLatex: repair.latex,
+      candidates: [
+        { latex: repair.latex, score: 4, confidence: 1 },
+        ...(line.candidates || [])
+      ],
+      ocrRepair: {
+        ...(line.ocrRepair || {}),
+        source: 'problem-input-fraction-latex-repair',
+        originalLatex: latex,
+        repairedLatex: repair.latex
+      }
+    },
+    summary: {
+      action: 'repair',
+      selectedCandidateId: line.candidateId || null,
+      lineIndex: 0,
+      reason: 'problem_input_fraction_latex_repair'
+    }
+  };
+}
+
+function hasProblemInputFractionLatexRepairEvidence(line = {}, candidatePredictions = []) {
+  const selectedIds = new Set((line.strokeIds || []).map(String));
+  if (!selectedIds.size) return false;
+  const pair = problemInputFractionCandidatePair(candidatePredictions);
+  if (pair) {
+    const pairIds = uniqueStrings([...(pair.upper.strokeIds || []), ...(pair.lower.strokeIds || [])]).map(String);
+    if (pairIds.length && pairIds.every((strokeId) => selectedIds.has(strokeId))) {
+      const pairCoverage = pairIds.length / selectedIds.size;
+      if (pairCoverage >= 0.72) return true;
+    }
+  }
+  if (problemInputOuterFractionLatexRepairHasRepeatedTail(String(line.acceptedLatex || line.latex || '').trim())) {
+    return true;
+  }
+  if (!(line.profiles || []).includes('problem-input-fraction-line')) return false;
+  const latex = String(line.acceptedLatex || line.latex || '').trim();
+  return Boolean(problemInputOuterFractionLatexRepair(latex));
+}
+
+function problemInputFullParentCandidateLine(lines = [], candidatePredictions = []) {
+  if (!Array.isArray(lines) || lines.length !== 1) return null;
+  const selected = lines[0] || {};
+  const selectedIds = new Set((selected.strokeIds || []).map(String));
+  if (!selectedIds.size) return null;
+
+  const entries = [
+    selected,
+    ...(candidatePredictions || []).filter((entry) => problemInputFullParentEntryMatchesSelected(selected, entry))
+  ];
+  let best = null;
+  for (const entry of entries) {
+    for (const option of latexOptionsFromEntry(entry)) {
+      const latex = normalizeLatexWhitespace(option.latex || '');
+      if (!problemInputBalancedFullFractionExpression(latex)) continue;
+      const score = problemInputFullFractionExpressionScore(latex, option);
+      if (!best || score > best.score) best = { latex, score };
+    }
+  }
+  if (!best) return null;
+
+  const originalLatex = String(selected.acceptedLatex || selected.latex || '').trim();
+  const pair = problemInputFractionCandidatePair(candidatePredictions);
+  const blocksRiskyMerge = pair && selectedProblemInputParentCanUsePair([selected], pair);
+  if (sameLatexForGrading(best.latex, originalLatex) && !blocksRiskyMerge) return null;
+  return {
+    line: {
+      ...selected,
+      latex: best.latex,
+      acceptedLatex: best.latex,
+      candidates: [
+        { latex: best.latex, score: 4, confidence: 1 },
+        ...(selected.candidates || [])
+      ],
+      ocrRepair: {
+        ...(selected.ocrRepair || {}),
+        source: 'problem-input-full-parent-candidate',
+        originalLatex,
+        repairedLatex: best.latex
+      },
+      selectionReason: 'ocr_repair:problem-input-full-parent-candidate'
+    },
+    summary: {
+      action: 'repair',
+      selectedCandidateId: selected.candidateId || null,
+      lineIndex: 0,
+      reason: 'problem_input_full_parent_candidate'
+    }
+  };
+}
+
+function problemInputFullParentEntryMatchesSelected(selected = {}, entry = {}) {
+  if (!entry?.strokeIds?.length) return false;
+  const profiles = new Set(entry.profiles || []);
+  if (!profiles.has('parent') && !profiles.has('problem-input-fraction-line') && !profiles.has('fraction-stack-line')) {
+    return false;
+  }
+  const selectedIds = new Set((selected.strokeIds || []).map(String));
+  const entryIds = (entry.strokeIds || []).map(String);
+  if (!selectedIds.size || !entryIds.length) return false;
+  return entryIds.every((strokeId) => selectedIds.has(strokeId)) ||
+    [...selectedIds].every((strokeId) => entryIds.includes(strokeId));
+}
+
+function latexOptionsFromEntry(entry = {}) {
+  const out = [];
+  const push = (candidate, source = '') => {
+    const latex = typeof candidate === 'string' ? candidate : candidate?.latex;
+    if (!String(latex || '').trim()) return;
+    out.push({
+      latex,
+      source,
+      score: typeof candidate === 'object' ? candidate?.score : undefined,
+      confidence: typeof candidate === 'object' ? candidate?.confidence : undefined
+    });
+  };
+  push(entry.acceptedLatex, 'acceptedLatex');
+  push(entry.latex, 'latex');
+  push(entry.ocrLatex, 'ocrLatex');
+  push(entry.prediction?.top, 'prediction.top');
+  for (const candidate of entry.prediction?.candidates || []) push(candidate, 'prediction.candidates');
+  for (const candidate of entry.candidates || []) push(candidate, 'candidates');
+
+  const seen = new Set();
+  return out.filter((item) => {
+    const key = compactLatexForGrading(item.latex);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function problemInputBalancedFullFractionExpression(latex = '') {
+  const normalized = normalizeLatexWhitespace(latex);
+  if (!/\\frac\b/.test(normalized) || !bracesAreBalanced(normalized)) return false;
+  if (/-\s*-/.test(normalized)) return false;
+  const outer = parseLeadingLatexFraction(normalized);
+  if (!outer) return false;
+  const numerator = normalizeLatexWhitespace(outer.numerator || '');
+  const denominator = normalizeLatexWhitespace(outer.denominator || '');
+  if (!numerator || !denominator) return false;
+  const tail = normalizeLatexWhitespace(outer.tail || '');
+  const tailHasEquationOrOperator = /^(?:=|[-+])(?:\s|$)/.test(tail) || /\\frac\b/.test(tail);
+  return tailHasEquationOrOperator;
+}
+
+function problemInputFullFractionExpressionScore(latex = '', option = {}) {
+  const outer = parseLeadingLatexFraction(latex);
+  let score = 10;
+  const numerator = normalizeLatexWhitespace(outer?.numerator || '');
+  const denominator = normalizeLatexWhitespace(outer?.denominator || '');
+  const tail = normalizeLatexWhitespace(outer?.tail || '');
+  if (/=/.test(tail)) score += 8;
+  if (/\\frac\b/.test(tail)) score += 3;
+  if (/[a-zA-Z0-9]\s+[a-zA-Z0-9]/.test(numerator) || /\\sqrt|\\frac/.test(numerator)) score += 5;
+  if (/[+\-]/.test(denominator) || /\\sqrt|\\frac/.test(denominator)) score += 2;
+  const confidence = Number(option.confidence);
+  const rank = Number(option.score);
+  if (Number.isFinite(confidence)) score += confidence;
+  if (Number.isFinite(rank)) score += Math.max(-2, Math.min(2, rank));
+  return score;
+}
+
+function repairProblemInputSqrtFractionLine(line = {}, { candidatePredictions = [] } = {}) {
+  const latex = String(line.acceptedLatex || line.latex || '').trim();
+  if (!latex || !/\\frac\b/.test(latex)) return null;
+  const balancedCandidate = bestBalancedSqrtFractionCandidate(line, { candidatePredictions });
+  if (balancedCandidate && !sameLatexForGrading(balancedCandidate, latex)) {
+    return {
+      reason: 'problem_input_sqrt_fraction_candidate_repair',
+      line: applyProblemInputSqrtFractionRepair(line, latex, balancedCandidate, 'problem-input-sqrt-fraction-candidate-repair')
+    };
+  }
+
+  const braceRepair = repairMissingSqrtNumeratorFractionBrace(latex);
+  if (braceRepair && !sameLatexForGrading(braceRepair, latex)) {
+    return {
+      reason: 'problem_input_sqrt_fraction_brace_repair',
+      line: applyProblemInputSqrtFractionRepair(line, latex, braceRepair, 'problem-input-sqrt-fraction-brace-repair')
+    };
+  }
+
+  return null;
+}
+
+function bestBalancedSqrtFractionCandidate(line = {}, { candidatePredictions = [] } = {}) {
+  const current = String(line.acceptedLatex || line.latex || '').trim();
+  const currentHasSqrt = /\\sqrt\b/.test(current);
+  const currentLooksMalformed = currentHasSqrt && !bracesAreBalanced(current);
+  const currentLooksFlattened = !currentHasSqrt && fractionNumeratorLooksLikeFlattenedRadical(current);
+  const currentQuality = problemInputSqrtFractionQuality(current);
+  if (!currentLooksMalformed && !currentLooksFlattened && !currentQuality) return null;
+
+  const currentSymbols = extractProblemInputFractionSymbols(current);
+  let best = null;
+  const candidates = [
+    ...latexOptionsFromEntry(line),
+    ...relatedProblemInputSqrtFractionOptions(line, candidatePredictions)
+  ];
+  const composed = composeRelatedProblemInputSqrtFraction(line, candidatePredictions);
+  if (composed) candidates.push(composed);
+
+  for (const candidate of candidates) {
+    const latex = normalizeProblemInputSqrtCandidateLatex(candidate?.latex || '');
+    if (!latex || latex === current) continue;
+    if (!/\\frac\b/.test(latex) || !/\\sqrt\b/.test(latex)) continue;
+    if (!bracesAreBalanced(latex)) continue;
+    if (!sqrtIsFractionNumerator(latex)) continue;
+    if (!problemInputFractionSymbolsCompatible(currentSymbols, extractProblemInputFractionSymbols(latex))) continue;
+    const candidateQuality = problemInputSqrtFractionQuality(latex);
+    if (!problemInputSqrtFractionCandidateBetter(currentQuality, candidateQuality, currentLooksMalformed || currentLooksFlattened)) continue;
+    const score = Number(candidate?.score);
+    const confidence = Number(candidate?.confidence);
+    const rank = Number.isFinite(score) ? score : 0;
+    const confidenceScore = Number.isFinite(confidence) ? confidence : 0;
+    const value = problemInputSqrtFractionQualityScore(candidateQuality) + rank + confidenceScore;
+    if (!best || value > best.value) best = { latex, value };
+  }
+  return best?.latex || null;
+}
+
+function normalizeProblemInputSqrtCandidateLatex(latex = '') {
+  const normalized = normalizeLatexWhitespace(latex);
+  if (!normalized) return '';
+  if (bracesAreBalanced(normalized)) return normalized;
+  return repairMissingSqrtNumeratorFractionBrace(normalized) || '';
+}
+
+function relatedProblemInputSqrtFractionOptions(line = {}, candidatePredictions = []) {
+  const lineIds = new Set((line.strokeIds || []).map(String));
+  if (!lineIds.size) return [];
+  return (candidatePredictions || [])
+    .filter((entry) => (entry.strokeIds || []).some((strokeId) => lineIds.has(String(strokeId))))
+    .flatMap((entry) => latexOptionsFromEntry(entry));
+}
+
+function composeRelatedProblemInputSqrtFraction(line = {}, candidatePredictions = []) {
+  const current = String(line.acceptedLatex || line.latex || '').trim();
+  const currentOuter = parseLeadingLatexFraction(current);
+  if (!currentOuter || !/\\sqrt\b/.test(currentOuter.numerator || '')) return null;
+  const lineIds = new Set((line.strokeIds || []).map(String));
+  if (!lineIds.size) return null;
+  let bestNumerator = null;
+  let bestDenominator = {
+    latex: normalizeLatexWhitespace(currentOuter.denominator || ''),
+    quality: denominatorLatexQuality(currentOuter.denominator || '')
+  };
+
+  for (const entry of candidatePredictions || []) {
+    if (!(entry.strokeIds || []).some((strokeId) => lineIds.has(String(strokeId)))) continue;
+    for (const option of latexOptionsFromEntry(entry)) {
+      const latex = normalizeLatexWhitespace(option.latex || '');
+      const numerator = extractSqrtNumeratorLatex(latex);
+      if (numerator) {
+        const quality = sqrtNumeratorLatexQuality(numerator);
+        if (!bestNumerator || quality > bestNumerator.quality) bestNumerator = { latex: numerator, quality };
+      }
+      if (looksLikeProblemInputDenominatorLatex(latex)) {
+        const quality = denominatorLatexQuality(latex);
+        if (quality > bestDenominator.quality) bestDenominator = { latex, quality };
+      }
+    }
+  }
+
+  if (!bestNumerator || !bestDenominator?.latex) return null;
+  return {
+    latex: normalizeLatexWhitespace(`\\frac { ${bestNumerator.latex} } { ${bestDenominator.latex} }`),
+    score: 3,
+    confidence: 1,
+    source: 'related-sqrt-fraction-compose'
+  };
+}
+
+function extractSqrtNumeratorLatex(latex = '') {
+  const normalized = normalizeProblemInputSqrtCandidateLatex(latex) || normalizeLatexWhitespace(latex);
+  if (!normalized) return '';
+  if (/^-?\s*\\sqrt\b/.test(normalized)) return normalized;
+  const outer = parseLeadingLatexFraction(normalized);
+  if (outer && /^-?\s*\\sqrt\b/.test(normalizeLatexWhitespace(outer.numerator || ''))) {
+    return normalizeLatexWhitespace(outer.numerator || '');
+  }
+  if (normalized.startsWith('\\frac')) {
+    const numeratorGroup = readLatexBraceGroup(normalized, '\\frac'.length);
+    const numerator = normalizeLatexWhitespace(numeratorGroup?.value || '');
+    if (/^-?\s*\\sqrt\b/.test(numerator)) return numerator;
+  }
+  return '';
+}
+
+function looksLikeProblemInputDenominatorLatex(latex = '') {
+  const normalized = normalizeLatexWhitespace(latex);
+  if (!normalized || /\\sqrt|\\frac|=|\+|(?<!\^)\s-\s/.test(normalized)) return false;
+  return /^-?(?:[a-zA-Z]|\d+(?:\s+\d+)*)(?:\s*\^\s*\{\s*[0-9](?:\s+[0-9])*\s*\})?$/.test(normalized);
+}
+
+function problemInputSqrtFractionQuality(latex = '') {
+  const normalized = normalizeProblemInputSqrtCandidateLatex(latex);
+  const outer = parseLeadingLatexFraction(normalized);
+  if (!outer || !sqrtIsFractionNumerator(normalized)) return null;
+  return {
+    numeratorExponent: longestLatexExponentDigits(outer.numerator || ''),
+    denominatorExponent: longestLatexExponentDigits(outer.denominator || ''),
+    denominator: normalizeLatexWhitespace(outer.denominator || '')
+  };
+}
+
+function problemInputSqrtFractionCandidateBetter(currentQuality, candidateQuality, currentNeedsRepair = false) {
+  if (!candidateQuality) return false;
+  if (!currentQuality) return currentNeedsRepair;
+  const currentExponent = currentQuality.numeratorExponent || '';
+  const candidateExponent = candidateQuality.numeratorExponent || '';
+  if (candidateExponent.length > currentExponent.length && (!currentExponent || candidateExponent.includes(currentExponent))) {
+    return true;
+  }
+  const currentDenominatorExponent = currentQuality.denominatorExponent || '';
+  const candidateDenominatorExponent = candidateQuality.denominatorExponent || '';
+  if (
+    candidateExponent === currentExponent &&
+    candidateDenominatorExponent.length > currentDenominatorExponent.length &&
+    compactLatexForGrading(candidateQuality.denominator).startsWith(compactLatexForGrading(currentQuality.denominator))
+  ) {
+    return true;
+  }
+  return currentNeedsRepair && problemInputSqrtFractionQualityScore(candidateQuality) >= problemInputSqrtFractionQualityScore(currentQuality);
+}
+
+function problemInputSqrtFractionQualityScore(quality = null) {
+  if (!quality) return 0;
+  return (quality.numeratorExponent || '').length * 4 +
+    (quality.denominatorExponent || '').length * 2 +
+    Math.min(4, compactLatexForGrading(quality.denominator || '').length);
+}
+
+function sqrtNumeratorLatexQuality(latex = '') {
+  return longestLatexExponentDigits(latex).length * 4 + compactLatexForGrading(latex).length / 100;
+}
+
+function denominatorLatexQuality(latex = '') {
+  return longestLatexExponentDigits(latex).length * 3 + compactLatexForGrading(latex).length / 100;
+}
+
+function longestLatexExponentDigits(latex = '') {
+  const normalized = normalizeLatexWhitespace(latex);
+  let best = '';
+  for (const match of normalized.matchAll(/\^\s*\{\s*([0-9](?:\s+[0-9])*)\s*\}/g)) {
+    const digits = (match[1] || '').replace(/\s+/g, '');
+    if (digits.length > best.length) best = digits;
+  }
+  return best;
+}
+
+function applyProblemInputSqrtFractionRepair(line = {}, originalLatex = '', repairedLatex = '', source = '') {
+  return {
+    ...line,
+    latex: repairedLatex,
+    acceptedLatex: repairedLatex,
+    candidates: [
+      { latex: repairedLatex, score: 4, confidence: 1 },
+      ...(line.candidates || [])
+    ],
+    ocrRepair: {
+      ...(line.ocrRepair || {}),
+      source,
+      originalLatex,
+      repairedLatex
+    }
+  };
+}
+
+function repairMissingSqrtNumeratorFractionBrace(latex = '') {
+  const normalized = normalizeLatexWhitespace(latex);
+  if (!normalized.includes('\\sqrt')) return null;
+  const oneArgRepair = repairOneArgumentSqrtFraction(normalized);
+  if (oneArgRepair) return oneArgRepair;
+  const match = normalized.match(/^\\frac\s*\{\s*(\\sqrt\s*\{.*\})\s*\{\s*(.+)\s*\}$/);
+  if (!match) return null;
+  const [, numerator, denominator] = match;
+  const repaired = normalizeLatexWhitespace(`\\frac { ${numerator} } { ${denominator} }`);
+  return bracesAreBalanced(repaired) && sqrtIsFractionNumerator(repaired) ? repaired : null;
+}
+
+function repairOneArgumentSqrtFraction(latex = '') {
+  const normalized = normalizeLatexWhitespace(latex);
+  if (!normalized.startsWith('\\frac')) return null;
+  const numeratorGroup = readLatexBraceGroup(normalized, '\\frac'.length);
+  if (!numeratorGroup) return null;
+  const trailingDenominator = readLatexBraceGroup(normalized, numeratorGroup.end);
+  if (trailingDenominator) return null;
+  if (normalizeLatexWhitespace(normalized.slice(numeratorGroup.end))) return null;
+
+  const inner = normalizeLatexWhitespace(numeratorGroup.value || '');
+  if (!inner.startsWith('\\sqrt')) return null;
+  const sqrtGroup = readLatexBraceGroup(inner, '\\sqrt'.length);
+  if (!sqrtGroup) return null;
+  const denominatorGroup = readLatexBraceGroup(inner, sqrtGroup.end);
+  if (!denominatorGroup) return null;
+  if (normalizeLatexWhitespace(inner.slice(denominatorGroup.end))) return null;
+
+  const numerator = normalizeLatexWhitespace(`\\sqrt { ${sqrtGroup.value} }`);
+  const denominator = normalizeLatexWhitespace(denominatorGroup.value);
+  const repaired = normalizeLatexWhitespace(`\\frac { ${numerator} } { ${denominator} }`);
+  return bracesAreBalanced(repaired) && sqrtIsFractionNumerator(repaired) ? repaired : null;
+}
+
+function fractionNumeratorLooksLikeFlattenedRadical(latex = '') {
+  const outer = parseLeadingLatexFraction(latex);
+  if (!outer) return false;
+  const numerator = normalizeLatexWhitespace(outer.numerator || '');
+  return /^-?\s*[a-zA-Z]\s*\^\s*\{?\s*[0-9](?:\s+[0-9])+\s*\}?$/.test(numerator);
+}
+
+function sqrtIsFractionNumerator(latex = '') {
+  const outer = parseLeadingLatexFraction(latex);
+  if (!outer) return false;
+  return /^-?\s*\\sqrt\b/.test(normalizeLatexWhitespace(outer.numerator || ''));
+}
+
+function extractProblemInputFractionSymbols(latex = '') {
+  const compact = compactLatexForGrading(latex)
+    .replace(/\\sqrt/g, '')
+    .replace(/[{}]/g, '');
+  return new Set([...compact.matchAll(/[a-zA-Z0-9]/g)].map((match) => match[0].toLowerCase()));
+}
+
+function problemInputFractionSymbolsCompatible(source = new Set(), target = new Set()) {
+  if (!source.size || !target.size) return false;
+  for (const symbol of source) {
+    if (!target.has(symbol)) return false;
+  }
+  return true;
+}
+
+function problemInputMergedLine(upper = {}, lower = {}, repair = {}, base = upper) {
+  return {
+    ...base,
+    profiles: uniqueStrings([...(upper.profiles || []), ...(lower.profiles || []), ...(base.profiles || []), 'problem-input-fraction-merge']),
+    strokeIds: uniqueStrings([...(upper.strokeIds || []), ...(lower.strokeIds || [])]),
+    tightBbox: bboxUnion(upper.tightBbox || upper.bbox, lower.tightBbox || lower.bbox),
+    latex: repair.latex,
+    acceptedLatex: repair.latex,
+    candidates: [
+      { latex: repair.latex, score: 4, confidence: 1 },
+      ...(upper.candidates || []),
+      ...(lower.candidates || [])
+    ],
+    ocrRepair: {
+      ...(base.ocrRepair || {}),
+      source: 'problem-input-fraction-merge',
+      originalLatex: [upper.acceptedLatex || upper.latex || '', lower.acceptedLatex || lower.latex || ''],
+      repairedLatex: repair.latex,
+      mergedCandidateIds: [upper.candidateId || null, lower.candidateId || null].filter(Boolean)
+    },
+    mergedLineIds: [upper.candidateId || null, lower.candidateId || null].filter(Boolean)
+  };
+}
+
+function problemInputFractionCandidatePair(candidatePredictions = []) {
+  const candidates = (candidatePredictions || [])
+    .filter((entry) => String(entry?.acceptedLatex || entry?.latex || '').trim())
+    .filter((entry) => entry?.tightBbox && Array.isArray(entry?.strokeIds) && entry.strokeIds.length)
+    .filter((entry) => !(entry.profiles || []).some((profile) => (
+      profile === 'parent' ||
+      profile === 'dbnet-parent' ||
+      profile === 'fraction-stack-line' ||
+      profile === 'problem-input-fraction-line' ||
+      profile === 'problem-input-fraction-merge'
+    )))
+    .sort((a, b) => (
+      (a.tightBbox?.yMin ?? 0) - (b.tightBbox?.yMin ?? 0) ||
+      (a.tightBbox?.xMin ?? 0) - (b.tightBbox?.xMin ?? 0)
+    ));
+  let best = null;
+  for (let upperIndex = 0; upperIndex < candidates.length - 1; upperIndex += 1) {
+    for (let lowerIndex = upperIndex + 1; lowerIndex < candidates.length; lowerIndex += 1) {
+      const upper = candidates[upperIndex];
+      const lower = candidates[lowerIndex];
+      if (strokeSetsOverlap(upper.strokeIds, lower.strokeIds)) continue;
+      if (bboxYCenter(lower.tightBbox) <= bboxYCenter(upper.tightBbox)) continue;
+      const repair = problemInputFractionRepair(upper, lower);
+      if (!repair) continue;
+      const score = problemInputFractionPairScore(upper, lower);
+      if (!best || score > best.score) best = { upper, lower, repair, score };
+    }
+  }
+  return best ? { upper: best.upper, lower: best.lower, repair: best.repair } : null;
+}
+
+function strokeSetsOverlap(left = [], right = []) {
+  const ids = new Set((left || []).map(String));
+  return (right || []).some((strokeId) => ids.has(String(strokeId)));
+}
+
+function problemInputFractionPairScore(upper = {}, lower = {}) {
+  const strokeCount = uniqueStrings([...(upper.strokeIds || []), ...(lower.strokeIds || [])]).length;
+  let score = strokeCount;
+  score += Math.min(4, bboxWidth(upper.tightBbox || upper.bbox) / 160);
+  score += Math.min(2, bboxWidth(lower.tightBbox || lower.bbox) / 180);
+  if ((upper.strokeIds || []).length <= 1) score -= 3;
+  if ((lower.strokeIds || []).length <= 1) score -= 3;
+  if ((upper.profiles || []).includes('fallback-stroke')) score -= 3;
+  if ((lower.profiles || []).includes('fallback-stroke')) score -= 3;
+  return score;
+}
+
+function selectedProblemInputParentCanUsePair(lines = [], pair = null) {
+  if (!pair) return false;
+  if (!lines.length) return true;
+  if (lines.length > 1) return false;
+  const selected = lines[0];
+  const selectedLatex = String(selected?.acceptedLatex || selected?.latex || '').trim();
+  const selectedIds = new Set(selected?.strokeIds || []);
+  const pairIds = uniqueStrings([...(pair.upper.strokeIds || []), ...(pair.lower.strokeIds || [])]);
+  if (!selectedLatex) {
+    return pairIds.every((strokeId) => selectedIds.has(strokeId));
+  }
+  if ((selected?.profiles || []).includes('problem-input-fraction-line') && pairIds.every((strokeId) => selectedIds.has(strokeId))) {
+    return true;
+  }
+  return [...selectedIds].every((strokeId) => pairIds.includes(strokeId));
+}
+
+function problemInputFractionRepair(upper = {}, lower = {}) {
+  if (!problemInputFractionSplitGeometry(upper, lower)) return null;
+  const upperLatex = String(upper.acceptedLatex || upper.latex || '').trim();
+  const lowerLatex = String(lower.acceptedLatex || lower.latex || '').trim();
+  const numerator = parseLeadingProblemInputNumerator(upperLatex);
+  const denominator = parseLeadingProblemInputDenominator(lowerLatex);
+  if (!numerator || !denominator) return null;
+
+  const tail = [numerator.tail, denominator.tail]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  const latex = `\\frac { ${numerator.latex} } { ${denominator.latex} }${tail ? ` ${tail}` : ''}`;
+  return { latex: normalizeLatexWhitespace(latex) };
+}
+
+function problemInputFractionSplitGeometry(upper = {}, lower = {}) {
+  const upperBox = upper.tightBbox || upper.bbox;
+  const lowerBox = lower.tightBbox || lower.bbox;
+  if (!upperBox || !lowerBox) return false;
+  if (bboxYCenter(lowerBox) <= bboxYCenter(upperBox)) return false;
+
+  const upperWidth = Math.max(1, bboxWidth(upperBox));
+  const lowerWidth = Math.max(1, bboxWidth(lowerBox));
+  const upperHeight = Math.max(1, bboxHeight(upperBox));
+  const lowerHeight = Math.max(1, bboxHeight(lowerBox));
+  const verticalGap = Math.max(0, lowerBox.yMin - upperBox.yMax);
+  const touchingOrOverlapping = verticalGap <= Math.max(28, Math.min(upperHeight, lowerHeight) * 0.45) ||
+    bboxVerticalOverlapRatio(upperBox, lowerBox) >= 0.08;
+  if (!touchingOrOverlapping) return false;
+
+  const leftAligned = Math.abs((lowerBox.xMin ?? 0) - (upperBox.xMin ?? 0)) <= Math.max(72, upperWidth * 0.22);
+  const lowerStartsUnderFirstTerm = (lowerBox.xMin ?? 0) <= (upperBox.xMin ?? 0) + Math.max(90, upperWidth * 0.35);
+  const lowerCanCarryTail = lowerWidth <= upperWidth * 1.35 || (lowerBox.xMin ?? 0) <= (upperBox.xMin ?? 0) + 36;
+  return leftAligned && lowerStartsUnderFirstTerm && lowerCanCarryTail;
+}
+
+function parseLeadingProblemInputNumerator(latex = '') {
+  const normalized = normalizeLatexWhitespace(latex);
+  if (!normalized) return null;
+  const frac = normalized.match(/^\\frac\s*\{\s*([^{}]+?)\s*\}\s*\{\s*([^{}]+?)\s*\}(.*)$/);
+  if (frac) {
+    return {
+      latex: normalizeLatexWhitespace(`\\frac { ${frac[1]} } { ${frac[2]} }`),
+      tail: normalizeLatexWhitespace(frac[3] || '')
+    };
+  }
+  const simple = normalized.match(/^(-?(?:\d+(?:\s+\d+)*(?:\s*\.\s*\d+)?|\.\s*\d+|[a-zA-Z]))(?:\s+|$)(.*)$/);
+  if (!simple) return null;
+  return {
+    latex: normalizeLatexWhitespace(simple[1]),
+    tail: normalizeLatexWhitespace(simple[2] || '')
+  };
+}
+
+function parseLeadingProblemInputDenominator(latex = '') {
+  const normalized = normalizeLatexWhitespace(latex);
+  if (!normalized) return null;
+  const oneArgFrac = normalized.match(/^\\frac\s*\{\s*([^{}]+?)\s*\}(.*)$/);
+  if (oneArgFrac && !oneArgFrac[2].trim().startsWith('{')) {
+    return {
+      latex: normalizeLatexWhitespace(oneArgFrac[1]),
+      tail: normalizeLatexWhitespace(oneArgFrac[2] || '')
+    };
+  }
+  const twoArgFrac = normalized.match(/^\\frac\s*\{\s*([^{}]+?)\s*\}\s*\{\s*([^{}]+?)\s*\}(.*)$/);
+  if (twoArgFrac) {
+    return {
+      latex: normalizeLatexWhitespace(`\\frac { ${twoArgFrac[1]} } { ${twoArgFrac[2]} }`),
+      tail: normalizeLatexWhitespace(twoArgFrac[3] || '')
+    };
+  }
+  const simple = normalized.match(/^(-?(?:\d+(?:\s+\d+)*(?:\s*\.\s*\d+)?|\.\s*\d+|[a-zA-Z]))(?:\s+|$)(.*)$/);
+  if (!simple) return null;
+  return {
+    latex: normalizeLatexWhitespace(simple[1]),
+    tail: normalizeLatexWhitespace(simple[2] || '')
+  };
+}
+
+function problemInputOuterFractionLatexRepair(latex = '') {
+  const outer = parseLeadingLatexFraction(latex);
+  if (!outer) return null;
+  const numerator = parseLeadingProblemInputNumerator(outer.numerator);
+  const denominator = parseLeadingProblemInputDenominator(outer.denominator);
+  if (!numerator || !denominator) return null;
+
+  const outerTail = problemInputOuterTailLooksRepeated(outer, numerator, denominator) ? '' : outer.tail;
+  const tailParts = [numerator.tail, denominator.tail, outerTail]
+    .map((item) => normalizeLatexWhitespace(item || ''))
+    .filter(Boolean);
+  const tail = uniqueStrings(tailParts).join(' ').trim();
+  const repaired = `\\frac { ${numerator.latex} } { ${denominator.latex} }${tail ? ` ${tail}` : ''}`;
+  return { latex: normalizeLatexWhitespace(repaired) };
+}
+
+function problemInputOuterFractionLatexRepairHasRepeatedTail(latex = '') {
+  const outer = parseLeadingLatexFraction(latex);
+  if (!outer) return false;
+  const numerator = parseLeadingProblemInputNumerator(outer.numerator);
+  const denominator = parseLeadingProblemInputDenominator(outer.denominator);
+  if (!numerator || !denominator) return false;
+  return problemInputOuterTailLooksRepeated(outer, numerator, denominator);
+}
+
+function problemInputOuterTailLooksRepeated(outer = {}, numerator = {}, denominator = {}) {
+  const tail = normalizeLatexWhitespace(outer.tail || '');
+  if (!tail) return false;
+  const compactTail = compactLatexForGrading(tail);
+  const repeatedPrefixes = [
+    outer.denominator,
+    denominator.latex,
+    denominator.tail,
+    numerator.tail
+  ]
+    .map((item) => compactLatexForGrading(normalizeLatexWhitespace(item || '')))
+    .filter((item) => item.length >= 2);
+  return repeatedPrefixes.some((prefix) => compactTail.startsWith(prefix));
+}
+
+function parseLeadingLatexFraction(latex = '') {
+  const normalized = normalizeLatexWhitespace(latex);
+  if (!normalized.startsWith('\\frac')) return null;
+  let cursor = '\\frac'.length;
+  const numeratorGroup = readLatexBraceGroup(normalized, cursor);
+  if (!numeratorGroup) return null;
+  cursor = numeratorGroup.end;
+  const denominatorGroup = readLatexBraceGroup(normalized, cursor);
+  if (!denominatorGroup) return null;
+  return {
+    numerator: numeratorGroup.value,
+    denominator: denominatorGroup.value,
+    tail: normalizeLatexWhitespace(normalized.slice(denominatorGroup.end))
+  };
+}
+
+function readLatexBraceGroup(source = '', start = 0) {
+  let cursor = start;
+  while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+  if (source[cursor] !== '{') return null;
+  cursor += 1;
+  const valueStart = cursor;
+  let depth = 1;
+  while (cursor < source.length) {
+    const char = source[cursor];
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return {
+          value: normalizeLatexWhitespace(source.slice(valueStart, cursor)),
+          end: cursor + 1
+        };
+      }
+    }
+    cursor += 1;
+  }
+  return null;
+}
+
+function bracesAreBalanced(latex = '') {
+  let depth = 0;
+  for (const char of String(latex || '')) {
+    if (char === '{') depth += 1;
+    if (char === '}') depth -= 1;
+    if (depth < 0) return false;
+  }
+  return depth === 0;
+}
+
+function excludeDetachedVisualAnnotationLines(lines = [], { strokes = [] } = {}) {
+  const strokeById = new Map((strokes || []).map((stroke) => [String(stroke.id), stroke]));
+  const summary = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!looksLikeDetachedVisualAnnotationLine(line, lines, index, strokeById)) continue;
+    const originalLatex = String(line.acceptedLatex || line.latex || line.ocrLatex || '').trim();
+    line.excludedFromGrading = true;
+    line.acceptedLatex = '';
+    line.ocrRepair = {
+      ...(line.ocrRepair || {}),
+      source: 'detached-visual-annotation',
+      originalLatex,
+      repairedLatex: '',
+      annotationBbox: line.tightBbox || null
+    };
+    summary.push({
+      action: 'exclude',
+      candidateId: line.candidateId || null,
+      lineIndex: line.lineIndex ?? index,
+      reason: 'detached_visual_annotation'
+    });
+  }
+  return { lines, summary };
+}
+
+function looksLikeDetachedVisualAnnotationLine(line = {}, lines = [], index = 0, strokeById = new Map()) {
+  if (!line || line.excludedFromGrading) return false;
+  const latex = String(line.acceptedLatex || line.latex || line.ocrLatex || '').replace(/\s+/g, '').trim();
+  if (!/^(?:0|o|O|\\circ|\\bigcirc)$/.test(latex)) return false;
+  if ((line.strokeIds || []).length !== 1) return false;
+  const stroke = strokeById.get(String(line.strokeIds[0]));
+  if (!strokeLooksLikeStandaloneLoop(stroke || line)) return false;
+
+  const previous = (lines || []).slice(0, index).filter((item) => !item?.excludedFromGrading);
+  if (!previous.length) return false;
+  const nearest = previous.slice().sort((a, b) => (
+    Math.abs(bboxYCenter(line.tightBbox) - bboxYCenter(a.tightBbox)) -
+    Math.abs(bboxYCenter(line.tightBbox) - bboxYCenter(b.tightBbox))
+  ))[0];
+  if (!nearest?.tightBbox || !line.tightBbox) return false;
+  const verticalGap = Math.max(0, (line.tightBbox.yMin ?? 0) - (nearest.tightBbox.yMax ?? 0));
+  const isolatedBelow = bboxYCenter(line.tightBbox) > bboxYCenter(nearest.tightBbox) &&
+    verticalGap >= Math.max(18, bboxHeight(line.tightBbox) * 0.25);
+  if (!isolatedBelow) return false;
+
+  const lineSolution = matchedSolutionKey(line);
+  return Boolean(lineSolution) && previous.some((item) => (
+    item?.grading?.solutionCoverage === 'full' &&
+    item?.grading?.countsTowardCompletion === false &&
+    matchedSolutionKey(item) === lineSolution
+  ));
+}
+
+function strokeLooksLikeStandaloneLoop(strokeOrLine = {}) {
+  const box = strokeOrLine.canvasBbox || strokeOrLine.tightBbox || strokeOrLine.bbox;
+  if (!box) return false;
+  const width = bboxWidth(box);
+  const height = bboxHeight(box);
+  if (width < 18 || height < 18) return false;
+  const aspect = width / Math.max(1, height);
+  if (aspect < 0.55 || aspect > 1.6) return false;
+  const rawPoints = strokeOrLine.rawPoints || strokeOrLine.points || [];
+  if (rawPoints.length < 6) return true;
+  const first = rawPoints[0];
+  const last = rawPoints[rawPoints.length - 1];
+  if (!first || !last) return true;
+  const closeDistance = Math.hypot(Number(first.x) - Number(last.x), Number(first.y) - Number(last.y));
+  return closeDistance <= Math.max(width, height) * 0.45;
+}
+
+function matchedSolutionKey(line = {}) {
+  const matched = line?.grading?.matchedSolutions || [];
+  return matched.length ? String(matched[0]) : '';
+}
+
+function isProblemInputRecognition({ problemLatex = '', problemMetadata = {} } = {}) {
+  const metadata = problemMetadata || {};
+  if (metadata.auditSubject === 'problem-input') return true;
+  return !String(problemLatex || '').trim() &&
+    metadata.source === 'user-handwriting' &&
+    Boolean(metadata.problemType || metadata.mode);
+}
+
+function fullFinalCandidateRank(entry = {}) {
+  const grading = entry?.grading || entry?.semantic?.grading || entry?.contextualSemantic?.grading || entry?.sequentialSemantic?.grading || null;
+  if (!gradingPreferred(grading) || !candidateSelectionSafeForGrading(entry, grading)) return 0;
+  if (grading?.solutionCoverage !== 'full' && !(grading?.matchedSolutions || []).length) return 0;
+  if (grading?.answerFinality === 'final' || grading?.countsTowardCompletion === true) return 2;
+  return 1;
+}
+
+function candidateProfileAppendable(entry = {}) {
+  const profiles = new Set(entry.profiles || []);
+  if (!profiles.size) return true;
+  const parentProfiles = ['parent', 'row-parent', 'dbnet-parent', 'projection-line', 'loose', 'temporal'];
+  if (parentProfiles.some((profile) => profiles.has(profile))) return false;
+  return true;
+}
+
+function lineAsSegmentationCandidate(line = {}) {
+  return {
+    candidateId: line.candidateId || null,
+    id: line.candidateId || null,
+    profiles: Array.isArray(line.profiles) ? line.profiles.slice() : [],
+    strokeIds: Array.isArray(line.strokeIds) ? line.strokeIds.slice() : [],
+    tightBbox: line.tightBbox || null,
+    bbox: line.tightBbox || null,
+  };
+}
+
+function applyGradingSelectedLatex(entry = {}, latex = '') {
+  const selectedLatex = String(latex || '').trim();
+  if (!selectedLatex) return;
+  const originalLatex = String(entry.latex || entry.ocrLatex || '').trim();
+  entry.latex = selectedLatex;
+  entry.acceptedLatex = selectedLatex;
+  if (originalLatex && !sameLatexForGrading(originalLatex, selectedLatex)) {
+    entry.candidateSelection = {
+      ...(entry.candidateSelection || {}),
+      source: 'grading-selected-candidate',
+      originalLatex,
+      selectedLatex
+    };
+  }
 }
 
 function solutionCoverageRank(entry = {}) {
@@ -2916,11 +3930,14 @@ function gradingSelectedLatex(entry = {}, semanticEntry = {}) {
   if (!candidateSelectionSafeForGrading(entry, grading)) return '';
   const selectedIndex = Number(grading.selectedCandidateIndex);
   const candidates = Array.isArray(entry?.candidates) ? entry.candidates : [];
+  const studentLatex = String(grading.studentLatex || '').trim();
   if (Number.isInteger(selectedIndex) && selectedIndex >= 0) {
     const selectedLatex = String(candidates[selectedIndex]?.latex || '').trim();
+    if (studentLatex && gradingStudentLatexPreferred(entry, grading, studentLatex, selectedLatex)) {
+      return studentLatex;
+    }
     if (selectedLatex) return selectedLatex;
   }
-  const studentLatex = String(grading.studentLatex || '').trim();
   if (studentLatex) return studentLatex;
   return String(semanticEntry.bestLatex || '').trim();
 }
@@ -2958,7 +3975,6 @@ function candidateSelectionSafeForGrading(entry = {}, grading = null) {
 function safeSemanticAlternateForGrading(entry = {}, grading = null, selectedLatex = '', topLatex = '') {
   if (grading?.classification !== 'valid_step') return false;
   if (grading?.solutionCoverage !== 'full' && !(grading?.matchedSolutions || []).length) return false;
-
   const selectedIndex = Number(grading?.selectedCandidateIndex);
   if (!Number.isInteger(selectedIndex) || selectedIndex <= 0 || selectedIndex > 4) return false;
   const candidates = Array.isArray(entry?.candidates) ? entry.candidates : [];
@@ -2978,7 +3994,9 @@ function safeSemanticAlternateForGrading(entry = {}, grading = null, selectedLat
     Math.abs(topScore - selectedScore) <= 1.05;
   if (!nearTieConfidence && !nearTieScore) return false;
 
-  return alternateLooksLikeSafeVisualCorrection(topLatex, selectedLatex);
+  const safeVisualCorrection = alternateLooksLikeSafeVisualCorrection(topLatex, selectedLatex);
+  if (grading?.countsTowardCompletion !== true && !operatorOnlyCorrection(topLatex, selectedLatex)) return false;
+  return safeVisualCorrection;
 }
 
 function alternateLooksLikeSafeVisualCorrection(topLatex = '', selectedLatex = '') {
@@ -2989,7 +4007,31 @@ function alternateLooksLikeSafeVisualCorrection(topLatex = '', selectedLatex = '
   if (operatorOnlyCorrection(top, selected)) return true;
   if (singleSqrtRadicandCorrection(top, selected)) return true;
   if (indexedRadicalCorrection(top, selected)) return true;
+  if (absoluteValueDelimiterCorrection(top, selected)) return true;
+  if (ambiguousGlyphNumericCorrection(top, selected)) return true;
   return false;
+}
+
+function gradingStudentLatexPreferred(entry = {}, grading = null, studentLatex = '', selectedLatex = '') {
+  if (!studentLatex || sameLatexForGrading(studentLatex, selectedLatex)) return false;
+  if (grading?.classification !== 'valid_step') return false;
+  if (grading?.solutionCoverage !== 'full' && !(grading?.matchedSolutions || []).length) return false;
+  if (grading?.countsTowardCompletion !== true) return false;
+  if (latexUnsafeForAlternateGrading(entry?.ocrLatex || entry?.latex || selectedLatex)) return false;
+
+  const verdicts = Array.isArray(grading?.candidateVerdicts) ? grading.candidateVerdicts : [];
+  const verdictSupportsStudentLatex = verdicts.some((verdict) => (
+    sameLatexForGrading(verdict?.latex || verdict?.studentLatex || '', studentLatex) &&
+    verdict?.classification === 'valid_step' &&
+    verdict?.countsTowardCompletion === true
+  ));
+  if (!verdictSupportsStudentLatex) return false;
+
+  const candidates = Array.isArray(entry?.candidates) ? entry.candidates : [];
+  const topLatex = String(candidates[0]?.latex || entry?.ocrLatex || entry?.latex || selectedLatex || '').trim();
+  const appearsInCandidates = candidates.some((candidate) => sameLatexForGrading(candidate?.latex || '', studentLatex));
+  if (appearsInCandidates && alternateLooksLikeSafeVisualCorrection(topLatex, studentLatex)) return true;
+  return ambiguousGlyphNumericCorrection(topLatex, studentLatex);
 }
 
 function operatorOnlyCorrection(topLatex = '', selectedLatex = '') {
@@ -3030,6 +4072,27 @@ function indexedRadicalCorrection(topLatex = '', selectedLatex = '') {
   return indexed[1] === flattened[1] && indexed[2] === flattened[2];
 }
 
+function absoluteValueDelimiterCorrection(topLatex = '', selectedLatex = '') {
+  const top = compactLatexForGrading(topLatex);
+  const selected = compactLatexForGrading(selectedLatex);
+  if (!top || !selected) return false;
+  if (!selected.includes('|')) return false;
+  const selectedWithoutBars = selected.replace(/\|/g, '');
+  if (!selectedWithoutBars) return false;
+  const topWithoutOneGlyphs = top.replace(/[1lLI]/g, '');
+  return topWithoutOneGlyphs === selectedWithoutBars;
+}
+
+function ambiguousGlyphNumericCorrection(topLatex = '', selectedLatex = '') {
+  const selected = compactLatexForGrading(selectedLatex);
+  if (!/^-?\d+(?:\.\d+)?$/.test(selected)) return false;
+  const top = compactLatexForGrading(topLatex)
+    .replace(/[oO]/g, '0')
+    .replace(/[lLI|]/g, '1')
+    .replace(/[zZ]/g, '2');
+  return top === selected;
+}
+
 function markGradingIncompleteAfterOcrTimeout(grading = {}) {
   return {
     ...grading,
@@ -3051,6 +4114,10 @@ function sameLatexForGrading(left = '', right = '') {
 
 function compactLatexForGrading(latex = '') {
   return String(latex || '').replace(/\s+/g, '').trim();
+}
+
+function normalizeLatexWhitespace(latex = '') {
+  return String(latex || '').replace(/\s+/g, ' ').trim();
 }
 
 function latexUnsafeForAlternateGrading(latex = '') {
@@ -3148,17 +4215,23 @@ function safeLineGradingForAggregation(line = {}) {
 }
 
 function buildLiveGradingResult({ problemLatex = '', answerManifest = null, lines = [] } = {}) {
+  const sawInkButNoText = (lines || []).some((line) => (
+    Array.isArray(line?.strokeIds) &&
+    line.strokeIds.length > 0 &&
+    !String(line?.acceptedLatex || line?.latex || '').trim()
+  ));
   const steps = (lines || []).map((line, index) => {
     const grading = safeLineGradingForAggregation(line);
+    const studentLatex = line.acceptedLatex || line.latex || grading?.studentLatex || '';
     return {
       lineIndex: line.lineIndex ?? index,
-      studentLatex: line.acceptedLatex || line.latex || grading?.studentLatex || '',
+      studentLatex,
       classification: grading?.classification || 'other',
       selectedCandidateIndex: grading?.selectedCandidateIndex ?? null,
       solutionCoverage: grading?.solutionCoverage || 'none',
       matchedSolutions: Array.isArray(grading?.matchedSolutions) ? grading.matchedSolutions : [],
       answerFinality: grading?.answerFinality || 'not_answer',
-      countsTowardCompletion: grading?.countsTowardCompletion !== false
+      countsTowardCompletion: studentLatex ? grading?.countsTowardCompletion !== false : false
     };
   });
   const exactSet = Array.isArray(answerManifest?.exact_set)
@@ -3189,7 +4262,9 @@ function buildLiveGradingResult({ problemLatex = '', answerManifest = null, line
       ? 'incorrect'
       : sawValid
         ? 'incomplete'
-        : 'not_started';
+        : sawInkButNoText
+          ? 'incomplete'
+          : 'not_started';
 
   return {
     status: 'complete',

@@ -68,10 +68,26 @@ class AuditServiceTests(unittest.TestCase):
             self.assertIn("answerContext", metadata["artifactTypes"])
             self.assertIn("answerContext", metadata["cropBoxes"])
             self.assertEqual(metadata["prompt_version"], "recognition-audit-v2")
-            self.assertEqual(metadata["attached_images"], ["problemCrop", "answerCrop", "answerContext"])
+            self.assertEqual(metadata["attached_images"], ["answerCrop", "answerContext"])
+            self.assertEqual(metadata["vlmRequestProfile"], "answer-local-compact")
+            self.assertEqual(metadata["attempts"][0]["attachedImages"], ["answerCrop", "answerContext"])
+            self.assertEqual(metadata["attempts"][0]["vlmRequestProfile"], "answer-local-compact")
+            self.assertIn("auditIdTimestamp", metadata)
+            self.assertIn("queuedAt", metadata)
+            self.assertIn("startedAt", metadata)
+            self.assertIn("completedAt", metadata)
+            self.assertIsInstance(metadata["queueMs"], (int, float))
+            self.assertIsInstance(metadata["runElapsedSeconds"], (int, float))
             self.assertEqual(summary["comparisonStatus"], "complete")
             self.assertIn("answerContext", summary["artifactTypes"])
+            self.assertEqual(summary["attached_images"], ["answerCrop", "answerContext"])
+            self.assertEqual(summary["vlmRequestProfile"], "answer-local-compact")
             self.assertEqual(summary["eventStage"], "terminal")
+            self.assertEqual(len(service.vlm_client.calls[0]["image_paths"]), 2)
+            self.assertEqual(
+                [path.name for path in service.vlm_client.calls[0]["image_paths"]],
+                ["answer_crop.png", "answer_context.png"],
+            )
 
     def test_disagreement_records_status_and_solution_discrepancies(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -178,16 +194,77 @@ class AuditServiceTests(unittest.TestCase):
                 audit_log_dir=directory,
                 vlm_audit_base_url="http://127.0.0.1:11434/v1",
                 vlm_audit_model="qwen3-vl:8b",
+                vlm_audit_circuit_failures=2,
+                vlm_audit_circuit_seconds=60,
             )
             service = RecognitionAuditService(settings, vlm_client=client)
 
-            service.run_audit(audit_payload(), "audit_timeout_1")
-            service.run_audit(audit_payload(), "audit_timeout_2")
-            summary = service.run_audit(audit_payload(), "audit_timeout_3")
+            first = service.run_audit(audit_payload(), "audit_timeout_1")
+            second = service.run_audit(audit_payload(), "audit_timeout_2")
+            third = service.run_audit(audit_payload(), "audit_timeout_3")
+            suppressed = service.run_audit(audit_payload(), "audit_timeout_4")
 
             self.assertEqual(len(client.calls), 2)
-            self.assertEqual(summary["discrepancyTypes"], ["vlm_unavailable"])
-            self.assertIn("circuit open", summary["description"])
+            self.assertEqual(first["discrepancyTypes"], ["vlm_timeout"])
+            self.assertEqual(second["failureKind"], "vlm_timeout")
+            self.assertEqual(third["comparisonStatus"], "skipped")
+            self.assertEqual(third["failureKind"], "vlm_circuit_open")
+            self.assertEqual(third["discrepancyTypes"], [])
+            self.assertIn("retryAfterSeconds", third)
+            self.assertEqual(suppressed["eventStage"], "suppressed")
+            self.assertEqual(suppressed["comparisonStatus"], "skipped")
+            self.assertEqual(suppressed["suppressedByAuditId"], "audit_timeout_3")
+            self.assertNotIn("auditDir", suppressed)
+            event_lines = [
+                json.loads(line)
+                for line in (Path(directory) / "audit_events.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(event_lines[-1]["eventStage"], "suppressed")
+            self.assertEqual(event_lines[-1]["suppressedByAuditId"], "audit_timeout_3")
+
+    def test_new_discrepancy_categories_are_recorded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": ["x = 4"],
+                "lineObservations": [{"lineIndex": 0, "latex": "x = 4", "confidence": 0.9}],
+                "visualMarks": [],
+                "overallConfidence": 0.9,
+            })
+            payload = audit_payload()
+            payload["fastResult"]["latex"] = ""
+            payload["fastResult"]["latexLines"] = []
+            payload["fastResult"]["lines"][0]["acceptedLatex"] = ""
+            payload["fastResult"]["lines"][0]["latex"] = ""
+            payload["fastResult"]["lines"][0]["ocrLatex"] = ""
+            payload["fastResult"]["selectionSummary"] = {
+                "highConfidenceDiscarded": [{
+                    "candidateId": "discarded-full",
+                    "latex": "x = 4",
+                    "strokeIds": ["stroke-a"],
+                    "grading": {
+                        "classification": "valid_step",
+                        "solutionCoverage": "full",
+                        "matchedSolutions": ["4"],
+                    },
+                }],
+            }
+            summary = service.run_audit(payload, "audit_new_categories")
+
+            self.assertIn("line_segmentation_empty", summary["discrepancyTypes"])
+            self.assertIn("candidate_present_not_selected", summary["discrepancyTypes"])
+
+    def test_simplification_policy_disagreement_category_is_recorded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": ["7x - 2"],
+                "lineObservations": [{"lineIndex": 0, "latex": "7x - 2", "confidence": 0.9}],
+                "visualMarks": [],
+                "overallConfidence": 0.9,
+            })
+            summary = service.run_audit(simplification_policy_audit_payload(), "audit_simplification_policy")
+
+            self.assertIn("simplification_policy_disagreement", summary["discrepancyTypes"])
 
     def test_zero_and_letter_o_are_normalized_for_line_compare(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -290,12 +367,19 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(summary["auditSubject"], "problem-input")
             self.assertIn("user_adjusted_problem_input", summary["triggerReasons"])
             self.assertIn("line_latex_mismatch", summary["discrepancyTypes"])
+            self.assertIn("problem_input_ocr_mismatch", summary["discrepancyTypes"])
             audit_dir = Path(summary["auditDir"])
             vlm_grading = json.loads((audit_dir / "vlm_grading.json").read_text())
             self.assertEqual(vlm_grading["status"], "skipped")
             metadata = json.loads((audit_dir / "audit_metadata.json").read_text())
             self.assertEqual(metadata["auditSubject"], "problem-input")
+            self.assertEqual(metadata["attached_images"], ["answerCrop", "problemCrop"])
+            self.assertEqual(metadata["vlmRequestProfile"], "problem-input-local-compact")
             self.assertIn("problem-entry box", service.vlm_client.calls[0]["prompt"])
+            self.assertEqual(
+                [path.name for path in service.vlm_client.calls[0]["image_paths"]],
+                ["answer_crop.png", "problem_crop.png"],
+            )
 
     def test_normalize_vlm_response_accepts_fenced_json(self):
         normalized = normalize_vlm_response({
@@ -403,6 +487,47 @@ def problem_input_audit_payload() -> dict[str, Any]:
             "annotationAttachments": [],
             "segmentation": {"selected": [], "candidates": []},
             "grading": None,
+        },
+    })
+    return payload
+
+
+def simplification_policy_audit_payload() -> dict[str, Any]:
+    payload = audit_payload()
+    payload.update({
+        "problemId": "simplify-policy",
+        "problemLatex": "2 x - 3 + 5 x + 1",
+        "problemMetadata": {"problemType": "simplify-expression"},
+        "inputSignature": "simplify-policy::sig",
+        "triggerReasons": ["normal_sample"],
+        "fastResult": {
+            **payload["fastResult"],
+            "latex": "2 x - 3 + 5 x + 1",
+            "latexLines": ["2 x - 3 + 5 x + 1"],
+            "grading": {
+                "status": "complete",
+                "failed": False,
+                "problem": {"manifestResponseKind": "simplified_expression"},
+                "steps": [{
+                    "lineIndex": 0,
+                    "studentLatex": "2 x - 3 + 5 x + 1",
+                    "classification": "valid_step",
+                    "solutionCoverage": "full",
+                    "matchedSolutions": ["7*x - 2"],
+                    "answerFinality": "unsimplified",
+                    "countsTowardCompletion": False,
+                }],
+                "result": {
+                    "problemStatus": "incomplete",
+                    "foundSolutions": [],
+                    "missingSolutions": ["7*x - 2"],
+                },
+            },
+            "lines": [{
+                **payload["fastResult"]["lines"][0],
+                "acceptedLatex": "2 x - 3 + 5 x + 1",
+                "latex": "2 x - 3 + 5 x + 1",
+            }],
         },
     })
     return payload

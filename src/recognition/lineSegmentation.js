@@ -53,6 +53,17 @@ export function segmentMathLines(strokes, options = {}) {
 
   const parent = addCandidate(eligibleStrokes, 'parent', { sources: ['all-strokes'] });
   const baseGroups = buildBaseGroups(eligibleStrokes, config);
+  if (isProblemInputSegmentation(options)) {
+    for (const group of [{ strokes: eligibleStrokes }, ...baseGroups]) {
+      const groupCandidate = candidateFromStrokes(group.strokes, { profile: 'problem-input-parent-probe', config });
+      for (const stack of buildProblemInputFractionLineGroups(splitCandidateIntoRows(groupCandidate, config), config)) {
+        addCandidate(stack.strokes, 'problem-input-fraction-line', {
+          sources: ['problem-input-fraction-stack'],
+          parentCandidateId: parent?.candidateId || null
+        });
+      }
+    }
+  }
   for (const stack of buildTallFractionStackGroups(clusterStrokeRows(parent, config), config)) {
     addCandidate(stack.strokes, 'fraction-stack-line', {
       sources: ['global-tall-fraction-stack'],
@@ -127,6 +138,25 @@ export function segmentMathLines(strokes, options = {}) {
           parentCandidateId: groupCandidate.candidateId
         });
       }
+    }
+  }
+
+  if (isProblemInputSegmentation(options)) {
+    const rowCandidates = candidates
+      .filter((candidate) => (
+        (candidate.profiles || []).includes('row-line') &&
+        (candidate.strokeIds || []).length > 1 &&
+        (candidate.strokeIds || []).length < eligibleStrokes.length
+      ))
+      .map((candidate) => ({
+        bbox: candidate.tightBbox,
+        strokes: candidate.strokes || []
+      }));
+    for (const stack of buildProblemInputFractionLineGroups(rowCandidates, config)) {
+      addCandidate(stack.strokes, 'problem-input-fraction-line', {
+        sources: ['problem-input-fraction-rows'],
+        parentCandidateId: parent?.candidateId || null
+      });
     }
   }
 
@@ -265,6 +295,7 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
 
   if (profiles.includes('dbnet-line')) score += 3.1;
   if (profiles.includes('row-line')) score += 2.6;
+  if (profiles.includes('problem-input-fraction-line')) score += 24.5;
   if (profiles.includes('fraction-stack-line')) score += 4.8;
   if (profiles.includes('raw-row-line')) score += 1.95;
   if (profiles.includes('projection-line')) score += 0.45;
@@ -303,9 +334,11 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
     hasCompactFractionStructure(candidate);
   const superscriptStructural = profiles.includes('superscript-line') &&
     hasSuperscriptStructure(rawRows, medianHeight);
-  const fractionStructural = fractionBridge || compactFractionLine || builtTallFractionStack;
+  const problemInputFractionLine = profiles.includes('problem-input-fraction-line');
+  const fractionStructural = fractionBridge || compactFractionLine || builtTallFractionStack || problemInputFractionLine;
   const structural = fractionBridge ||
     compactFractionLine ||
+    problemInputFractionLine ||
     superscriptStructural ||
     plusMinusStructure ||
     structuralRows.some((row) => rowHasTallOperatorStroke(row, rowMedianHeight(row)));
@@ -328,6 +361,7 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
   }
   if (compactFractionLine) score += 4.2;
   if (profiles.includes('fraction-stack-line') && fractionStructural) score += 3.2;
+  if (problemInputFractionLine) score += 9.5;
   if (superscriptStructural) score += 9.7;
   if (builtTallFractionStack) score += 27.5;
   if (plusMinusStructure) score += 6.8;
@@ -611,6 +645,7 @@ function isEvidenceLineCandidate(candidate) {
   if (profiles.includes('fallback-stroke')) return false;
   return profiles.some((profile) => (
     profile === 'dbnet-line' ||
+    profile === 'problem-input-fraction-line' ||
     profile === 'fraction-stack-line' ||
     profile === 'superscript-line' ||
     profile === 'row-line' ||
@@ -626,6 +661,7 @@ function isLineLikeCandidate(candidate) {
   if (profiles.includes('fallback-stroke')) return false;
   return profiles.some((profile) => (
     profile === 'dbnet-line' ||
+    profile === 'problem-input-fraction-line' ||
     profile === 'fraction-stack-line' ||
     profile === 'superscript-line' ||
     profile === 'row-line' ||
@@ -660,6 +696,7 @@ function isNonProjectionLineCandidate(candidate) {
   if (profiles.includes('fallback-stroke')) return false;
   return profiles.some((profile) => (
     profile === 'dbnet-line' ||
+    profile === 'problem-input-fraction-line' ||
     profile === 'fraction-stack-line' ||
     profile === 'superscript-line' ||
     profile === 'row-line' ||
@@ -674,6 +711,7 @@ function isIndependentLineChildCandidate(candidate) {
   if (profiles.includes('fallback-stroke')) return false;
   return profiles.some((profile) => (
     profile === 'dbnet-line' ||
+    profile === 'problem-input-fraction-line' ||
     profile === 'fraction-stack-line' ||
     profile === 'superscript-line' ||
     profile === 'row-line' ||
@@ -688,6 +726,7 @@ function isPreferredChildLineCandidate(candidate) {
   if (profiles.includes('fallback-stroke')) return false;
   return profiles.some((profile) => (
     profile === 'dbnet-line' ||
+    profile === 'problem-input-fraction-line' ||
     profile === 'fraction-stack-line' ||
     profile === 'superscript-line' ||
     profile === 'row-line' ||
@@ -1155,6 +1194,14 @@ function emptySegmentation() {
   };
 }
 
+function isProblemInputSegmentation(options = {}) {
+  const metadata = options.problemMetadata || {};
+  if (metadata.auditSubject === 'problem-input') return true;
+  return !String(options.problemLatex || '').trim() &&
+    metadata.source === 'user-handwriting' &&
+    Boolean(metadata.problemType || metadata.mode);
+}
+
 function filterStrokes(strokes, answerBox) {
   const usable = strokes.filter((stroke) => stroke?.canvasBbox);
   if (!answerBox) return usable;
@@ -1361,6 +1408,69 @@ function buildTallFractionStackGroups(rows, config) {
     }
   }
   return groups;
+}
+
+function buildProblemInputFractionLineGroups(rows, config) {
+  const sortedRows = (rows || []).slice().sort(compareRows);
+  const groups = [];
+  for (let index = 0; index < sortedRows.length - 1; index += 1) {
+    for (let span = 2; span <= 3 && index + span <= sortedRows.length; span += 1) {
+      const slice = sortedRows.slice(index, index + span);
+      const strokes = uniqueStrokes(slice.flatMap((row) => row.strokes || []));
+      if (strokes.length <= 3) continue;
+      const candidate = candidateFromStrokes(strokes, {
+        profile: 'problem-input-fraction-probe',
+        config
+      });
+      if (!hasProblemInputLeadingFractionStructure(candidate, slice)) continue;
+      groups.push({ strokes });
+    }
+  }
+  return groups;
+}
+
+function hasProblemInputLeadingFractionStructure(candidate, rows) {
+  if (!candidate?.strokes?.length || !rows || rows.length < 2) return false;
+  const sortedRows = rows.slice().sort(compareRows);
+  const upper = sortedRows[0];
+  const lower = sortedRows[1];
+  if (!upper?.bbox || !lower?.bbox) return false;
+  if (centerY(lower.bbox) <= centerY(upper.bbox)) return false;
+  if (
+    !hasWideFractionBar(candidate) &&
+    !hasProblemInputLeadingFractionBar(candidate, upper, lower) &&
+    !hasProminentLocalFractionBridge(candidate, clusterStrokeRows(candidate, DEFAULT_CONFIG))
+  ) {
+    return false;
+  }
+  const candidateWidth = Math.max(1, bboxWidth(candidate.tightBbox));
+  const leftAligned = Math.abs((lower.bbox.xMin ?? 0) - (upper.bbox.xMin ?? 0)) <= Math.max(72, candidateWidth * 0.2);
+  const lowerStartsUnderFirstTerm = (lower.bbox.xMin ?? 0) <= (upper.bbox.xMin ?? 0) + Math.max(95, candidateWidth * 0.36);
+  const verticalGap = Math.max(0, lower.bbox.yMin - upper.bbox.yMax);
+  const closeRows = verticalGap <= Math.max(34, rowMedianHeight(upper) * 0.9, rowMedianHeight(lower) * 0.9) ||
+    verticalOverlapRatio(upper.bbox, lower.bbox) >= 0.04;
+  return leftAligned && lowerStartsUnderFirstTerm && closeRows;
+}
+
+function hasProblemInputLeadingFractionBar(candidate, upper, lower) {
+  if (!candidate?.strokes?.length || !upper?.bbox || !lower?.bbox) return false;
+  const leadingLeft = Math.min(upper.bbox.xMin ?? 0, lower.bbox.xMin ?? 0);
+  const leadingRight = Math.max(
+    upper.bbox.xMin ?? 0,
+    lower.bbox.xMin ?? 0
+  ) + Math.max(150, rowMedianHeight(upper) * 4, rowMedianHeight(lower) * 4);
+  const upperCenterY = centerY(upper.bbox);
+  const lowerCenterY = centerY(lower.bbox);
+
+  return candidate.strokes.some((stroke) => {
+    const box = stroke?.canvasBbox;
+    if (!box || !isHorizontalStroke(stroke)) return false;
+    if (bboxWidth(box) < Math.max(70, rowMedianHeight(upper) * 1.15, rowMedianHeight(lower) * 1.15)) return false;
+    if ((box.xMin ?? 0) > leadingRight || (box.xMax ?? 0) < leadingLeft - 35) return false;
+    const barY = centerY(box);
+    return barY > upperCenterY - Math.max(18, rowMedianHeight(upper) * 0.25) &&
+      barY < lowerCenterY + Math.max(18, rowMedianHeight(lower) * 0.25);
+  });
 }
 
 function buildSuperscriptLineGroups(rows, config) {
@@ -2399,12 +2509,39 @@ export function detectEnclosingAnnotationStrokes(strokes) {
 
     const enclosedBox = computeTightBbox(enclosed);
     if (!enclosedBox) continue;
+    if (looksLikeRadicalOverFractionNumerator(stroke, enclosed, usable, medianHeight)) continue;
     if (horizontalOverlapRatio(box, enclosedBox) < 0.85) continue;
     if (verticalOverlapRatio(box, enclosedBox) < 0.85) continue;
     out.push(stroke);
   }
 
   return out;
+}
+
+function looksLikeRadicalOverFractionNumerator(stroke, enclosed = [], allStrokes = [], medianHeight = 1) {
+  const box = stroke?.canvasBbox;
+  if (!box || !enclosed.length) return false;
+  const barsBelow = (allStrokes || []).filter((other) => {
+    if (other === stroke || !other?.canvasBbox || !isHorizontalStroke(other)) return false;
+    const bar = other.canvasBbox;
+    if (centerY(bar) <= centerY(box)) return false;
+    if (bar.yMin - box.yMax > Math.max(34, medianHeight * 0.75)) return false;
+    if (bboxWidth(bar) < Math.max(70, medianHeight * 1.2)) return false;
+    return horizontalOverlapRatio(box, bar) >= 0.5 || horizontalOverlapRatio(bar, box) >= 0.35;
+  });
+  if (!barsBelow.length) return false;
+
+  const nearestBar = barsBelow.sort((a, b) => a.canvasBbox.yMin - b.canvasBbox.yMin)[0].canvasBbox;
+  const enclosedAboveBar = enclosed.filter((other) => (
+    other?.canvasBbox &&
+    centerY(other.canvasBbox) < centerY(nearestBar) &&
+    centerX(other.canvasBbox) >= box.xMin &&
+    centerX(other.canvasBbox) <= box.xMax
+  ));
+  if (enclosedAboveBar.length < 2) return false;
+
+  const aspect = bboxWidth(box) / Math.max(1, bboxHeight(box));
+  return aspect >= 1.25 && aspect <= 3.8;
 }
 
 export function detectSeparatedTopAnnotationStrokes(strokes) {

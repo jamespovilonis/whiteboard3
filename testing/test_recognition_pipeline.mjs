@@ -8,7 +8,8 @@ import {
   buildRecognitionAuditPayload,
   deterministicSample,
   getRecognitionAuditDecision,
-  hasCorrectAnswerWithInvalidStep
+  hasCorrectAnswerWithInvalidStep,
+  normalizeProblemInputRecognitionResult
 } from '../src/recognition/auditClient.js';
 import { getRecognitionApiUrl, normalizeConfiguredApiUrl } from '../src/recognition/config.js';
 import { problemStatusDisplay } from '../src/components/problemStatusDisplay.js';
@@ -1187,6 +1188,119 @@ test('grading verdict selects a valid top-five candidate over OCR top one', asyn
   assert.equal(result.grading.result.problemStatus, 'correct');
 });
 
+test('grading verdict promotes safe absolute-value top-five candidate to final latex', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('abs', 0, 0, 140, 90)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 170, yMax: 120 },
+    problemLatex: '\\frac{5}{\\sqrt{x^2}}',
+    semanticScoring: true,
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '\\frac { 5 } { 1 x }',
+      top: { latex: '\\frac { 5 } { 1 x }', score: -0.22, confidence: 0.27 },
+      candidates: [
+        { latex: '\\frac { 5 } { 1 x }', score: -0.22, confidence: 0.27 },
+        { latex: '\\frac { 5 } { | x | }', score: -0.41, confidence: 0.22 },
+        { latex: '\\frac { 5 } { T x }', score: -0.45, confidence: 0.21 },
+      ],
+      elapsedSeconds: 0.3
+    }),
+    scoreSemantics: async (request) => ({
+      answerManifest: {
+        problem_raw: request.problemLatex,
+        variable: 'x',
+        cardinality: 'expression',
+        exact_set: ['5/Abs(x)']
+      },
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        semanticScore: 1,
+        bestLatex: group.latex,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        grading: {
+          studentLatex: '\\frac { 5 } { | x | }',
+          classification: 'valid_step',
+          selectedCandidateIndex: 1,
+          solutionCoverage: 'full',
+          matchedSolutions: ['5/Abs(x)'],
+          answerFinality: 'final',
+          countsTowardCompletion: true,
+          candidateVerdicts: [
+            { latex: '\\frac { 5 } { 1 x }', classification: 'invalid_step', countsTowardCompletion: false },
+            { latex: '\\frac { 5 } { | x | }', classification: 'valid_step', countsTowardCompletion: true }
+          ]
+        },
+        candidateScores: []
+      })),
+      elapsedSeconds: 0.05
+    })
+  });
+
+  assert.deepEqual(result.latexLines, ['\\frac { 5 } { | x | }']);
+  assert.equal(result.lines[0].acceptedLatex, '\\frac { 5 } { | x | }');
+  assert.equal(result.grading.result.problemStatus, 'correct');
+});
+
+test('grading verdict does not promote non-completing semantic alternate', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('abs', 0, 0, 140, 90)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 170, yMax: 120 },
+    problemLatex: '\\frac{5}{\\sqrt{x^2}}',
+    semanticScoring: true,
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '\\frac { 5 } { 1 x }',
+      top: { latex: '\\frac { 5 } { 1 x }', score: -0.22, confidence: 0.27 },
+      candidates: [
+        { latex: '\\frac { 5 } { 1 x }', score: -0.22, confidence: 0.27 },
+        { latex: '\\frac { 5 } { | x | }', score: -0.41, confidence: 0.22 },
+      ],
+      elapsedSeconds: 0.3
+    }),
+    scoreSemantics: async (request) => ({
+      answerManifest: {
+        problem_raw: request.problemLatex,
+        variable: 'x',
+        cardinality: 'expression',
+        exact_set: ['5/Abs(x)']
+      },
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        semanticScore: 1,
+        bestLatex: group.latex,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        grading: {
+          studentLatex: '\\frac { 5 } { | x | }',
+          classification: 'valid_step',
+          selectedCandidateIndex: 1,
+          solutionCoverage: 'full',
+          matchedSolutions: ['5/Abs(x)'],
+          answerFinality: 'unsimplified',
+          countsTowardCompletion: false,
+          candidateVerdicts: [
+            { latex: '\\frac { 5 } { | x | }', classification: 'valid_step', countsTowardCompletion: false }
+          ]
+        },
+        candidateScores: []
+      })),
+      elapsedSeconds: 0.05
+    })
+  });
+
+  assert.deepEqual(result.latexLines, ['\\frac { 5 } { 1 x }']);
+  assert.equal(result.grading.result.problemStatus, 'not_started');
+});
+
 test('grading verdict keeps full plus-minus solution over weaker plus-only read', async () => {
   installFakeCanvas();
   const strokes = [stroke('pm', 0, 0, 120, 50)];
@@ -1347,7 +1461,7 @@ test('variable-free rational problem line is repaired from problem context', asy
     answerBox: { xMin: -5, yMin: -5, xMax: 440, yMax: 110 },
     problemLatex: '\\frac { x ^ { 2 } - 1 } { x - 1 } = 4',
     semanticScoring: false,
-    recognizeAlternatives: false,
+    recognizeAlternatives: true,
     recognizeLine: async () => ({
       latex: '\\frac { 2 ^ { 2 } - 1 } { 2 ^ { 2 } - 1 } = 4',
       top: {
@@ -5132,7 +5246,7 @@ test('incremental scheduler matches one-shot recognition on messy synthetic late
 test('student writing pipeline handles distilled real handwriting trace fixtures', async () => {
   installFakeCanvas();
   const fixtures = loadRealHandwritingFixtures();
-  assert.equal(fixtures.length, 17);
+  assert.equal(fixtures.length, 37);
 
   for (const fixture of fixtures) {
     const fakeReaders = fakeReadersForRealTrace(fixture);
@@ -5142,6 +5256,7 @@ test('student writing pipeline handles distilled real handwriting trace fixtures
       answerBox: fixture.answerBox,
       problemLatex: fixture.problemLatex,
       problemMetadata: {
+        ...(fixture.problemMetadata || {}),
         source: 'testing/fixtures/real_handwriting',
         sourceAuditId: fixture.sourceAuditId,
         expectedLatexLines: fixture.expectedLatexLines,
@@ -6284,6 +6399,558 @@ test('VLM audit decision catches non-correct grading statuses and unread OCR', (
   assert.equal(decision.shouldAudit, true);
   assert.ok(decision.triggerReasons.includes('problem_status_incomplete'));
   assert.ok(decision.triggerReasons.includes('unread_or_empty_line'));
+  assert.ok(decision.triggerReasons.includes('line_segmentation_empty'));
+});
+
+test('student writing pipeline keeps ink-only OCR lines incomplete instead of not started', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('empty', 0, 0, 80, 40)],
+    answerBox: { xMin: -5, yMin: -5, xMax: 100, yMax: 70 },
+    problemLatex: 'x = 1',
+    semanticScoring: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex: '',
+      top: null,
+      candidates: [],
+      failed: false,
+      timedOut: false,
+      elapsedSeconds: 0.02
+    })
+  });
+
+  assert.equal(result.lines.length, 1);
+  assert.equal(result.lines[0].acceptedLatex, '');
+  assert.equal(result.grading.result.problemStatus, 'incomplete');
+  const decision = getRecognitionAuditDecision(result, { inputSignature: 'empty-ocr' });
+  assert.ok(decision.triggerReasons.includes('line_segmentation_empty'));
+});
+
+test('student writing pipeline excludes isolated circled annotation from grading', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('setup', 0, 0, 180, 55),
+    stroke('simplify', 18, 100, 145, 150),
+    stroke('circle', 55, 215, 125, 290),
+  ];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -10, yMin: -10, xMax: 220, yMax: 330 },
+    problemLatex: '\\frac { 1 2 } { \\sqrt { 9 } } - \\sqrt { 1 6 }',
+    semanticScoring: true,
+    recognizeAlternatives: false,
+    semanticRetryRasterHeights: [],
+    detectLineBands: true,
+    detectLines: async () => ({
+      detections: [
+        { bbox: { xMin: 0, yMin: 0, xMax: 190, yMax: 65 } },
+        { bbox: { xMin: 10, yMin: 92, xMax: 155, yMax: 160 } },
+        { bbox: { xMin: 48, yMin: 205, xMax: 132, yMax: 300 } },
+      ],
+      failed: false,
+      elapsedSeconds: 0.01
+    }),
+    recognizeLine: async (image) => {
+      const ids = new Set(image.strokeIds);
+      const latex = ids.has('circle')
+        ? '0'
+        : ids.has('simplify')
+          ? '4 - 4'
+          : '\\frac { 1 2 } { 3 } - 4';
+      return {
+        latex,
+        top: { latex, score: 2, confidence: 0.95 },
+        candidates: [{ latex, score: 2, confidence: 0.95 }],
+        elapsedSeconds: 0.03
+      };
+    },
+    scoreSemantics: async (request) => ({
+      answerManifest: {
+        problem_raw: request.problemLatex,
+        variable: null,
+        cardinality: 'finite',
+        exact_set: ['0']
+      },
+      candidateScores: request.candidateGroups.map((group) => {
+        const isCircle = group.latex === '0';
+        return {
+          candidateId: group.candidateId,
+          semanticScore: 1,
+          bestLatex: group.latex,
+          sound: true,
+          equivalentToProblem: false,
+          equivalentToPrevious: false,
+          grading: {
+            studentLatex: group.latex,
+            classification: 'valid_step',
+            selectedCandidateIndex: 0,
+            solutionCoverage: 'full',
+            matchedSolutions: ['0'],
+            answerFinality: isCircle ? 'final' : 'unsimplified',
+            countsTowardCompletion: isCircle,
+            candidateVerdicts: [
+              { latex: group.latex, classification: 'valid_step', countsTowardCompletion: isCircle }
+            ]
+          },
+          candidateScores: []
+        };
+      }),
+      elapsedSeconds: 0.05
+    })
+  });
+
+  assert.deepEqual(result.latexLines, ['4 - 4']);
+  assert.equal(result.lines.at(-1).excludedFromGrading, true);
+  assert.equal(result.lines.at(-1).acceptedLatex, '');
+  assert.equal(result.grading.result.problemStatus, 'incomplete');
+});
+
+test('student writing pipeline keeps a real standalone zero answer gradable', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('zero', 0, 0, 70, 78)],
+    answerBox: { xMin: -10, yMin: -10, xMax: 100, yMax: 110 },
+    problemLatex: '4 - 4',
+    semanticScoring: true,
+    recognizeAlternatives: true,
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '0',
+      top: { latex: '0', score: 2, confidence: 0.95 },
+      candidates: [{ latex: '0', score: 2, confidence: 0.95 }],
+      elapsedSeconds: 0.03
+    }),
+    scoreSemantics: async (request) => ({
+      answerManifest: {
+        problem_raw: request.problemLatex,
+        variable: null,
+        cardinality: 'finite',
+        exact_set: ['0']
+      },
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        semanticScore: 1,
+        bestLatex: group.latex,
+        sound: true,
+        grading: {
+          studentLatex: '0',
+          classification: 'valid_step',
+          selectedCandidateIndex: 0,
+          solutionCoverage: 'full',
+          matchedSolutions: ['0'],
+          answerFinality: 'final',
+          countsTowardCompletion: true
+        },
+        candidateScores: []
+      })),
+      elapsedSeconds: 0.05
+    })
+  });
+
+  assert.deepEqual(result.latexLines, ['0']);
+  assert.equal(result.lines[0].excludedFromGrading, undefined);
+  assert.equal(result.grading.result.problemStatus, 'correct');
+});
+
+test('student writing pipeline merges split problem-input fraction rows', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('num8', 100, 35, 136, 94),
+    stroke('bar', 92, 112, 236, 119),
+    stroke('den0', 104, 150, 135, 208),
+    stroke('dot', 150, 198, 158, 206),
+    stroke('den1', 174, 150, 206, 208),
+    stroke('minus', 276, 78, 326, 86),
+    stroke('sqrt', 350, 44, 430, 112),
+    stroke('two', 446, 48, 480, 104),
+    stroke('five', 496, 48, 532, 104),
+  ];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: 60, yMin: 0, xMax: 580, yMax: 260 },
+    problemMetadata: {
+      auditSubject: 'problem-input',
+      mode: 'evaluate',
+      problemType: 'evaluate-expression',
+      source: 'user-handwriting'
+    },
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    detectLineBands: true,
+    detectLines: async () => ({
+      detections: [
+        { bbox: { xMin: 90, yMin: 25, xMax: 550, yMax: 126 } },
+        { bbox: { xMin: 100, yMin: 142, xMax: 214, yMax: 216 } },
+      ],
+      failed: false,
+      elapsedSeconds: 0.01
+    }),
+    recognizeLine: async (image) => {
+      const ids = new Set(image.strokeIds);
+      const latex = ids.has('num8') && ids.has('den0')
+        ? ''
+        : ids.has('den0') || ids.has('dot') || ids.has('den1')
+          ? '0 . 1'
+          : '8 - \\sqrt { 2 5 }';
+      return {
+        latex,
+        top: { latex, score: 2, confidence: 0.95 },
+        candidates: [{ latex, score: 2, confidence: 0.95 }],
+        elapsedSeconds: 0.03
+      };
+    },
+    gradeWork: null
+  });
+
+  assert.deepEqual(result.latexLines, ['\\frac { 8 } { 0 . 1 } - \\sqrt { 2 5 }']);
+  assert.equal(result.lines.length, 1);
+  assert.ok(new Set([
+    'problem_input_fraction_row_merge',
+    'problem_input_fraction_candidate_merge',
+    'problem_input_fraction_latex_repair'
+  ]).has(result.selectionRescue[0].reason));
+});
+
+test('student writing pipeline merges prior split problem-input numerator with denominator tail', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('seven', 150, 45, 230, 125),
+    stroke('bar', 126, 145, 250, 153),
+    stroke('one', 142, 172, 154, 218),
+    stroke('zero', 182, 170, 228, 218),
+    stroke('plus', 290, 132, 326, 172),
+    stroke('tail0', 350, 130, 382, 180),
+    stroke('taildot', 394, 174, 402, 182),
+    stroke('tail1', 418, 130, 438, 180),
+    stroke('minus', 474, 154, 508, 162),
+    stroke('two', 542, 130, 592, 190),
+  ];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: 100, yMin: 0, xMax: 640, yMax: 250 },
+    problemMetadata: {
+      auditSubject: 'problem-input',
+      mode: 'evaluate',
+      problemType: 'evaluate-expression',
+      source: 'user-handwriting'
+    },
+    semanticScoring: false,
+    recognizeAlternatives: true,
+    chunkFallback: false,
+    detectLineBands: true,
+    detectLines: async () => ({
+      detections: [
+        { bbox: { xMin: 140, yMin: 35, xMax: 258, yMax: 132 } },
+        { bbox: { xMin: 120, yMin: 116, xMax: 610, yMax: 226 } },
+      ],
+      failed: false,
+      elapsedSeconds: 0.01
+    }),
+    recognizeLine: async (image) => {
+      const ids = new Set(image.strokeIds);
+      const latex = ids.has('seven') && ids.has('one')
+        ? ''
+        : ids.has('seven')
+          ? '7'
+          : '\\frac { 1 0 } + 0 . 1 - 2';
+      return {
+        latex,
+        top: { latex, score: 2, confidence: 0.95 },
+        candidates: [{ latex, score: 2, confidence: 0.95 }],
+        elapsedSeconds: 0.03
+      };
+    },
+    gradeWork: null
+  });
+
+  assert.deepEqual(result.latexLines, ['\\frac { 7 } { 1 0 } + 0 . 1 - 2']);
+  assert.equal(result.lines.length, 1);
+});
+
+test('problem-input fraction repair preserves complete OCR fractions with tails', async () => {
+  installFakeCanvas();
+  const cases = [
+    '\\frac { x - 1 } { 8 } = 1',
+    '\\frac { 8 } { x } - \\frac { 8 } { 9 } = 0',
+    '\\frac { 8 } { 1 8 } - \\frac { 8 } { 9 }'
+  ];
+
+  for (const latex of cases) {
+    const result = await recognizeStudentWriting({
+      strokes: [stroke(`case-${latex.length}`, 0, 0, 420, 180)],
+      answerBox: { xMin: -5, yMin: -5, xMax: 460, yMax: 220 },
+      problemMetadata: {
+        auditSubject: 'problem-input',
+        mode: 'solve',
+        problemType: 'equation-solving',
+        source: 'user-handwriting'
+      },
+      semanticScoring: false,
+      recognizeAlternatives: true,
+      chunkFallback: false,
+      recognizeLine: async () => ({
+        latex,
+        top: { latex, score: 2, confidence: 0.95 },
+        candidates: [{ latex, score: 2, confidence: 0.95 }],
+        elapsedSeconds: 0.03
+      }),
+      gradeWork: null
+    });
+
+    assert.deepEqual(result.latexLines, [latex], latex);
+    assert.equal(result.lines[0].ocrRepair?.source, undefined, latex);
+  }
+});
+
+test('problem-input fraction merge preserves correct full parent OCR candidate', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('three', 150, 45, 205, 125),
+    stroke('xTop', 216, 58, 270, 120),
+    stroke('bar', 126, 145, 395, 153),
+    stroke('xDen', 142, 174, 190, 230),
+    stroke('plus', 215, 182, 250, 218),
+    stroke('one', 276, 172, 294, 230),
+    stroke('eq1', 430, 118, 472, 126),
+    stroke('eq2', 424, 152, 472, 160),
+    stroke('eight', 520, 88, 592, 190),
+  ];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: 100, yMin: 0, xMax: 640, yMax: 250 },
+    problemMetadata: {
+      auditSubject: 'problem-input',
+      mode: 'solve',
+      problemType: 'equation-solving',
+      source: 'user-handwriting'
+    },
+    semanticScoring: false,
+    recognizeAlternatives: true,
+    chunkFallback: false,
+    detectLineBands: true,
+    detectLines: async () => ({
+      detections: [
+        { bbox: { xMin: 140, yMin: 35, xMax: 600, yMax: 132 } },
+        { bbox: { xMin: 120, yMin: 138, xMax: 310, yMax: 238 } },
+      ],
+      failed: false,
+      elapsedSeconds: 0.01
+    }),
+    recognizeLine: async (image) => {
+      const ids = new Set(image.strokeIds);
+      const all = ['three', 'xTop', 'bar', 'xDen', 'plus', 'one', 'eq1', 'eq2', 'eight']
+        .every((id) => ids.has(id));
+      const upper = ids.has('three') && ids.has('xTop') && !ids.has('xDen');
+      const lower = ids.has('xDen') || ids.has('plus') || ids.has('one');
+      const latex = all
+        ? '\\frac { 3 x } { x + 1 } = 8'
+        : upper
+          ? '3 x -'
+          : lower
+            ? '\\frac { x + 1 } - 8'
+            : '';
+      const candidates = all
+        ? [
+            { latex: '\\frac { 3 x } { x + 1 } = 8', score: 2, confidence: 0.95 },
+            { latex: '\\frac { 3 } { x + 1 } x - - 8', score: 1, confidence: 0.55 }
+          ]
+        : [{ latex, score: 2, confidence: 0.95 }];
+      return {
+        latex,
+        top: candidates[0],
+        candidates,
+        elapsedSeconds: 0.03
+      };
+    },
+    gradeWork: null
+  });
+
+  assert.deepEqual(result.latexLines, ['\\frac { 3 x } { x + 1 } = 8']);
+  assert.notEqual(result.lines[0].acceptedLatex, '\\frac { 3 } { x + 1 } x - - 8');
+});
+
+test('problem-input sqrt fraction chooses balanced top-five candidate', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('sqrt-frac', 0, 0, 300, 220)],
+    answerBox: { xMin: -5, yMin: -5, xMax: 340, yMax: 260 },
+    problemMetadata: {
+      auditSubject: 'problem-input',
+      mode: 'simplify',
+      problemType: 'simplify-expression',
+      source: 'user-handwriting'
+    },
+    semanticScoring: false,
+    recognizeAlternatives: true,
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex: '\\frac { \\sqrt { x ^ { 1 8 } } { x }',
+      top: { latex: '\\frac { \\sqrt { x ^ { 1 8 } } { x }', score: -0.4, confidence: 0.27 },
+      candidates: [
+        { latex: '\\frac { \\sqrt { x ^ { 1 8 } } { x }', score: -0.4, confidence: 0.27 },
+        { latex: '\\frac { \\sqrt { x ^ { 1 8 } } } { x }', score: -0.7, confidence: 0.21 },
+        { latex: '\\frac { \\sqrt { x ^ { 1 B } } } { x }', score: -0.9, confidence: 0.16 }
+      ],
+      elapsedSeconds: 0.03
+    }),
+    gradeWork: null
+  });
+
+  assert.deepEqual(result.latexLines, ['\\frac { \\sqrt { x ^ { 1 8 } } } { x }']);
+  assert.equal(result.lines[0].ocrRepair.source, 'problem-input-sqrt-fraction-candidate-repair');
+});
+
+test('problem-input sqrt fraction promotes exponent-preserving candidate over balanced weak top OCR', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('sqrt-frac-x10', 0, 0, 300, 220)],
+    answerBox: { xMin: -5, yMin: -5, xMax: 340, yMax: 260 },
+    problemMetadata: {
+      auditSubject: 'problem-input',
+      mode: 'simplify',
+      problemType: 'simplify-expression',
+      source: 'user-handwriting'
+    },
+    semanticScoring: false,
+    recognizeAlternatives: true,
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex: '\\frac { \\sqrt { x ^ { 1 } } } { x }',
+      top: { latex: '\\frac { \\sqrt { x ^ { 1 } } } { x }', score: -0.1, confidence: 0.32 },
+      candidates: [
+        { latex: '\\frac { \\sqrt { x ^ { 1 } } } { x }', score: -0.1, confidence: 0.32 },
+        { latex: '\\frac { \\sqrt { x ^ { 1 0 } } } { x }', score: -0.4, confidence: 0.21 }
+      ],
+      elapsedSeconds: 0.03
+    }),
+    gradeWork: null
+  });
+
+  assert.deepEqual(result.latexLines, ['\\frac { \\sqrt { x ^ { 1 0 } } } { x }']);
+});
+
+test('problem-input sqrt fraction composes denominator exponent from related row evidence', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('sqrt', 140, 30, 310, 112),
+    stroke('xNum', 210, 82, 260, 135),
+    stroke('one', 274, 62, 282, 96),
+    stroke('zero', 292, 62, 324, 98),
+    stroke('bar', 104, 146, 345, 158),
+    stroke('xDen', 210, 186, 258, 236),
+    stroke('three', 274, 166, 310, 205),
+  ];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: 80, yMin: 0, xMax: 380, yMax: 270 },
+    problemMetadata: {
+      auditSubject: 'problem-input',
+      mode: 'simplify',
+      problemType: 'simplify-expression',
+      source: 'user-handwriting'
+    },
+    semanticScoring: false,
+    recognizeAlternatives: true,
+    chunkFallback: false,
+    detectLineBands: true,
+    detectLines: async () => ({
+      detections: [
+        { bbox: { xMin: 120, yMin: 20, xMax: 330, yMax: 140 } },
+        { bbox: { xMin: 100, yMin: 140, xMax: 345, yMax: 242 } },
+      ],
+      failed: false,
+      elapsedSeconds: 0.01
+    }),
+    recognizeLine: async (image) => {
+      const ids = new Set(image.strokeIds);
+      const all = strokes.every((item) => ids.has(item.id));
+      const hasNumerator = ids.has('sqrt') || ids.has('xNum') || ids.has('one') || ids.has('zero');
+      const hasDenominator = ids.has('xDen') || ids.has('three');
+      const latex = all
+        ? '\\frac { \\sqrt { x ^ { 0 } } } { x }'
+        : hasNumerator && !hasDenominator
+          ? '\\sqrt { x ^ { 1 0 } }'
+          : hasDenominator
+            ? 'x ^ { 3 }'
+            : '';
+      return {
+        latex,
+        top: { latex, score: 2, confidence: 0.95 },
+        candidates: [{ latex, score: 2, confidence: 0.95 }],
+        elapsedSeconds: 0.03
+      };
+    },
+    gradeWork: null
+  });
+
+  assert.deepEqual(result.latexLines, ['\\frac { \\sqrt { x ^ { 1 0 } } } { x ^ { 3 } }']);
+  assert.equal(result.lines[0].ocrRepair?.source, 'problem-input-sqrt-fraction-candidate-repair');
+});
+
+test('problem-input sqrt fraction repairs malformed numerator brace only', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('sqrt-frac-x2', 0, 0, 300, 220)],
+    answerBox: { xMin: -5, yMin: -5, xMax: 340, yMax: 260 },
+    problemMetadata: {
+      auditSubject: 'problem-input',
+      mode: 'simplify',
+      problemType: 'simplify-expression',
+      source: 'user-handwriting'
+    },
+    semanticScoring: false,
+    recognizeAlternatives: true,
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex: '\\frac { \\sqrt { x ^ { 1 8 } } { x ^ { 2 } } }',
+      top: { latex: '\\frac { \\sqrt { x ^ { 1 8 } } { x ^ { 2 } } }', score: -0.4, confidence: 0.27 },
+      candidates: [{ latex: '\\frac { \\sqrt { x ^ { 1 8 } } { x ^ { 2 } } }', score: -0.4, confidence: 0.27 }],
+      elapsedSeconds: 0.03
+    }),
+    gradeWork: null
+  });
+
+  assert.deepEqual(result.latexLines, ['\\frac { \\sqrt { x ^ { 1 8 } } } { x ^ { 2 } }']);
+  assert.equal(result.lines[0].ocrRepair.source, 'problem-input-sqrt-fraction-brace-repair');
+});
+
+test('problem-input fraction does not infer missing sqrt from plain exponent alone', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('plain-exp-frac', 0, 0, 300, 220)],
+    answerBox: { xMin: -5, yMin: -5, xMax: 340, yMax: 260 },
+    problemMetadata: {
+      auditSubject: 'problem-input',
+      mode: 'simplify',
+      problemType: 'simplify-expression',
+      source: 'user-handwriting'
+    },
+    semanticScoring: false,
+    recognizeAlternatives: true,
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex: '\\frac { - x ^ { 1 8 } } { x ^ { 2 } }',
+      top: { latex: '\\frac { - x ^ { 1 8 } } { x ^ { 2 } }', score: -0.2, confidence: 0.27 },
+      candidates: [
+        { latex: '\\frac { - x ^ { 1 8 } } { x ^ { 2 } }', score: -0.2, confidence: 0.27 },
+        { latex: '- \\frac { x ^ { 1 8 } } { x ^ { 2 } }', score: -0.3, confidence: 0.25 }
+      ],
+      elapsedSeconds: 0.03
+    }),
+    gradeWork: null
+  });
+
+  assert.deepEqual(result.latexLines, ['\\frac { - x ^ { 1 8 } } { x ^ { 2 } }']);
+  assert.equal(result.lines[0].ocrRepair?.source, undefined);
 });
 
 test('VLM audit decision catches OCR failure, timeout, and low confidence', () => {
@@ -6415,6 +7082,64 @@ test('problem input audit payload marks adjustment trigger and skips grading pay
   assert.deepEqual(payload.fastResult.latexLines, ['\\sqrt { \\frac { x ^ { 10 } } { x ^ 2 } }']);
 });
 
+test('problem input recognition filters split-line OCR noise before preview and audit', () => {
+  const normalized = normalizeProblemInputRecognitionResult({
+    latex: '\\sqrt // 4 x ^ { 12 } y ^ 7',
+    latexLines: ['\\sqrt // 4 x ^ { 12 } y ^ 7'],
+    lines: [{
+      lineIndex: 0,
+      latex: '\\sqrt // 4 x ^ { 12 } y ^ 7',
+      acceptedLatex: '\\sqrt // 4 x ^ { 12 } y ^ 7',
+      candidates: [
+        { latex: '\\sqrt // 4 x ^ { 12 } y ^ 7', score: 4 },
+        { latex: '\\sqrt[4]{x^{12}y^7}', score: 3 },
+        { latex: '4 x ^ { 12 } y ^ 7', score: 2 }
+      ]
+    }],
+    candidatePredictions: [{
+      candidateId: 'problem-line',
+      latex: '\\sqrt // 4 x ^ { 12 } y ^ 7',
+      candidates: [
+        { latex: '\\sqrt // 4 x ^ { 12 } y ^ 7', score: 4 },
+        { latex: '\\sqrt[4]{x^{12}y^7}', score: 3 }
+      ]
+    }],
+    grading: { result: { problemStatus: 'correct' } }
+  });
+
+  assert.deepEqual(normalized.latexLines, ['\\sqrt[4]{x^{12}y^7}']);
+  assert.equal(normalized.latex, '\\sqrt[4]{x^{12}y^7}');
+  assert.equal(normalized.lines[0].acceptedLatex, '\\sqrt[4]{x^{12}y^7}');
+});
+
+test('VLM audit payload preserves candidate rescue summary for review', () => {
+  const payload = buildRecognitionAuditPayload({
+    problem: {
+      id: 'problem-rescue',
+      latex: '\\sqrt { 2 } \\log _ { 3 } 9',
+      metadata: {}
+    },
+    result: auditResult({
+      selectionRescue: [{
+        action: 'append',
+        selectedCandidateId: 'row-final',
+        lineIndex: 1,
+        reason: 'candidate_rescue:full_final'
+      }]
+    }),
+    strokes: [],
+    inputSignature: 'sig-rescue',
+    triggerReasons: ['candidate_selection_conflict']
+  });
+
+  assert.deepEqual(payload.fastResult.selectionSummary.rescueSummary, [{
+    action: 'append',
+    selectedCandidateId: 'row-final',
+    lineIndex: 1,
+    reason: 'candidate_rescue:full_final'
+  }]);
+});
+
 test('VLM audit payload carries structured annotation attachments', () => {
   const anchor = auditLine({
     lineIndex: 0,
@@ -6505,6 +7230,7 @@ function auditResult(options = {}) {
       parentCandidateId: null,
       ocrSelectedCandidateIds: lines.map((line) => line.candidateId)
     },
+    selectionRescue: options.selectionRescue || [],
     realtime: {
       allFinal: true,
       inputSignature: 'audit-test-signature'
@@ -6851,12 +7577,13 @@ function fakeReadersForSyntheticBoard(board, strokes) {
 }
 
 function fakeReadersForRealTrace(fixture) {
-  const lineByStrokeKey = new Map(
-    (fixture.expectedLineGroups || []).map((group) => [
-      strokeGroupKey(group.strokeIds),
-      group
-    ])
-  );
+  const lineByStrokeKey = new Map();
+  for (const group of fixture.fastLineGroups || []) {
+    lineByStrokeKey.set(strokeGroupKey(group.strokeIds), group);
+  }
+  for (const group of fixture.expectedLineGroups || []) {
+    lineByStrokeKey.set(strokeGroupKey(group.strokeIds), group);
+  }
 
   return {
     recognizeLine: async (image) => {

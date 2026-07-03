@@ -19,6 +19,8 @@ class ServerSettings:
     vlm_audit_model: str = "qwen3-vl:8b"
     vlm_audit_timeout_seconds: float = 120.0
     vlm_audit_normal_sample_rate: float = 0.10
+    vlm_audit_circuit_failures: int = 2
+    vlm_audit_circuit_seconds: float = 300.0
 
 
 def settings_from_env() -> ServerSettings:
@@ -34,6 +36,8 @@ def settings_from_env() -> ServerSettings:
         vlm_audit_model=os.environ.get("VLM_AUDIT_MODEL", "qwen3-vl:8b"),
         vlm_audit_timeout_seconds=_env_float("VLM_AUDIT_TIMEOUT_SECONDS", 120.0),
         vlm_audit_normal_sample_rate=_env_float("VLM_AUDIT_NORMAL_SAMPLE_RATE", 0.10),
+        vlm_audit_circuit_failures=_env_int("VLM_AUDIT_CIRCUIT_FAILURES", 2),
+        vlm_audit_circuit_seconds=_env_float("VLM_AUDIT_CIRCUIT_SECONDS", 300.0),
     )
 
 
