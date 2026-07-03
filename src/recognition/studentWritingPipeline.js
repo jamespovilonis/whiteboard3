@@ -1818,14 +1818,15 @@ function hasProblemInputFractionLatexRepairEvidence(line = {}, candidatePredicti
 }
 
 function problemInputFullParentCandidateLine(lines = [], candidatePredictions = []) {
-  if (!Array.isArray(lines) || lines.length !== 1) return null;
+  if (!Array.isArray(lines) || lines.length < 1) return null;
   const selected = lines[0] || {};
-  const selectedIds = new Set((selected.strokeIds || []).map(String));
+  const selectedStrokeIds = uniqueStrings((lines || []).flatMap((line) => line.strokeIds || []));
+  const selectedIds = new Set(selectedStrokeIds.map(String));
   if (!selectedIds.size) return null;
 
   const entries = [
-    selected,
-    ...(candidatePredictions || []).filter((entry) => problemInputFullParentEntryMatchesSelected(selected, entry))
+    ...(lines || []),
+    ...(candidatePredictions || []).filter((entry) => problemInputFullParentEntryMatchesSelected(selectedStrokeIds, entry))
   ];
   let best = null;
   for (const entry of entries) {
@@ -1838,13 +1839,19 @@ function problemInputFullParentCandidateLine(lines = [], candidatePredictions = 
   }
   if (!best) return null;
 
-  const originalLatex = String(selected.acceptedLatex || selected.latex || '').trim();
+  const originalLatex = (lines || [])
+    .map((line) => String(line.acceptedLatex || line.latex || '').trim())
+    .filter(Boolean)
+    .join(' \\\\ ');
   const pair = problemInputFractionCandidatePair(candidatePredictions);
-  const blocksRiskyMerge = pair && selectedProblemInputParentCanUsePair([selected], pair);
-  if (sameLatexForGrading(best.latex, originalLatex) && !blocksRiskyMerge) return null;
+  const blocksRiskyMerge = pair && selectedProblemInputParentCanUsePair(lines, pair);
+  if (lines.length === 1 && sameLatexForGrading(best.latex, originalLatex) && !blocksRiskyMerge) return null;
   return {
     line: {
       ...selected,
+      profiles: uniqueStrings((lines || []).flatMap((line) => line.profiles || [])),
+      strokeIds: selectedStrokeIds,
+      tightBbox: bboxUnionAll((lines || []).map((line) => line.tightBbox || line.bbox).filter(Boolean)),
       latex: best.latex,
       acceptedLatex: best.latex,
       candidates: [
@@ -1868,13 +1875,13 @@ function problemInputFullParentCandidateLine(lines = [], candidatePredictions = 
   };
 }
 
-function problemInputFullParentEntryMatchesSelected(selected = {}, entry = {}) {
+function problemInputFullParentEntryMatchesSelected(selectedStrokeIds = [], entry = {}) {
   if (!entry?.strokeIds?.length) return false;
   const profiles = new Set(entry.profiles || []);
   if (!profiles.has('parent') && !profiles.has('problem-input-fraction-line') && !profiles.has('fraction-stack-line')) {
     return false;
   }
-  const selectedIds = new Set((selected.strokeIds || []).map(String));
+  const selectedIds = new Set((selectedStrokeIds || []).map(String));
   const entryIds = (entry.strokeIds || []).map(String);
   if (!selectedIds.size || !entryIds.length) return false;
   return entryIds.every((strokeId) => selectedIds.has(strokeId)) ||
@@ -1913,7 +1920,7 @@ function problemInputBalancedFullFractionExpression(latex = '') {
   const normalized = normalizeLatexWhitespace(latex);
   if (!/\\frac\b/.test(normalized) || !bracesAreBalanced(normalized)) return false;
   if (/-\s*-/.test(normalized)) return false;
-  const outer = parseLeadingLatexFraction(normalized);
+  const outer = parseLeadingLatexFraction(stripLeadingLatexSign(normalized));
   if (!outer) return false;
   const numerator = normalizeLatexWhitespace(outer.numerator || '');
   const denominator = normalizeLatexWhitespace(outer.denominator || '');
@@ -1924,11 +1931,12 @@ function problemInputBalancedFullFractionExpression(latex = '') {
 }
 
 function problemInputFullFractionExpressionScore(latex = '', option = {}) {
-  const outer = parseLeadingLatexFraction(latex);
+  const outer = parseLeadingLatexFraction(stripLeadingLatexSign(latex));
   let score = 10;
   const numerator = normalizeLatexWhitespace(outer?.numerator || '');
   const denominator = normalizeLatexWhitespace(outer?.denominator || '');
   const tail = normalizeLatexWhitespace(outer?.tail || '');
+  if (/^-/.test(normalizeLatexWhitespace(latex))) score += 1;
   if (/=/.test(tail)) score += 8;
   if (/\\frac\b/.test(tail)) score += 3;
   if (/[a-zA-Z0-9]\s+[a-zA-Z0-9]/.test(numerator) || /\\sqrt|\\frac/.test(numerator)) score += 5;
@@ -1938,6 +1946,10 @@ function problemInputFullFractionExpressionScore(latex = '', option = {}) {
   if (Number.isFinite(confidence)) score += confidence;
   if (Number.isFinite(rank)) score += Math.max(-2, Math.min(2, rank));
   return score;
+}
+
+function stripLeadingLatexSign(latex = '') {
+  return normalizeLatexWhitespace(latex).replace(/^-\s*/, '');
 }
 
 function repairProblemInputSqrtFractionLine(line = {}, { candidatePredictions = [] } = {}) {
@@ -2231,6 +2243,12 @@ function problemInputMergedLine(upper = {}, lower = {}, repair = {}, base = uppe
     },
     mergedLineIds: [upper.candidateId || null, lower.candidateId || null].filter(Boolean)
   };
+}
+
+function bboxUnionAll(boxes = []) {
+  return (boxes || []).filter(Boolean).reduce((acc, box) => (
+    acc ? bboxUnion(acc, box) : { ...box }
+  ), null);
 }
 
 function problemInputFractionCandidatePair(candidatePredictions = []) {

@@ -362,6 +362,7 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
   if (compactFractionLine) score += 4.2;
   if (profiles.includes('fraction-stack-line') && fractionStructural) score += 3.2;
   if (problemInputFractionLine) score += 9.5;
+  if (problemInputFractionLine && parentLike) score += 24;
   if (superscriptStructural) score += 9.7;
   if (builtTallFractionStack) score += 27.5;
   if (plusMinusStructure) score += 6.8;
@@ -401,6 +402,7 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
 
   if (
     (profiles.includes('loose') || profiles.includes('projection-line')) &&
+    !problemInputFractionLine &&
     !profiles.includes('strict') &&
     !profiles.includes('row-line') &&
     !profiles.includes('raw-row-line')
@@ -1444,12 +1446,29 @@ function hasProblemInputLeadingFractionStructure(candidate, rows) {
     return false;
   }
   const candidateWidth = Math.max(1, bboxWidth(candidate.tightBbox));
-  const leftAligned = Math.abs((lower.bbox.xMin ?? 0) - (upper.bbox.xMin ?? 0)) <= Math.max(72, candidateWidth * 0.2);
-  const lowerStartsUnderFirstTerm = (lower.bbox.xMin ?? 0) <= (upper.bbox.xMin ?? 0) + Math.max(95, candidateWidth * 0.36);
+  const leadingSignOffset = problemInputLowerRowHasLeadingSignOffset(lower, upper, candidateWidth);
+  const leftAligned = leadingSignOffset ||
+    Math.abs((lower.bbox.xMin ?? 0) - (upper.bbox.xMin ?? 0)) <= Math.max(72, candidateWidth * 0.2);
+  const lowerStartsUnderFirstTerm = leadingSignOffset ||
+    (lower.bbox.xMin ?? 0) <= (upper.bbox.xMin ?? 0) + Math.max(95, candidateWidth * 0.36);
   const verticalGap = Math.max(0, lower.bbox.yMin - upper.bbox.yMax);
   const closeRows = verticalGap <= Math.max(34, rowMedianHeight(upper) * 0.9, rowMedianHeight(lower) * 0.9) ||
     verticalOverlapRatio(upper.bbox, lower.bbox) >= 0.04;
   return leftAligned && lowerStartsUnderFirstTerm && closeRows;
+}
+
+function problemInputLowerRowHasLeadingSignOffset(lower, upper, candidateWidth) {
+  if (!lower?.bbox || !upper?.bbox) return false;
+  const offset = (upper.bbox.xMin ?? 0) - (lower.bbox.xMin ?? 0);
+  if (offset <= 0 || offset > Math.max(130, candidateWidth * 0.36)) return false;
+  if ((lower.bbox.xMax ?? 0) < (upper.bbox.xMin ?? 0) + Math.max(80, candidateWidth * 0.18)) return false;
+  return (lower.strokes || []).some((stroke) => {
+    const box = stroke?.canvasBbox;
+    if (!box || !isHorizontalStroke(stroke)) return false;
+    if ((box.xMax ?? 0) > (upper.bbox.xMin ?? 0) + 8) return false;
+    if ((box.xMin ?? 0) < (lower.bbox.xMin ?? 0) - 2) return false;
+    return bboxWidth(box) >= Math.max(18, rowMedianHeight(lower) * 0.35);
+  });
 }
 
 function hasProblemInputLeadingFractionBar(candidate, upper, lower) {

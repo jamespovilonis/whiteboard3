@@ -203,6 +203,16 @@ DEFAULT_FIXTURES: Sequence[dict[str, str]] = (
         "slug": "problem-input-fraction-3x-over-x-plus-1-equals-8-continuation",
         "description": "Problem-input fraction equation with continuation strokes where full parent OCR should beat split-row merge.",
     },
+    {
+        "audit_id": "audit_20260703T174802698645Z_6d9bb7844e",
+        "slug": "problem-input-simple-fraction-addition",
+        "description": "Problem-input simple fraction addition where full parent OCR should beat nested split-row merge.",
+    },
+    {
+        "audit_id": "audit_20260703T174821477617Z_59af8ac191",
+        "slug": "problem-input-negative-simple-fraction-addition",
+        "description": "Problem-input negative simple fraction addition where the leading sign belongs to the full expression.",
+    },
 )
 
 REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
@@ -631,6 +641,24 @@ REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
             "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010", "s011", "s012", "s013", "s014"],
             "source": "reviewed-vlm-semantic-lines",
             "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011|s012|s013|s014",
+        },
+    ],
+    "audit_20260703T174802698645Z_6d9bb7844e": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{1}{2} + \\frac{3}{4}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009",
+        },
+    ],
+    "audit_20260703T174821477617Z_59af8ac191": [
+        {
+            "lineIndex": 0,
+            "latex": "-\\frac{1}{2} + \\frac{3}{4}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010",
         },
     ],
 }
