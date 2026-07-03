@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import {
+  buildProblemInputAuditPayload,
   buildRecognitionAuditPayload,
   deterministicSample,
   getRecognitionAuditDecision,
@@ -1365,6 +1366,412 @@ test('variable-free rational problem line is repaired from problem context', asy
   assert.equal(result.lines[0].ocrRepair.source, 'contextual-rational-problem');
 });
 
+test('compact monomial exponent OCR is repaired from problem context', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('monomial', 0, 0, 420, 90)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 440, yMax: 110 },
+    problemLatex: '3 x ^ { 9 } y ^ { 1 2 }',
+    apiUrl: 'http://127.0.0.1:8010',
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex: '3 x 9 y ^ { 1 2 }',
+      top: { latex: '3 x 9 y ^ { 1 2 }', score: 3, confidence: 0.99 },
+      candidates: [{ latex: '3 x 9 y ^ { 1 2 }', score: 3, confidence: 0.99 }],
+      elapsedSeconds: 0.03
+    }),
+    gradeWork: async (request) => pythonGradePayload(request)
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '3 x ^ { 9 } y ^ { 12 }');
+  assert.equal(result.lines[0].ocrRepair.source, 'contextual-monomial-exponent');
+  assert.equal(result.grading.result?.problemStatus, 'correct');
+});
+
+test('compact monomial exponent repair rejects mismatched context and explicit multiplication', async () => {
+  installFakeCanvas();
+  const cases = [
+    {
+      name: 'unexpected exponent',
+      problemLatex: '3 x ^ { 8 } y ^ { 1 2 }',
+      latex: '3 x 9 y ^ { 1 2 }'
+    },
+    {
+      name: 'explicit multiplication',
+      problemLatex: '3 x ^ { 9 } y ^ { 1 2 }',
+      latex: '3 \\times 9 y ^ { 1 2 }'
+    }
+  ];
+
+  for (const item of cases) {
+    const result = await recognizeStudentWriting({
+      strokes: [stroke(`monomial-${item.name}`, 0, 0, 420, 90)],
+      answerBox: { xMin: -5, yMin: -5, xMax: 440, yMax: 110 },
+      problemLatex: item.problemLatex,
+      semanticScoring: false,
+      recognizeAlternatives: false,
+      chunkFallback: false,
+      recognizeLine: async () => ({
+        latex: item.latex,
+        top: { latex: item.latex, score: 3, confidence: 0.99 },
+        candidates: [{ latex: item.latex, score: 3, confidence: 0.99 }],
+        elapsedSeconds: 0.03
+      })
+    });
+
+    assert.equal(result.lines[0].acceptedLatex, item.latex, item.name);
+    assert.equal(result.lines[0].ocrRepair?.source, undefined, item.name);
+  }
+});
+
+test('change-of-base log denominator OCR is repaired from problem context', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('log-change-base', 0, 0, 620, 120)];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 650, yMax: 145 },
+    problemLatex: '\\log _ { 2 } x + \\log _ { 4 } x',
+    apiUrl: 'http://127.0.0.1:8010',
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex: '\\frac { \\log x } { \\log ^ { 2 } } + \\frac { \\log x } { \\log x }',
+      top: {
+        latex: '\\frac { \\log x } { \\log ^ { 2 } } + \\frac { \\log x } { \\log x }',
+        score: 3,
+        confidence: 0.99
+      },
+      candidates: [{
+        latex: '\\frac { \\log x } { \\log ^ { 2 } } + \\frac { \\log x } { \\log x }',
+        score: 3,
+        confidence: 0.99
+      }],
+      elapsedSeconds: 0.03
+    }),
+    gradeWork: async (request) => pythonGradePayload(request)
+  });
+
+  assert.equal(
+    result.lines[0].acceptedLatex,
+    '\\frac { \\log x } { \\log 2 } + \\frac { \\log x } { \\log 4 }'
+  );
+  assert.equal(result.lines[0].ocrRepair.source, 'contextual-log-base-denominator');
+  assert.equal(result.grading.result?.problemStatus, 'incomplete');
+  assert.equal(result.grading.steps[0].classification, 'valid_step');
+});
+
+test('change-of-base log denominator repair rejects unsafe shapes', async () => {
+  installFakeCanvas();
+  const cases = [
+    {
+      name: 'fraction count mismatch',
+      problemLatex: '\\log _ { 2 } x',
+      latex: '\\frac { \\log x } { \\log ^ { 2 } } + \\frac { \\log x } { \\log x }'
+    },
+    {
+      name: 'argument mismatch',
+      problemLatex: '\\log _ { 2 } y + \\log _ { 4 } y',
+      latex: '\\frac { \\log x } { \\log ^ { 2 } } + \\frac { \\log x } { \\log x }'
+    },
+    {
+      name: 'malformed fraction count',
+      problemLatex: '\\log _ { 2 } x + \\log _ { 4 } x',
+      latex: '\\frac { \\log x } { \\log ^ { 2 } }'
+    }
+  ];
+
+  for (const item of cases) {
+    const result = await recognizeStudentWriting({
+      strokes: [stroke(`log-${item.name}`, 0, 0, 620, 120)],
+      answerBox: { xMin: -5, yMin: -5, xMax: 650, yMax: 145 },
+      problemLatex: item.problemLatex,
+      semanticScoring: false,
+      recognizeAlternatives: false,
+      chunkFallback: false,
+      recognizeLine: async () => ({
+        latex: item.latex,
+        top: { latex: item.latex, score: 3, confidence: 0.99 },
+        candidates: [{ latex: item.latex, score: 3, confidence: 0.99 }],
+        elapsedSeconds: 0.03
+      })
+    });
+
+    assert.equal(result.lines[0].acceptedLatex, item.latex, item.name);
+    assert.equal(result.lines[0].ocrRepair?.source, undefined, item.name);
+  }
+});
+
+test('semantic candidate promotion replaces accepted latex for safe operator alternate', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('a', 0, 0, 220, 70),
+    stroke('b', 0, 120, 180, 190)
+  ];
+  const gradeRequests = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 250, yMax: 220 },
+    problemLatex: '\\sqrt { 2 } \\log _ { 3 } 9',
+    apiUrl: 'http://127.0.0.1:8010',
+    semanticScoring: true,
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async (image) => {
+      const ids = (image.strokeIds || []).join('|');
+      if (ids.includes('a')) {
+        return {
+          latex: '\\sqrt { 2 } . 2',
+          top: { latex: '\\sqrt { 2 } . 2', score: 3, confidence: 0.51 },
+          candidates: [
+            { latex: '\\sqrt { 2 } . 2', score: 3, confidence: 0.51 },
+            { latex: '\\sqrt { 2 } \\cdot 2', score: 2.25, confidence: 0.24 },
+            { latex: '\\sqrt { 2 } \\times 2', score: 1.2, confidence: 0.09 }
+          ],
+          elapsedSeconds: 0.03
+        };
+      }
+      return {
+        latex: '2 \\sqrt { 2 }',
+        top: { latex: '2 \\sqrt { 2 }', score: 3, confidence: 0.9 },
+        candidates: [{ latex: '2 \\sqrt { 2 }', score: 3, confidence: 0.9 }],
+        elapsedSeconds: 0.03
+      };
+    },
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => {
+        if (String(group.candidateId || '').includes('_a')) {
+          return {
+            candidateId: group.candidateId,
+            lineIndex: group.lineIndex,
+            semanticScore: 8,
+            bestLatex: '\\sqrt { 2 } \\cdot 2',
+            sound: true,
+            equivalentToProblem: false,
+            equivalentToPrevious: false,
+            candidateScores: [],
+            grading: {
+              studentLatex: '\\sqrt { 2 } \\cdot 2',
+              classification: 'valid_step',
+              answerFinality: 'unsimplified',
+              countsTowardCompletion: false,
+              selectedCandidateIndex: 1,
+              solutionCoverage: 'full',
+              matchedSolutions: ['2*sqrt(2)']
+            }
+          };
+        }
+        return {
+          candidateId: group.candidateId,
+          lineIndex: group.lineIndex,
+          semanticScore: 8,
+          bestLatex: '2 \\sqrt { 2 }',
+          sound: true,
+          equivalentToProblem: true,
+          equivalentToPrevious: false,
+          candidateScores: [],
+          grading: {
+            studentLatex: '2 \\sqrt { 2 }',
+            classification: 'valid_step',
+            answerFinality: 'final',
+            countsTowardCompletion: true,
+            selectedCandidateIndex: 0,
+            solutionCoverage: 'full',
+            matchedSolutions: ['2*sqrt(2)']
+          }
+        };
+      }),
+      elapsedSeconds: 0.01
+    }),
+    gradeWork: async (request) => {
+      gradeRequests.push(request);
+      return pythonGradePayload(request);
+    }
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '\\sqrt { 2 } \\cdot 2');
+  assert.equal(result.latexLines[0], '\\sqrt { 2 } \\cdot 2');
+  assert.equal(gradeRequests[0].lines[0].latex, '\\sqrt { 2 } \\cdot 2');
+  assert.equal(result.grading.result?.problemStatus, 'correct');
+});
+
+test('semantic candidate promotion replaces accepted latex for safe radicand alternate', async () => {
+  installFakeCanvas();
+  const strokes = [stroke('r', 0, 0, 220, 70)];
+  const gradeRequests = [];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -5, yMin: -5, xMax: 250, yMax: 95 },
+    problemLatex: '\\frac { 1 2 } { \\sqrt { 6 } } + \\sqrt { 6 }',
+    apiUrl: 'http://127.0.0.1:8010',
+    semanticScoring: true,
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '3 \\sqrt { 8 }',
+      top: { latex: '3 \\sqrt { 8 }', score: 3, confidence: 0.44 },
+      candidates: [
+        { latex: '3 \\sqrt { 8 }', score: 3, confidence: 0.44 },
+        { latex: '3 \\sqrt { 6 }', score: 2.9, confidence: 0.4 },
+        { latex: '3 \\sqrt { f }', score: 0.3, confidence: 0.06 }
+      ],
+      elapsedSeconds: 0.03
+    }),
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 8,
+        bestLatex: '3 \\sqrt { 6 }',
+        sound: true,
+        equivalentToProblem: true,
+        equivalentToPrevious: false,
+        candidateScores: [],
+        grading: {
+          studentLatex: '3 \\sqrt { 6 }',
+          classification: 'valid_step',
+          answerFinality: 'final',
+          countsTowardCompletion: true,
+          selectedCandidateIndex: 1,
+          solutionCoverage: 'full',
+          matchedSolutions: ['3*sqrt(6)']
+        }
+      })),
+      elapsedSeconds: 0.01
+    }),
+    gradeWork: async (request) => {
+      gradeRequests.push(request);
+      return pythonGradePayload(request);
+    }
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '3 \\sqrt { 6 }');
+  assert.equal(gradeRequests[0].lines[0].latex, '3 \\sqrt { 6 }');
+  assert.equal(result.grading.result?.problemStatus, 'correct');
+});
+
+test('semantic candidate promotion preserves indexed radical candidate over flattened coefficient read', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('cube-root', 0, 0, 260, 90)],
+    answerBox: { xMin: -5, yMin: -5, xMax: 280, yMax: 110 },
+    problemLatex: '6 4 ^ { 2 / 3 }',
+    semanticScoring: true,
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: '3 \\sqrt { 6 4 ^ { 2 } }',
+      top: { latex: '3 \\sqrt { 6 4 ^ { 2 } }', score: 3, confidence: 0.29 },
+      candidates: [
+        { latex: '\\sqrt [ 3 ] { 6 4 ^ { 2 } }', score: 3.02, confidence: 0.288 },
+        { latex: '3 \\sqrt { 6 4 ^ { 2 } }', score: 3, confidence: 0.287 }
+      ],
+      elapsedSeconds: 0.03
+    }),
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 6,
+        bestLatex: '\\sqrt [ 3 ] { 6 4 ^ { 2 } }',
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        candidateScores: [],
+        grading: {
+          studentLatex: '\\sqrt [ 3 ] { 6 4 ^ { 2 } }',
+          classification: 'valid_step',
+          answerFinality: 'unsimplified',
+          countsTowardCompletion: false,
+          selectedCandidateIndex: 0,
+          solutionCoverage: 'partial',
+          matchedSolutions: []
+        }
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '\\sqrt [ 3 ] { 6 4 ^ { 2 } }');
+});
+
+test('indexed radical OCR is repaired from rational-exponent problem context', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('cube-root-context', 0, 0, 260, 90)],
+    answerBox: { xMin: -5, yMin: -5, xMax: 280, yMax: 110 },
+    problemLatex: '6 4 ^ { 2 / 3 }',
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex: '3 \\sqrt { 6 4 ^ { 2 } }',
+      top: { latex: '3 \\sqrt { 6 4 ^ { 2 } }', score: 3, confidence: 0.99 },
+      candidates: [{ latex: '3 \\sqrt { 6 4 ^ { 2 } }', score: 3, confidence: 0.99 }],
+      elapsedSeconds: 0.03
+    })
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '\\sqrt [ 3 ] { 64 ^ { 2 } }');
+  assert.equal(result.lines[0].ocrRepair.source, 'contextual-indexed-radical');
+});
+
+test('fractional log base OCR is repaired from solve problem context', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('log-base', 0, 0, 320, 90)],
+    answerBox: { xMin: -5, yMin: -5, xMax: 340, yMax: 110 },
+    problemLatex: '\\log _ { \\frac { 1 } { 2 } ( x ) = 4',
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex: '\\log \\frac { 1 } { 2 } x = 4',
+      top: { latex: '\\log \\frac { 1 } { 2 } x = 4', score: 3, confidence: 0.99 },
+      candidates: [{ latex: '\\log \\frac { 1 } { 2 } x = 4', score: 3, confidence: 0.99 }],
+      elapsedSeconds: 0.03
+    })
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '\\log _ { \\frac { 1 } { 2 } } x = 4');
+  assert.equal(result.lines[0].ocrRepair.source, 'contextual-log-fraction-base');
+});
+
+test('fractional log base repair rejects ordinary log product context', async () => {
+  installFakeCanvas();
+  const latex = '\\log \\frac { 1 } { 2 } x = 4';
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('log-product', 0, 0, 320, 90)],
+    answerBox: { xMin: -5, yMin: -5, xMax: 340, yMax: 110 },
+    problemLatex: '\\log ( \\frac { 1 } { 2 } x ) = 4',
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex,
+      top: { latex, score: 3, confidence: 0.99 },
+      candidates: [{ latex, score: 3, confidence: 0.99 }],
+      elapsedSeconds: 0.03
+    })
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, latex);
+  assert.equal(result.lines[0].ocrRepair?.source, undefined);
+});
+
 test('recognition semantic scoring receives selected testing catalog problem context', async () => {
   installFakeCanvas();
   const catalogProblems = testingCatalogProblems([
@@ -2592,6 +2999,8 @@ test('finalization budget skips optional retry work and returns current best res
 
   assert.equal(calls.length, 1);
   assert.equal(result.timing.finalizationBudgetExceeded, true);
+  assert.equal(result.timing.ocrTimeoutWithInk, true);
+  assert.equal(result.grading.result.problemStatus, 'incomplete');
 });
 
 test('contextual operation repair uses previous additive constant', async () => {
@@ -4723,7 +5132,7 @@ test('incremental scheduler matches one-shot recognition on messy synthetic late
 test('student writing pipeline handles distilled real handwriting trace fixtures', async () => {
   installFakeCanvas();
   const fixtures = loadRealHandwritingFixtures();
-  assert.equal(fixtures.length, 15);
+  assert.equal(fixtures.length, 17);
 
   for (const fixture of fixtures) {
     const fakeReaders = fakeReadersForRealTrace(fixture);
@@ -5981,6 +6390,29 @@ test('VLM audit payload removes embedded crop data URLs', () => {
   assert.ok(payload.strokes[0].relationsToPrev.overlapRatio > 0.333);
   assert.equal(payload.fastResult.lines[0].image, undefined);
   assert.equal(JSON.stringify(payload).includes('data:image/png'), false);
+});
+
+test('problem input audit payload marks adjustment trigger and skips grading payload', () => {
+  const payload = buildProblemInputAuditPayload({
+    mode: 'simplify',
+    problemType: 'simplify-expression',
+    recognizedLatex: '\\sqrt { \\frac { x ^ { 10 } } { x ^ 2 } }',
+    result: auditResult({
+      latex: '\\sqrt { \\frac { x ^ { 10 } } { x ^ 2 } }',
+      latexLines: ['\\sqrt { \\frac { x ^ { 10 } } { x ^ 2 } }'],
+      grading: { result: { problemStatus: 'correct' } }
+    }),
+    strokes: [{ id: 's1', rawPoints: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }],
+    answerBox: { xMin: 0, yMin: 0, xMax: 760, yMax: 320 },
+    inputSignature: 'problem-input-adjust::sig',
+    triggerReasons: ['user_adjusted_problem_input']
+  });
+
+  assert.equal(payload.problemId, 'problem-input-simplify');
+  assert.equal(payload.problemMetadata.auditSubject, 'problem-input');
+  assert.deepEqual(payload.triggerReasons, ['user_adjusted_problem_input']);
+  assert.equal(payload.fastResult.grading, null);
+  assert.deepEqual(payload.fastResult.latexLines, ['\\sqrt { \\frac { x ^ { 10 } } { x ^ 2 } }']);
 });
 
 test('VLM audit payload carries structured annotation attachments', () => {

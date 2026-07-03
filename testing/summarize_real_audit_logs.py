@@ -18,6 +18,7 @@ DEFAULT_AUDIT_LOG_DIR = Path(
     os.environ.get("WHITEBOARD_AUDIT_LOG_DIR", "/Users/jpovj/Documents/dev/log_whiteboard_3")
 ).expanduser()
 SEGMENTER = ROOT / "testing" / "segment_fixture_with_js.mjs"
+UNATTACHED_NOTE_KEY = "__unattached__"
 
 sys.path.insert(0, str(ROOT))
 from src.grading import grade_math_payload  # noqa: E402
@@ -25,8 +26,11 @@ from src.grading import grade_math_payload  # noqa: E402
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    personal_notes = load_personal_notes(args.audit_log_dir)
     records = [record for record in iter_records(args.audit_log_dir) if record]
     print(f"records {len(records)}")
+    print(f"personal notes {sum(len(notes) for notes in personal_notes.values())}")
+    print_unattached_notes(personal_notes.get(UNATTACHED_NOTE_KEY, []))
     print_counter("logged fast status -> current logged-OCR status", (
         (record["loggedStatus"], record["loggedOcrStatus"]) for record in records
     ))
@@ -69,6 +73,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 def iter_records(log_dir: Path) -> list[dict[str, Any]]:
     records = []
+    personal_notes = load_personal_notes(log_dir)
     for audit_dir in sorted(log_dir.glob("2026-*/*")):
         if not audit_dir.is_dir():
             continue
@@ -97,8 +102,32 @@ def iter_records(log_dir: Path) -> list[dict[str, Any]]:
             "missingSolutions": (current_grading.get("result") or {}).get("missingSolutions"),
             "currentSegmentCount": segment_count,
             "vlmLineCount": len(vlm.get("latexLines") or []),
+            "personalNotes": personal_notes.get(audit_dir.name, []),
         })
     return records
+
+
+def load_personal_notes(log_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    notes_by_audit: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+    seen: set[tuple[str, str, str, str]] = set()
+    paths = [log_dir / "personal_notes.jsonl", *sorted(log_dir.glob("2026-*/*/personal_notes.jsonl"))]
+    for path in paths:
+        for note in read_jsonl(path):
+            audit_id = str(note.get("auditId") or "").strip() or UNATTACHED_NOTE_KEY
+            key = (
+                audit_id,
+                str(note.get("createdAt") or ""),
+                str(note.get("problemId") or ""),
+                str(note.get("note") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            notes_by_audit[audit_id].append(note)
+    return {
+        audit_id: sorted(notes, key=lambda item: str(item.get("createdAt") or ""))
+        for audit_id, notes in notes_by_audit.items()
+    }
 
 
 def regrade_logged_ocr(input_payload: dict[str, Any], fast_result: dict[str, Any]) -> dict[str, Any]:
@@ -187,6 +216,16 @@ def print_records(title: str, records: Any) -> None:
         print(f"  problem: {record['problemLatex']} metadata={record['problemMetadata']}")
         print(f"  fast: {record['fastLines']}")
         print(f"  vlm:  {record['vlmLines']}")
+        for note in record.get("personalNotes") or []:
+            print(f"  note: {note.get('createdAt')} {note.get('note')}")
+
+
+def print_unattached_notes(notes: list[dict[str, Any]]) -> None:
+    if not notes:
+        return
+    print(f"\nunattached personal notes: {len(notes)}")
+    for note in notes:
+        print(f"- {note.get('createdAt')} problem={note.get('problemId')} {note.get('note')}")
 
 
 def read_json(path: Path, default: Any = None) -> Any:
@@ -194,6 +233,22 @@ def read_json(path: Path, default: Any = None) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    records = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
 
 
 if __name__ == "__main__":

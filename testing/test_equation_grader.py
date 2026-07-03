@@ -1104,6 +1104,18 @@ class SimplificationGraderTests(unittest.TestCase):
                 self.assertEqual(result["steps"][0]["countsTowardCompletion"], False)
                 self.assertEqual(result["result"]["problemStatus"], "incomplete")
 
+    def test_simplification_accepts_log_change_of_base_as_incomplete(self):
+        result = grade_math_payload({
+            "problemType": "simplify-expression",
+            "problemLatex": r"\log _ { 2 } x + \log _ { 4 } x",
+            "lines": [{"latex": r"\frac { \log x } { \log 2 } + \frac { \log x } { \log 4 }"}],
+        })
+
+        self.assertEqual(result["steps"][0]["classification"], "valid_step")
+        self.assertEqual(result["steps"][0]["answerFinality"], "unsimplified")
+        self.assertEqual(result["steps"][0]["countsTowardCompletion"], False)
+        self.assertEqual(result["result"]["problemStatus"], "incomplete")
+
     def test_simplification_accepts_vertical_leading_equals_chain(self):
         result = grade_math_payload({
             "problemType": "simplify-expression",

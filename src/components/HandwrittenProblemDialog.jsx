@@ -1,6 +1,11 @@
 import katex from 'katex';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useToolbarCollapse } from '../hooks/useToolbarCollapse.js';
+import {
+  buildProblemInputAuditPayload,
+  enqueueRecognitionAudit,
+  getRecognitionAuditStatus
+} from '../recognition/auditClient.js';
 import { getRecognitionApiUrl } from '../recognition/config.js';
 import { recognizeStudentWriting } from '../recognition/studentWritingPipeline.js';
 import {
@@ -45,7 +50,7 @@ const PROBLEM_MODES = {
   }
 };
 
-export default function HandwrittenProblemDialog({ onSubmit }) {
+export default function HandwrittenProblemDialog({ onSubmit, onAuditEvent }) {
   const [mode, setMode] = useState('solve');
   const [penColor, setPenColor] = useState(DEFAULT_PEN_COLOR);
   const [sliderValue, setSliderValue] = useState(4);
@@ -56,6 +61,8 @@ export default function HandwrittenProblemDialog({ onSubmit }) {
   const [error, setError] = useState('');
   const engineRef = useRef(null);
   const abortControllerRef = useRef(null);
+  const lastRecognitionRef = useRef(null);
+  const auditInputSignaturesRef = useRef(new Set());
   const {
     activeTool,
     toolbarForceCollapsed,
@@ -94,6 +101,7 @@ export default function HandwrittenProblemDialog({ onSubmit }) {
       setStatus('drawing');
       setRecognizedLatex('');
       setError('');
+      lastRecognitionRef.current = null;
     }
   }, [status]);
 
@@ -105,6 +113,7 @@ export default function HandwrittenProblemDialog({ onSubmit }) {
     setRecognizedLatex('');
     setError('');
     setStatus('drawing');
+    lastRecognitionRef.current = null;
   }, []);
 
   const submitHandwriting = useCallback(async () => {
@@ -145,6 +154,20 @@ export default function HandwrittenProblemDialog({ onSubmit }) {
         setError('Unable to read the problem. Adjust the drawing and try again.');
         return;
       }
+      lastRecognitionRef.current = {
+        result,
+        strokes: currentStrokes,
+        latex,
+        mode,
+        problemType: modeConfig.problemType,
+        inputSignature: buildProblemInputSignature({
+          mode,
+          problemType: modeConfig.problemType,
+          latex,
+          result,
+          strokes: currentStrokes
+        })
+      };
       setRecognizedLatex(latex);
       setStatus('preview');
     } catch (recognitionError) {
@@ -160,7 +183,7 @@ export default function HandwrittenProblemDialog({ onSubmit }) {
         abortControllerRef.current = null;
       }
     }
-  }, [isRecognizing, modeConfig.problemType, strokes]);
+  }, [isRecognizing, mode, modeConfig.problemType, strokes]);
 
   const confirmProblem = useCallback(() => {
     if (!trimmedLatex) return;
@@ -173,9 +196,14 @@ export default function HandwrittenProblemDialog({ onSubmit }) {
   }, [clearDrawing, modeConfig.problemType, onSubmit, trimmedLatex]);
 
   const adjustDrawing = useCallback(() => {
+    auditProblemInputAdjustment({
+      entry: lastRecognitionRef.current,
+      auditInputSignaturesRef,
+      onAuditEvent
+    });
     setStatus('drawing');
     setError('');
-  }, []);
+  }, [onAuditEvent]);
 
   return (
     <div className="latex-dialog-backdrop" role="presentation">
@@ -331,4 +359,140 @@ export default function HandwrittenProblemDialog({ onSubmit }) {
       </section>
     </div>
   );
+}
+
+function auditProblemInputAdjustment({ entry, auditInputSignaturesRef, onAuditEvent }) {
+  if (!entry?.result || !entry?.strokes?.length) return;
+  const inputSignature = entry.inputSignature || buildProblemInputSignature(entry);
+  const auditKey = `problem-input::${inputSignature}`;
+  if (auditInputSignaturesRef.current.has(auditKey)) return;
+  auditInputSignaturesRef.current.add(auditKey);
+
+  const answerBox = {
+    xMin: 0,
+    yMin: 0,
+    xMax: HANDWRITING_BOARD_SIZE.width,
+    yMax: HANDWRITING_BOARD_SIZE.height
+  };
+  const triggerReasons = ['user_adjusted_problem_input'];
+  const payload = buildProblemInputAuditPayload({
+    mode: entry.mode,
+    problemType: entry.problemType,
+    recognizedLatex: entry.latex,
+    result: entry.result,
+    strokes: entry.strokes,
+    answerBox,
+    inputSignature,
+    triggerReasons
+  });
+
+  enqueueRecognitionAudit(payload, { apiUrl: getRecognitionApiUrl() })
+    .then((response) => {
+      onAuditEvent?.('recognition-audit-queued', {
+        problemId: payload.problemId,
+        inputSignature,
+        auditId: response.auditId || null,
+        triggerReasons,
+        sampled: false,
+        queued: response.queued !== false,
+        auditSubject: 'problem-input'
+      });
+      if (response.queued === false) {
+        onAuditEvent?.('recognition-audit-disabled', {
+          problemId: payload.problemId,
+          inputSignature,
+          auditId: response.auditId || null,
+          triggerReasons,
+          auditSubject: 'problem-input'
+        });
+        return null;
+      }
+      if (response.auditId) {
+        return pollProblemInputAuditStatus({
+          auditId: response.auditId,
+          problemId: payload.problemId,
+          inputSignature,
+          triggerReasons,
+          onAuditEvent
+        });
+      }
+      return null;
+    })
+    .catch((error) => {
+      onAuditEvent?.('recognition-audit-error', {
+        problemId: payload.problemId,
+        inputSignature,
+        triggerReasons,
+        auditSubject: 'problem-input',
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+}
+
+function pollProblemInputAuditStatus({
+  auditId,
+  problemId,
+  inputSignature,
+  triggerReasons,
+  onAuditEvent
+}) {
+  const maxPolls = 90;
+  const pollIntervalMs = 2000;
+  let pollCount = 0;
+  let lastStatus = 'queued';
+
+  const poll = () => {
+    pollCount += 1;
+    return getRecognitionAuditStatus(auditId, { apiUrl: getRecognitionApiUrl() })
+      .then((statusPayload) => {
+        const status = statusPayload.status || 'unknown';
+        if (status !== lastStatus || statusPayload.done) {
+          lastStatus = status;
+          onAuditEvent?.('recognition-audit-status', {
+            problemId,
+            inputSignature,
+            auditId,
+            triggerReasons,
+            auditSubject: 'problem-input',
+            ...statusPayload
+          });
+        }
+        if (statusPayload.done || pollCount >= maxPolls) return statusPayload;
+        window.setTimeout(poll, pollIntervalMs);
+        return statusPayload;
+      })
+      .catch((error) => {
+        onAuditEvent?.('recognition-audit-error', {
+          problemId,
+          inputSignature,
+          auditId,
+          triggerReasons,
+          auditSubject: 'problem-input',
+          error: error instanceof Error ? error.message : String(error)
+        });
+        return null;
+      });
+  };
+
+  window.setTimeout(poll, 400);
+  return null;
+}
+
+function buildProblemInputSignature({ mode = '', problemType = '', latex = '', result = {}, strokes = [] } = {}) {
+  const strokeSignature = (strokes || []).map((stroke) => [
+    stroke?.id || '',
+    Math.round(Number(stroke?.startTime) || 0),
+    Math.round(Number(stroke?.endTime) || 0),
+    Math.round(Number(stroke?.canvasBbox?.xMin) || 0),
+    Math.round(Number(stroke?.canvasBbox?.yMin) || 0),
+    Math.round(Number(stroke?.canvasBbox?.xMax) || 0),
+    Math.round(Number(stroke?.canvasBbox?.yMax) || 0)
+  ].join(':')).join('|');
+  return [
+    'problem-input-adjust',
+    mode,
+    problemType,
+    latex || result?.latex || '',
+    strokeSignature
+  ].join('::');
 }

@@ -147,6 +147,46 @@ export function compactRecognitionResult(result = {}) {
   };
 }
 
+export function buildProblemInputAuditPayload({
+  mode = '',
+  problemType = '',
+  recognizedLatex = '',
+  result = {},
+  strokes = [],
+  answerBox = null,
+  inputSignature = '',
+  triggerReasons = []
+} = {}) {
+  const latex = String(recognizedLatex || result?.latex || '').trim();
+  const normalizedResult = {
+    ...result,
+    latex,
+    latexLines: Array.isArray(result?.latexLines) && result.latexLines.length
+      ? result.latexLines
+      : (latex ? [latex] : []),
+    grading: null
+  };
+  return {
+    problemId: `problem-input-${String(mode || problemType || 'custom').replace(/[^a-z0-9_-]/gi, '-')}`,
+    problemLatex: '',
+    problemMetadata: {
+      auditSubject: 'problem-input',
+      mode,
+      problemType,
+      source: 'user-handwriting'
+    },
+    problemBox: clonePlain(answerBox),
+    answerBox: clonePlain(answerBox),
+    inputSignature,
+    attemptId: buildAttemptId(`problem-input-${mode || problemType || 'custom'}`, inputSignature),
+    promptVersion: RECOGNITION_AUDIT_PROMPT_VERSION,
+    previousAuditId: null,
+    triggerReasons: triggerReasons.slice(),
+    strokes: compactStrokes(strokes),
+    fastResult: compactRecognitionResult(normalizedResult)
+  };
+}
+
 export function hasCorrectAnswerWithInvalidStep(grading = null) {
   const steps = Array.isArray(grading?.steps) ? grading.steps : [];
   if (steps.length === 0) return false;

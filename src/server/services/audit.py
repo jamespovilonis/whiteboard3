@@ -250,15 +250,18 @@ class RecognitionAuditService:
             write_json(audit_dir / "vlm_normalized.json", normalized)
 
             failure_stage = "grading_vlm"
-            vlm_grading = self.grader({
-                "problemLatex": payload.get("problemLatex") or "",
-                "problemMetadata": payload.get("problemMetadata") or {},
-                "lines": [
-                    {"lineIndex": index, "latex": latex}
-                    for index, latex in enumerate(normalized.get("latexLines") or [])
-                ],
-            })
-            vlm_grading = {"status": "complete", "failed": False, **vlm_grading}
+            if is_problem_input_audit(payload):
+                vlm_grading = {"status": "skipped", "failed": False, "reason": "problem_input_audit"}
+            else:
+                vlm_grading = self.grader({
+                    "problemLatex": payload.get("problemLatex") or "",
+                    "problemMetadata": payload.get("problemMetadata") or {},
+                    "lines": [
+                        {"lineIndex": index, "latex": latex}
+                        for index, latex in enumerate(normalized.get("latexLines") or [])
+                    ],
+                })
+                vlm_grading = {"status": "complete", "failed": False, **vlm_grading}
             write_json(audit_dir / "vlm_grading.json", vlm_grading)
             failure_stage = "comparing_results"
             comparison = compare_audit_results(fast_result, normalized, vlm_grading)
@@ -468,6 +471,9 @@ def build_audit_id(payload: dict[str, Any]) -> str:
 
 
 def build_vlm_prompt(payload: dict[str, Any]) -> str:
+    if is_problem_input_audit(payload):
+        return build_problem_input_vlm_prompt(payload)
+
     problem_latex = str(payload.get("problemLatex") or "").strip()
     trigger_reasons = payload.get("triggerReasons") or []
     fast_attachments = flatten_annotation_attachments(
@@ -509,6 +515,30 @@ def build_vlm_prompt(payload: dict[str, Any]) -> str:
         "and attach them to left, right, or both sides when possible. "
         "Do not decide whether the app is correct. Do not include markdown. "
         "Preserve visible intermediate lines, even if a final answer is circled."
+    )
+
+
+def build_problem_input_vlm_prompt(payload: dict[str, Any]) -> str:
+    trigger_reasons = payload.get("triggerReasons") or []
+    fast_lines = (payload.get("fastResult") or {}).get("latexLines") or []
+    return (
+        "Read the user's handwritten math problem input from the attached images. "
+        "This is the problem-entry box, not a student's answer to a printed problem. "
+        "The app's fast OCR thought the input was: "
+        f"{json.dumps(fast_lines, sort_keys=True)}\n"
+        f"Audit trigger reasons: {', '.join(map(str, trigger_reasons)) or 'none'}\n\n"
+        "Return only a JSON object with this shape:\n"
+        "{\n"
+        "  \"latexLines\": [\"one LaTeX string per visible handwritten problem line\"],\n"
+        "  \"lineObservations\": [{\"lineIndex\": 0, \"latex\": \"...\", \"confidence\": 0.0, \"notes\": \"...\"}],\n"
+        "  \"visualMarks\": [],\n"
+        "  \"annotationAttachments\": [],\n"
+        "  \"overallConfidence\": 0.0,\n"
+        "  \"notes\": \"short reason for anything suspicious\"\n"
+        "}\n\n"
+        "Preserve radicals, fraction nesting, exponents, logarithm bases, and index notation exactly when visible. "
+        "If the input was split into multiple visible rows, return multiple latexLines. "
+        "Do not solve or simplify the problem. Do not include markdown."
     )
 
 
@@ -765,6 +795,11 @@ def compare_audit_results(
     }
 
 
+def is_problem_input_audit(payload: dict[str, Any]) -> bool:
+    metadata = payload.get("problemMetadata") or {}
+    return metadata.get("auditSubject") == "problem-input"
+
+
 def failure_comparison(kind: str, error: str, fast_result: dict[str, Any]) -> dict[str, Any]:
     source = "requesting_vlm"
     if kind == "vlm_schema_error":
@@ -815,6 +850,7 @@ def build_event_summary(
         "attemptId": payload.get("attemptId"),
         "previousAuditId": payload.get("previousAuditId"),
         "triggerReasons": payload.get("triggerReasons") or [],
+        "auditSubject": (payload.get("problemMetadata") or {}).get("auditSubject"),
         "comparisonStatus": comparison.get("status"),
         "failureKind": failure_kind,
         "failureStage": failure_stage,
@@ -881,6 +917,7 @@ def build_audit_metadata(
         "attemptId": payload.get("attemptId"),
         "previousAuditId": payload.get("previousAuditId"),
         "triggerReasons": payload.get("triggerReasons") or [],
+        "auditSubject": (payload.get("problemMetadata") or {}).get("auditSubject"),
         "cropBoxes": crop_boxes,
         "imagePaths": artifact_paths,
         "artifactTypes": sorted(artifact_paths.keys()),

@@ -1086,13 +1086,64 @@ export function clusterStrokeRows(candidateOrStrokes, config = DEFAULT_CONFIG) {
     }
   }
 
-  return rows.sort(compareRows);
+  return mergeTinyUpperAttachmentRows(rows, medianHeight).sort(compareRows);
 }
 
 export function splitCandidateIntoRows(candidate, config = DEFAULT_CONFIG) {
   const rows = clusterStrokeRows(candidate, config);
   if (rows.length <= 1) return rows;
   return mergeStructuralRows(candidate, rows, config);
+}
+
+function mergeTinyUpperAttachmentRows(rows, medianHeight = 1) {
+  const mergedRows = (rows || []).map((row) => ({
+    ...row,
+    bbox: row.bbox ? { ...row.bbox } : null,
+    strokes: (row.strokes || []).slice()
+  }));
+  if (mergedRows.length < 2) return mergedRows;
+
+  for (let index = 0; index < mergedRows.length; index += 1) {
+    const row = mergedRows[index];
+    if (!tinyRowCanAttachAbove(row, medianHeight)) continue;
+    const target = mergedRows
+      .filter((candidate, candidateIndex) => (
+        candidateIndex !== index &&
+        candidate?.bbox &&
+        centerY(candidate.bbox) > centerY(row.bbox) &&
+        (candidate.strokes || []).length >= 3 &&
+        tinyUpperRowFitsCandidate(row, candidate, medianHeight)
+      ))
+      .sort((a, b) => (
+        verticalGap(row.bbox, a.bbox) - verticalGap(row.bbox, b.bbox) ||
+        Math.abs(centerX(row.bbox) - centerX(a.bbox)) - Math.abs(centerX(row.bbox) - centerX(b.bbox))
+      ))[0];
+
+    if (!target) continue;
+    target.strokes = uniqueStrokes([...(target.strokes || []), ...(row.strokes || [])]);
+    target.bbox = bboxUnion(target.bbox, row.bbox);
+    row.strokes = [];
+  }
+
+  return mergedRows.filter((row) => row.strokes.length > 0);
+}
+
+function tinyRowCanAttachAbove(row, medianHeight = 1) {
+  if (!row?.bbox || (row.strokes || []).length !== 1) return false;
+  const width = bboxWidth(row.bbox);
+  const height = bboxHeight(row.bbox);
+  const maxSize = Math.max(12, medianHeight * 0.38);
+  return width <= maxSize && height <= maxSize;
+}
+
+function tinyUpperRowFitsCandidate(row, candidate, medianHeight = 1) {
+  const gap = verticalGap(row.bbox, candidate.bbox);
+  if (gap > Math.max(14, medianHeight * 0.45)) return false;
+  if (bboxWidth(candidate.bbox) < Math.max(80, bboxWidth(row.bbox) * 6)) return false;
+  if (horizontalOverlapRatio(row.bbox, candidate.bbox) < 0.1 && horizontalGap(row.bbox, candidate.bbox) > Math.max(24, medianHeight * 0.7)) {
+    return false;
+  }
+  return row.bbox.yMax <= candidate.bbox.yMin + Math.max(12, medianHeight * 0.32);
 }
 
 function emptySegmentation() {

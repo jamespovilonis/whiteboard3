@@ -512,15 +512,11 @@ export async function recognizeStudentWriting(options = {}) {
     } else if (semanticLatexSafeForReplacement(line, lineSemantic) && shouldUseSemanticLatex(line.latex, lineSemantic)) {
       line.latex = lineSemantic.bestLatex;
     }
-    const quadraticFormulaRepair = repairQuadraticFormulaFromProblem(line.latex, problemLatex);
-    if (quadraticFormulaRepair && quadraticFormulaRepair !== line.latex) {
-      line.ocrRepair = {
-        source: 'contextual-quadratic-formula',
-        originalLatex: line.latex,
-        repairedLatex: quadraticFormulaRepair
-      };
-      line.latex = quadraticFormulaRepair;
-    }
+    applyContextualProblemRepair(line, 'contextual-quadratic-formula', repairQuadraticFormulaFromProblem(line.latex, problemLatex));
+    applyContextualProblemRepair(line, 'contextual-monomial-exponent', repairCompactMonomialExponentFromProblem(line.latex, problemLatex));
+    applyContextualProblemRepair(line, 'contextual-indexed-radical', repairIndexedRadicalFromProblem(line.latex, problemLatex));
+    applyContextualProblemRepair(line, 'contextual-log-base-denominator', repairLogBaseDenominatorsFromProblem(line.latex, problemLatex));
+    applyContextualProblemRepair(line, 'contextual-log-fraction-base', repairFractionalLogBaseFromProblem(line.latex, problemLatex));
     if (line.latex) acceptedContextLatex.push(line.latex);
   }
   for (const line of recognizedLines) {
@@ -532,24 +528,12 @@ export async function recognizeStudentWriting(options = {}) {
       };
       continue;
     }
-    const quadraticFormulaRepair = repairQuadraticFormulaFromProblem(line.latex, problemLatex);
-    if (quadraticFormulaRepair && quadraticFormulaRepair !== line.latex) {
-      line.ocrRepair = {
-        source: 'contextual-quadratic-formula',
-        originalLatex: line.latex,
-        repairedLatex: quadraticFormulaRepair
-      };
-      line.latex = quadraticFormulaRepair;
-    }
-    const rationalProblemRepair = repairInitialRationalProblemLine(line.latex, problemLatex, line.lineIndex);
-    if (rationalProblemRepair && rationalProblemRepair !== line.latex) {
-      line.ocrRepair = {
-        source: 'contextual-rational-problem',
-        originalLatex: line.latex,
-        repairedLatex: rationalProblemRepair
-      };
-      line.latex = rationalProblemRepair;
-    }
+    applyContextualProblemRepair(line, 'contextual-quadratic-formula', repairQuadraticFormulaFromProblem(line.latex, problemLatex));
+    applyContextualProblemRepair(line, 'contextual-rational-problem', repairInitialRationalProblemLine(line.latex, problemLatex, line.lineIndex));
+    applyContextualProblemRepair(line, 'contextual-monomial-exponent', repairCompactMonomialExponentFromProblem(line.latex, problemLatex));
+    applyContextualProblemRepair(line, 'contextual-indexed-radical', repairIndexedRadicalFromProblem(line.latex, problemLatex));
+    applyContextualProblemRepair(line, 'contextual-log-base-denominator', repairLogBaseDenominatorsFromProblem(line.latex, problemLatex));
+    applyContextualProblemRepair(line, 'contextual-log-fraction-base', repairFractionalLogBaseFromProblem(line.latex, problemLatex));
     line.latex = normalizeContextualVariableCase(line.latex, [
       problemLatex,
       ...previousLatex,
@@ -578,6 +562,10 @@ export async function recognizeStudentWriting(options = {}) {
     answerManifest,
     lines: gradableLines
   });
+  const exhaustedWithInkButNoText = finalizationBudget.check() &&
+    (strokes || []).some((stroke) => strokeBelongsToAnswerBox(stroke, answerBox)) &&
+    gradableLines.length > 0 &&
+    gradableLines.every((line) => !String(line.acceptedLatex || line.latex || '').trim());
 
   // Defer to the Python grader for the authoritative problem-level verdict
   // when the gateway is available. The JS aggregation is a fast fallback.
@@ -604,6 +592,9 @@ export async function recognizeStudentWriting(options = {}) {
       // Keep the JS-aggregated grading result on failure.
     }
   }
+  if (exhaustedWithInkButNoText) {
+    grading = markGradingIncompleteAfterOcrTimeout(grading);
+  }
 
   return {
     segmentation: {
@@ -620,7 +611,8 @@ export async function recognizeStudentWriting(options = {}) {
     grading,
     timing: {
       totalElapsedSeconds: secondsSince(pipelineStartedAt),
-      ...(finalizationBudget.check() ? { finalizationBudgetExceeded: true } : {})
+      ...(finalizationBudget.check() ? { finalizationBudgetExceeded: true } : {}),
+      ...(exhaustedWithInkButNoText ? { ocrTimeoutWithInk: true } : {})
     }
   };
 }
@@ -2957,9 +2949,100 @@ function candidateSelectionSafeForGrading(entry = {}, grading = null) {
   if (entry?.ocrRepair?.source) return false;
   if (latexUnsafeForAlternateGrading(entry?.ocrLatex || topLatex || entry?.latex || entry?.acceptedLatex)) return false;
 
-  if (!looksLikeCleanFinalAnswerLatex(selectedLatex)) return false;
+  if (looksLikeCleanFinalAnswerLatex(selectedLatex)) return true;
+  if (safeSemanticAlternateForGrading(entry, grading, selectedLatex, topLatex)) return true;
 
-  return true;
+  return false;
+}
+
+function safeSemanticAlternateForGrading(entry = {}, grading = null, selectedLatex = '', topLatex = '') {
+  if (grading?.classification !== 'valid_step') return false;
+  if (grading?.solutionCoverage !== 'full' && !(grading?.matchedSolutions || []).length) return false;
+
+  const selectedIndex = Number(grading?.selectedCandidateIndex);
+  if (!Number.isInteger(selectedIndex) || selectedIndex <= 0 || selectedIndex > 4) return false;
+  const candidates = Array.isArray(entry?.candidates) ? entry.candidates : [];
+  const selectedCandidate = candidates[selectedIndex] || null;
+  const topCandidate = candidates[0] || null;
+  if (!selectedCandidate || !topCandidate) return false;
+
+  const selectedConfidence = Number(selectedCandidate.confidence);
+  const topConfidence = Number(topCandidate.confidence);
+  const selectedScore = Number(selectedCandidate.score);
+  const topScore = Number(topCandidate.score);
+  const nearTieConfidence = Number.isFinite(selectedConfidence) &&
+    Number.isFinite(topConfidence) &&
+    selectedConfidence >= topConfidence * 0.45;
+  const nearTieScore = Number.isFinite(selectedScore) &&
+    Number.isFinite(topScore) &&
+    Math.abs(topScore - selectedScore) <= 1.05;
+  if (!nearTieConfidence && !nearTieScore) return false;
+
+  return alternateLooksLikeSafeVisualCorrection(topLatex, selectedLatex);
+}
+
+function alternateLooksLikeSafeVisualCorrection(topLatex = '', selectedLatex = '') {
+  const top = String(topLatex || '').replace(/\s+/g, ' ').trim();
+  const selected = String(selectedLatex || '').replace(/\s+/g, ' ').trim();
+  if (!top || !selected) return false;
+  if (sameLatexForGrading(top, selected)) return true;
+  if (operatorOnlyCorrection(top, selected)) return true;
+  if (singleSqrtRadicandCorrection(top, selected)) return true;
+  if (indexedRadicalCorrection(top, selected)) return true;
+  return false;
+}
+
+function operatorOnlyCorrection(topLatex = '', selectedLatex = '') {
+  const normalizeOperators = (latex) => String(latex || '')
+    .replace(/\\times\b/g, '\\cdot')
+    .replace(/\s*\.\s*/g, ' \\cdot ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalizeOperators(topLatex) === normalizeOperators(selectedLatex);
+}
+
+function singleSqrtRadicandCorrection(topLatex = '', selectedLatex = '') {
+  const top = compactLatexForGrading(topLatex);
+  const selected = compactLatexForGrading(selectedLatex);
+  const sqrtPattern = /\\sqrt\{([^{}]+)\}/g;
+  const topMatches = [...top.matchAll(sqrtPattern)];
+  const selectedMatches = [...selected.matchAll(sqrtPattern)];
+  if (topMatches.length !== 1 || selectedMatches.length !== 1) return false;
+  const topWithoutRadicand = top.replace(sqrtPattern, '\\sqrt{}');
+  const selectedWithoutRadicand = selected.replace(sqrtPattern, '\\sqrt{}');
+  if (topWithoutRadicand !== selectedWithoutRadicand) return false;
+  const topRadicand = topMatches[0][1];
+  const selectedRadicand = selectedMatches[0][1];
+  return /^[0-9]+$/.test(topRadicand) &&
+    /^[0-9]+$/.test(selectedRadicand) &&
+    topRadicand.length === selectedRadicand.length;
+}
+
+function indexedRadicalCorrection(topLatex = '', selectedLatex = '') {
+  const top = compactLatexForGrading(topLatex);
+  const selected = compactLatexForGrading(selectedLatex);
+  const indexed = top.match(/^\\sqrt\[([0-9]+)\]\{(.+)\}$/) ||
+    selected.match(/^\\sqrt\[([0-9]+)\]\{(.+)\}$/);
+  if (!indexed) return false;
+  const flattened = top.match(/^([0-9]+)\\sqrt\{(.+)\}$/) ||
+    selected.match(/^([0-9]+)\\sqrt\{(.+)\}$/);
+  if (!flattened) return false;
+  return indexed[1] === flattened[1] && indexed[2] === flattened[2];
+}
+
+function markGradingIncompleteAfterOcrTimeout(grading = {}) {
+  return {
+    ...grading,
+    result: {
+      ...(grading?.result || {}),
+      problemStatus: 'incomplete',
+      breakdownLineIndex: null
+    },
+    timeout: {
+      ...(grading?.timeout || {}),
+      reason: 'ocr_finalization_budget_exceeded_with_ink'
+    }
+  };
 }
 
 function sameLatexForGrading(left = '', right = '') {
@@ -3257,6 +3340,17 @@ function normalizeContextualVariableCase(latex, contextLatex = []) {
   return output;
 }
 
+function applyContextualProblemRepair(line, source, repairedLatex) {
+  if (!line || !repairedLatex || repairedLatex === line.latex) return false;
+  line.ocrRepair = {
+    source,
+    originalLatex: line.latex,
+    repairedLatex
+  };
+  line.latex = repairedLatex;
+  return true;
+}
+
 function repairQuadraticFormulaFromProblem(latex, problemLatex = '') {
   const text = String(latex || '');
   if (!/\\frac\b/.test(text) || !/\\sqrt\b/.test(text) || !/\bx\b/.test(text) || !/=/.test(text)) {
@@ -3312,6 +3406,250 @@ function repairInitialRationalProblemLine(latex, problemLatex = '', lineIndex = 
   }
 
   return problem;
+}
+
+function repairCompactMonomialExponentFromProblem(latex, problemLatex = '') {
+  const current = String(latex || '');
+  if (!current.trim() || /[=<>]/.test(current)) return null;
+  if (/\\(?:times|cdot|frac|sqrt|log|ln|int|sum|prod)\b|[*×]/.test(current)) return null;
+
+  const target = parsePureMonomialLatex(problemLatex);
+  if (!target) return null;
+
+  const currentCompact = compactMonomialSyntax(current);
+  const targetCompact = monomialCompactSyntax(target);
+  if (!currentCompact || currentCompact === targetCompact) return null;
+
+  const candidateMatches = [];
+  for (let index = 0; index < target.factors.length; index += 1) {
+    const factor = target.factors[index];
+    if (factor.exponent === '1') continue;
+    const omittedExponent = monomialCompactSyntax(target, { omittedExponentIndex: index });
+    if (currentCompact === omittedExponent) candidateMatches.push(index);
+  }
+
+  return candidateMatches.length === 1 ? formatPureMonomialLatex(target) : null;
+}
+
+function parsePureMonomialLatex(latex = '') {
+  const compact = compactMonomialSyntax(latex);
+  if (!compact || /[\\*=+/<>()\[\],]/.test(compact)) return null;
+
+  let index = 0;
+  let coefficient = '';
+  if (compact[index] === '-') {
+    coefficient = '-';
+    index += 1;
+  }
+
+  const coefficientMatch = compact.slice(index).match(/^\d+/);
+  if (coefficientMatch) {
+    coefficient += coefficientMatch[0];
+    index += coefficientMatch[0].length;
+  }
+  if (coefficient === '-') coefficient = '-1';
+  if (!coefficient) coefficient = '1';
+
+  const factors = [];
+  const seenVariables = new Set();
+  while (index < compact.length) {
+    const variable = compact[index];
+    if (!/[a-z]/.test(variable)) return null;
+    if (seenVariables.has(variable)) return null;
+    seenVariables.add(variable);
+    index += 1;
+
+    let exponent = '1';
+    if (compact[index] === '^') {
+      index += 1;
+      const exponentMatch = compact.slice(index).match(/^\d+/);
+      if (!exponentMatch) return null;
+      exponent = exponentMatch[0].replace(/^0+(?=\d)/, '');
+      index += exponentMatch[0].length;
+    }
+    factors.push({ variable, exponent });
+  }
+
+  if (!factors.length) return null;
+  return { coefficient, factors };
+}
+
+function compactMonomialSyntax(latex = '') {
+  return String(latex || '')
+    .replace(/\\left|\\right/g, '')
+    .replace(/\s+/g, '')
+    .replace(/\^\{([^{}]+)\}/g, (_match, exponent) => `^${String(exponent).replace(/\s+/g, '')}`)
+    .replace(/[{}]/g, '')
+    .trim();
+}
+
+function monomialCompactSyntax(monomial, { omittedExponentIndex = -1 } = {}) {
+  const coefficient = monomial.coefficient === '1' ? '' : monomial.coefficient;
+  return `${coefficient}${monomial.factors.map((factor, index) => {
+    if (factor.exponent === '1') return factor.variable;
+    if (index === omittedExponentIndex) return `${factor.variable}${factor.exponent}`;
+    return `${factor.variable}^${factor.exponent}`;
+  }).join('')}`;
+}
+
+function formatPureMonomialLatex(monomial) {
+  const parts = [];
+  if (monomial.coefficient !== '1') parts.push(monomial.coefficient);
+  for (const factor of monomial.factors) {
+    parts.push(factor.exponent === '1'
+      ? factor.variable
+      : `${factor.variable} ^ { ${factor.exponent} }`);
+  }
+  return parts.join(' ');
+}
+
+function repairIndexedRadicalFromProblem(latex, problemLatex = '') {
+  const target = parseSingleRationalExponent(problemLatex);
+  if (!target) return null;
+
+  const flattened = parseFlattenedIndexedRadical(latex);
+  if (!flattened) return null;
+  if (flattened.index !== target.denominator) return null;
+  if (flattened.base !== target.base || flattened.exponent !== target.numerator) return null;
+
+  return `\\sqrt [ ${target.denominator} ] { ${target.base} ^ { ${target.numerator} } }`;
+}
+
+function parseSingleRationalExponent(latex = '') {
+  const compact = String(latex || '')
+    .replace(/\\left|\\right/g, '')
+    .replace(/\s+/g, '')
+    .replace(/[{}]/g, '')
+    .trim();
+  const match = compact.match(/^([0-9]+)\^([0-9]+)\/([0-9]+)$/);
+  if (!match) return null;
+  const [, base, numerator, denominator] = match;
+  if (denominator === '0') return null;
+  return { base, numerator, denominator };
+}
+
+function parseFlattenedIndexedRadical(latex = '') {
+  const compact = String(latex || '')
+    .replace(/\\left|\\right/g, '')
+    .replace(/\s+/g, '')
+    .replace(/\^\{([^{}]+)\}/g, '^$1')
+    .replace(/[{}]/g, '')
+    .trim();
+  const match = compact.match(/^([0-9]+)\\sqrt([0-9]+)\^([0-9]+)$/);
+  if (!match) return null;
+  const [, index, base, exponent] = match;
+  return { index, base, exponent };
+}
+
+function repairLogBaseDenominatorsFromProblem(latex, problemLatex = '') {
+  const logProblem = parseChangeOfBaseLogProblem(problemLatex);
+  if (!logProblem) return null;
+
+  const fractions = parseLogChangeOfBaseFractions(latex);
+  if (!fractions || fractions.length !== logProblem.bases.length) return null;
+  if (!fractions.every((fraction) => fraction.argument === logProblem.argument)) return null;
+
+  for (let index = 0; index < fractions.length; index += 1) {
+    if (!logDenominatorCompatibleWithBase(fractions[index].denominator, {
+      argument: logProblem.argument,
+      base: logProblem.bases[index]
+    })) {
+      return null;
+    }
+  }
+
+  const repaired = logProblem.bases
+    .map((base) => `\\frac { \\log ${logProblem.argument} } { \\log ${base} }`)
+    .join(' + ');
+  return normalizeLatexComparable(repaired) === normalizeLatexComparable(latex) ? null : repaired;
+}
+
+function parseChangeOfBaseLogProblem(problemLatex = '') {
+  const text = String(problemLatex || '').trim();
+  if (!text || /[=<>]/.test(text)) return null;
+
+  const terms = [];
+  const pattern = /\\log\s*_\s*(?:\{\s*([0-9\s]+)\s*\}|([0-9]+))\s*(?:\{\s*([a-zA-Z])\s*\}|([a-zA-Z]))/g;
+  for (const match of text.matchAll(pattern)) {
+    const base = String(match[1] || match[2] || '').replace(/\s+/g, '');
+    const argument = String(match[3] || match[4] || '').trim();
+    if (!base || !argument) return null;
+    terms.push({ base, argument });
+  }
+
+  if (terms.length < 2) return null;
+  if (!terms.every((term) => term.argument === terms[0].argument)) return null;
+  const skeleton = text.replace(pattern, 'L').replace(/\s+/g, '');
+  if (!/^L(?:\+L)+$/.test(skeleton)) return null;
+  return {
+    argument: terms[0].argument,
+    bases: terms.map((term) => term.base)
+  };
+}
+
+function parseLogChangeOfBaseFractions(latex = '') {
+  const text = String(latex || '').trim();
+  if (!text) return null;
+
+  const fractions = [];
+  const pattern = /\\frac\s*\{\s*\\log\s*(?:\{\s*)?([a-zA-Z])(?:\s*\})?\s*\}\s*\{\s*((?:[^{}]|\{[^{}]*\})+?)\s*\}/g;
+  let skeleton = '';
+  let lastIndex = 0;
+  for (const match of text.matchAll(pattern)) {
+    skeleton += text.slice(lastIndex, match.index).replace(/\s+/g, '');
+    skeleton += 'F';
+    lastIndex = match.index + match[0].length;
+    fractions.push({
+      argument: match[1],
+      denominator: match[2]
+    });
+  }
+  skeleton += text.slice(lastIndex).replace(/\s+/g, '');
+
+  if (!fractions.length || !/^F(?:\+F)*$/.test(skeleton)) return null;
+  return fractions;
+}
+
+function logDenominatorCompatibleWithBase(denominator = '', { argument = '', base = '' } = {}) {
+  const normalized = String(denominator || '')
+    .replace(/\\left|\\right/g, '')
+    .replace(/\s+/g, '')
+    .replace(/[{}]/g, '');
+  const variants = new Set([
+    `\\log${base}`,
+    `log${base}`,
+    `\\log_${base}`,
+    `log_${base}`,
+    `\\log^${base}`,
+    `log^${base}`,
+    `\\log${argument}`,
+    `log${argument}`
+  ]);
+  return variants.has(normalized);
+}
+
+function repairFractionalLogBaseFromProblem(latex, problemLatex = '') {
+  const problem = String(problemLatex || '');
+  if (!/\\log\b/.test(problem) || !/\\frac\b/.test(problem) || !/[=<>]/.test(problem)) return null;
+  if (/\\log\s*\(/.test(problem)) return null;
+
+  const text = String(latex || '').replace(/\s+/g, ' ').trim();
+  if (!text || /\\log\s*[_{(]/.test(text)) return null;
+
+  const match = text.match(/^\\log\s+(\\frac\s*\{\s*[^{}]+\s*\}\s*\{\s*[^{}]+\s*\})\s*([a-zA-Z])(\s*=\s*.+)$/);
+  if (!match) return null;
+  const [, fraction, variable, tail] = match;
+  if (!problem.includes(variable)) return null;
+  const expectedBase = fractionalLogBaseFromProblem(problem);
+  if (expectedBase && normalizeLatexComparable(expectedBase) !== normalizeLatexComparable(fraction)) return null;
+
+  return `\\log _ { ${fraction.trim()} } ${variable}${tail}`.replace(/\s+/g, ' ').trim();
+}
+
+function fractionalLogBaseFromProblem(problemLatex = '') {
+  const text = String(problemLatex || '');
+  const match = text.match(/\\log\s*_\s*\{\s*(\\frac\s*\{\s*[^{}]+\s*\}\s*\{\s*[^{}]+\s*\})/);
+  return match ? match[1].trim() : '';
 }
 
 function splitEquationSides(latex) {

@@ -276,6 +276,27 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(status["personalNote"], "Check the circled answer handling.")
             self.assertEqual(status["personalNoteCount"], 1)
 
+    def test_problem_input_adjustment_audit_skips_grading_and_compares_lines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": [r"\sqrt{\frac{x^{10}}{x^2}}"],
+                "lineObservations": [{"lineIndex": 0, "latex": r"\sqrt{\frac{x^{10}}{x^2}}", "confidence": 0.9}],
+                "visualMarks": [],
+                "overallConfidence": 0.9,
+                "notes": "problem input",
+            })
+            summary = service.run_audit(problem_input_audit_payload(), "audit_problem_input")
+
+            self.assertEqual(summary["auditSubject"], "problem-input")
+            self.assertIn("user_adjusted_problem_input", summary["triggerReasons"])
+            self.assertIn("line_latex_mismatch", summary["discrepancyTypes"])
+            audit_dir = Path(summary["auditDir"])
+            vlm_grading = json.loads((audit_dir / "vlm_grading.json").read_text())
+            self.assertEqual(vlm_grading["status"], "skipped")
+            metadata = json.loads((audit_dir / "audit_metadata.json").read_text())
+            self.assertEqual(metadata["auditSubject"], "problem-input")
+            self.assertIn("problem-entry box", service.vlm_client.calls[0]["prompt"])
+
     def test_normalize_vlm_response_accepts_fenced_json(self):
         normalized = normalize_vlm_response({
             "choices": [{
@@ -355,6 +376,36 @@ def audit_payload() -> dict[str, Any]:
             },
         },
     }
+
+
+def problem_input_audit_payload() -> dict[str, Any]:
+    payload = audit_payload()
+    payload.update({
+        "problemId": "problem-input-simplify",
+        "problemLatex": "",
+        "problemMetadata": {
+            "auditSubject": "problem-input",
+            "mode": "simplify",
+            "problemType": "simplify-expression",
+            "source": "user-handwriting",
+        },
+        "inputSignature": "problem-input-adjust::sig",
+        "triggerReasons": ["user_adjusted_problem_input"],
+        "fastResult": {
+            "latex": r"\sqrt{\frac{x^10}{x^2}",
+            "latexLines": [r"\sqrt{\frac{x^10}{x^2}"],
+            "lines": [{
+                "lineIndex": 0,
+                "latex": r"\sqrt{\frac{x^10}{x^2}",
+                "tightBbox": {"xMin": 40, "yMin": 60, "xMax": 560, "yMax": 200},
+            }],
+            "candidatePredictions": [],
+            "annotationAttachments": [],
+            "segmentation": {"selected": [], "candidates": []},
+            "grading": None,
+        },
+    })
+    return payload
 
 
 def evaluate_audit_payload() -> dict[str, Any]:

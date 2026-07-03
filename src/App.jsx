@@ -191,7 +191,10 @@ export default function App() {
       />
 
       {problemFlow.awaitingEquation && (
-        <HandwrittenProblemDialog onSubmit={createCustomProblem} />
+        <HandwrittenProblemDialog
+          onSubmit={createCustomProblem}
+          onAuditEvent={handleRecognitionEvent}
+        />
       )}
 
       <button

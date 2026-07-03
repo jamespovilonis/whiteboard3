@@ -93,6 +93,16 @@ DEFAULT_FIXTURES: Sequence[dict[str, str]] = (
         "slug": "rational-detached-parenthetical-annotations",
         "description": "Rational equation work with detached parenthetical operation annotations and a conflicted final-answer candidate.",
     },
+    {
+        "audit_id": "audit_20260702T194443536522Z_07b99ef859",
+        "slug": "compact-monomial-exponent-ocr",
+        "description": "Compact monomial expression where an upper-right exponent was flattened into a baseline numeral.",
+    },
+    {
+        "audit_id": "audit_20260702T195717638774Z_b8112da14e",
+        "slug": "log-base-change-of-base-denominators",
+        "description": "Change-of-base logarithm work where denominator base numerals were lost by OCR.",
+    },
 )
 
 REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
@@ -281,6 +291,28 @@ REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
             "strokeIds": ["s050", "s051", "s052", "s053", "s054", "s055", "s056"],
             "source": "reviewed-vlm-semantic-lines",
             "sourceCandidateId": "reviewed_s050|s051|s052|s053|s054|s055|s056",
+        },
+    ],
+    "audit_20260702T194443536522Z_07b99ef859": [
+        {
+            "lineIndex": 0,
+            "latex": "3x^9y^12",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007",
+        },
+    ],
+    "audit_20260702T195717638774Z_b8112da14e": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{\\log x}{\\log 2} + \\frac{\\log x}{\\log 4}",
+            "strokeIds": [
+                "s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010",
+                "s011", "s012", "s013", "s014", "s015", "s016", "s017", "s018", "s019", "s020",
+                "s021", "s022", "s023", "s024", "s025",
+            ],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011|s012|s013|s014|s015|s016|s017|s018|s019|s020|s021|s022|s023|s024|s025",
         },
     ],
 }
