@@ -299,6 +299,7 @@ export class CanvasStrokeEngine {
   finalizeCurrentStroke() {
     if (!this.isDrawing) return;
 
+    const captureStartedAt = performanceNow();
     const color = this.penColor || DEFAULT_PEN_COLOR;
     this.pushUndoState();
 
@@ -318,6 +319,11 @@ export class CanvasStrokeEngine {
     this.clearForeground();
     this.redraw();
     if (finalizedStroke) {
+      finalizedStroke.latency = {
+        ...(finalizedStroke.latency || {}),
+        strokeCaptureElapsedMs: Math.round((performanceNow() - captureStartedAt) * 10) / 10,
+        drawDurationMs: Math.max(0, Number(finalizedStroke.endTime) - Number(finalizedStroke.startTime))
+      };
       this.callbacks.onStrokeFinalized?.(finalizedStroke);
       this.notifyStrokesChanged('draw');
     }
@@ -458,4 +464,11 @@ function createDotOutline(x, y, size) {
   }
 
   return outline;
+}
+
+function performanceNow() {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
 }

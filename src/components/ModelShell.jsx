@@ -385,6 +385,8 @@ function DebugMetrics({ result }) {
   const segmentation = result.segmentation || {};
   const selected = segmentation.selected || [];
   const candidates = segmentation.candidates || [];
+  const latency = result.timing?.latency || null;
+  const budgetFailures = Number(latency?.budgetFailureCount || 0);
 
   return (
     <dl className="recognition-metrics recognition-debug-metrics">
@@ -399,6 +401,14 @@ function DebugMetrics({ result }) {
       <div>
         <dt>Cover</dt>
         <dd>{selected.length}/{candidates.length}</dd>
+      </div>
+      <div>
+        <dt>Latency p95</dt>
+        <dd>{latencyStageSummary(latency)}</dd>
+      </div>
+      <div>
+        <dt>Budgets</dt>
+        <dd>{budgetFailures ? `${budgetFailures} over` : 'ok'}</dd>
       </div>
     </dl>
   );
@@ -700,6 +710,26 @@ function semanticScoreLabel(semantic, timing) {
   return `${score} | ${formatSeconds(elapsed)}`;
 }
 
+function latencyStageSummary(latency) {
+  const stages = latency?.stages || {};
+  const order = ['segmentation', 'ocr', 'retry', 'semantic', 'grading', 'detection'];
+  const parts = order
+    .map((stage) => {
+      const summary = stages[stage];
+      if (!summary || summary.p95Ms == null) return null;
+      return `${stageLabel(stage)} ${formatMilliseconds(summary.p95Ms)}`;
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+  return parts.length ? parts.join(' / ') : 'n/a';
+}
+
+function stageLabel(stage = '') {
+  return String(stage)
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/^./, (value) => value.toUpperCase());
+}
+
 function gradingDecisionLabel(problemStatus, status = '') {
   if (status === 'pending') return 'Pending';
   if (status === 'failed') return 'Failed';
@@ -770,6 +800,12 @@ function formatNumber(value) {
 function formatSeconds(value) {
   const seconds = Number(value);
   return Number.isFinite(seconds) ? `${seconds.toFixed(2)}s` : 'n/a';
+}
+
+function formatMilliseconds(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms)) return 'n/a';
+  return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`;
 }
 
 function debugStatusLabel(status, result) {

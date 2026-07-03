@@ -397,7 +397,8 @@ function auditProblemInputAdjustment({ entry, auditInputSignaturesRef, onAuditEv
         triggerReasons,
         sampled: false,
         queued: response.queued !== false,
-        auditSubject: 'problem-input'
+        auditSubject: 'problem-input',
+        latency: response.latency || null
       });
       if (response.queued === false) {
         onAuditEvent?.('recognition-audit-disabled', {

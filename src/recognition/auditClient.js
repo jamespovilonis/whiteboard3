@@ -1,3 +1,8 @@
+import {
+  DEFAULT_RECOGNITION_LATENCY_BUDGETS_MS,
+  performanceNow
+} from './latencyTelemetry.js';
+
 export const DEFAULT_AUDIT_NORMAL_SAMPLE_RATE = 0.10;
 export const RECOGNITION_AUDIT_PROMPT_VERSION = 'recognition-audit-v2';
 const MAX_COMPACT_STROKE_POINTS = 96;
@@ -60,19 +65,30 @@ export function getRecognitionAuditDecision(result = {}, options = {}) {
 export async function enqueueRecognitionAudit(payload, options = {}) {
   const apiUrl = String(options.apiUrl || '').replace(/\/$/, '');
   const url = `${apiUrl}/audit-recognition`;
+  const startedAt = performanceNow();
+  const budgetMs = Number(options.latencyBudgetMs ?? DEFAULT_RECOGNITION_LATENCY_BUDGETS_MS.auditEnqueue);
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload || {})
   });
   const body = await response.json().catch(() => null);
+  const elapsedMs = performanceNow() - startedAt;
   if (!response.ok) {
     throw new Error(body?.detail || `HTTP ${response.status} from ${url}`);
   }
   if (body?.auditId && payload?.problemId) {
     previousAuditIdByProblemId.set(String(payload.problemId), String(body.auditId));
   }
-  return body || {};
+  return {
+    ...(body || {}),
+    latency: {
+      stage: 'auditEnqueue',
+      elapsedMs: Math.round(elapsedMs * 10) / 10,
+      budgetMs: Number.isFinite(budgetMs) ? budgetMs : null,
+      overBudget: Number.isFinite(budgetMs) && elapsedMs > budgetMs
+    }
+  };
 }
 
 export async function getRecognitionAuditStatus(auditId, options = {}) {

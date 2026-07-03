@@ -6,6 +6,10 @@ import {
 } from './lineSegmentation.js';
 import { recognizeLineImage } from './ocrClient.js';
 import { recognizeStudentWriting } from './studentWritingPipeline.js';
+import {
+  DEFAULT_RECOGNITION_LATENCY_BUDGETS_MS,
+  performanceNow
+} from './latencyTelemetry.js';
 
 const DEFAULT_DEBOUNCE_MS = 500;
 const DEFAULT_CATCHMENT_PADDING = 36;
@@ -30,6 +34,10 @@ export class IncrementalRecognitionScheduler {
     this.detectionTimeoutMs = options.detectionTimeoutMs;
     this.semanticTimeoutMs = options.semanticTimeoutMs;
     this.semanticScoring = options.semanticScoring !== false;
+    this.latencyBudgetsMs = {
+      ...DEFAULT_RECOGNITION_LATENCY_BUDGETS_MS,
+      ...(options.latencyBudgetsMs || {})
+    };
 
     this.components = new Map();
     this.ocrCache = new Map();
@@ -191,6 +199,7 @@ export class IncrementalRecognitionScheduler {
   }
 
   async flush() {
+    const flushStartedAt = performanceNow();
     const input = this.input;
     if (!input?.problemId || !input.answerBox || input.answerStrokes.length === 0) {
       this.emitState();
@@ -201,10 +210,19 @@ export class IncrementalRecognitionScheduler {
     const ignoredStrokeIds = (input.strokes || [])
       .filter((stroke) => stroke?.visualOnly)
       .map((stroke) => String(stroke.id));
+    const segmentationStartedAt = performanceNow();
     const segmentation = segmentMathLines(input.strokes, {
       answerBox: input.answerBox,
       detections: [],
       ignoredStrokeIds
+    });
+    this.emitLatencySample('schedulerFlush', performanceNow() - flushStartedAt, {
+      phase: 'pre-segmentation',
+      answerStrokeCount: input.answerStrokes.length
+    });
+    this.emitLatencySample('segmentation', performanceNow() - segmentationStartedAt, {
+      source: 'scheduler-deterministic',
+      answerStrokeCount: input.answerStrokes.length
     });
     const selected = segmentation.selected || [];
     const currentSignatures = new Set();
@@ -597,6 +615,7 @@ export class IncrementalRecognitionScheduler {
 
   runRecognition(strokes, options = {}) {
     const input = this.input;
+    const startedAt = performanceNow();
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const run = {
       controller,
@@ -617,6 +636,7 @@ export class IncrementalRecognitionScheduler {
       timeoutMs: this.timeoutMs,
       detectionTimeoutMs: this.detectionTimeoutMs,
       semanticTimeoutMs: this.semanticTimeoutMs,
+      latencyBudgetsMs: this.latencyBudgetsMs,
       detectLineBands: Boolean(options.detectLineBands),
       semanticScoring: this.semanticScoring,
       ...(options.phase === 'full-answer' ? {
@@ -626,8 +646,37 @@ export class IncrementalRecognitionScheduler {
       recognizeLine: (image, recognizeOptions) => this.cachedRecognizeLine(image, recognizeOptions),
       ...(this.detectLines ? { detectLines: this.detectLines } : {}),
       ...(this.scoreSemantics ? { scoreSemantics: this.scoreSemantics } : {})
-    })).finally(() => {
+    })).then((result) => {
+      const elapsedMs = performanceNow() - startedAt;
+      this.emitLatencySample('totalUiBlocking', elapsedMs, {
+        phase: options.phase || '',
+        strokeCount: Array.isArray(strokes) ? strokes.length : 0,
+        budgetFailureCount: result?.timing?.latency?.budgetFailureCount || 0
+      });
+      return {
+        ...result,
+        timing: {
+          ...(result?.timing || {}),
+          schedulerPhase: options.phase || '',
+          schedulerElapsedSeconds: roundSeconds(elapsedMs / 1000)
+        }
+      };
+    }).finally(() => {
       this.activeRecognitionRuns.delete(run);
+    });
+  }
+
+  emitLatencySample(stage, elapsedMs, detail = {}) {
+    const value = Number(elapsedMs);
+    if (!Number.isFinite(value) || value < 0) return;
+    const budgetMs = Number(this.latencyBudgetsMs?.[stage]);
+    this.onEvent('recognition-latency-sample', {
+      problemId: this.input?.problemId || null,
+      stage,
+      elapsedMs: Math.round(value * 10) / 10,
+      budgetMs: Number.isFinite(budgetMs) ? budgetMs : null,
+      overBudget: Number.isFinite(budgetMs) && value > budgetMs,
+      ...detail
     });
   }
 
@@ -1211,4 +1260,9 @@ function maxTiming(lines) {
     .map((line) => Number(line.timing?.submitToFinalPredictionSeconds))
     .filter(Number.isFinite);
   return values.length ? Math.max(...values) : null;
+}
+
+function roundSeconds(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) ? Math.round(seconds * 1000) / 1000 : null;
 }

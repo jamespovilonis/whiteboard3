@@ -13,6 +13,10 @@ import {
   normalizeProblemInputRecognitionResult
 } from '../src/recognition/auditClient.js';
 import { getRecognitionApiUrl, normalizeConfiguredApiUrl } from '../src/recognition/config.js';
+import {
+  createRecognitionLatencyTelemetry,
+  strokeCaptureLatencySamples
+} from '../src/recognition/latencyTelemetry.js';
 import { problemStatusDisplay } from '../src/components/problemStatusDisplay.js';
 import { IncrementalRecognitionScheduler } from '../src/recognition/incrementalRecognitionScheduler.js';
 import { translateDetections } from '../src/recognition/segmentationClient.js';
@@ -130,6 +134,52 @@ test('recognition API rewrites loopback override for lan clients', () => {
       globalThis.window = previousWindow;
     }
   }
+});
+
+test('recognition latency telemetry summarizes p50 p95 and budget failures', () => {
+  const telemetry = createRecognitionLatencyTelemetry({
+    budgetsMs: {
+      ocr: 100,
+      segmentation: 20
+    }
+  });
+  telemetry.record('ocr', 40, { candidateId: 'a' });
+  telemetry.record('ocr', 120, { candidateId: 'b' });
+  telemetry.record('segmentation', 12);
+
+  const summary = telemetry.summary();
+  assert.equal(summary.stages.ocr.count, 2);
+  assert.equal(summary.stages.ocr.p50Ms, 40);
+  assert.equal(summary.stages.ocr.p95Ms, 120);
+  assert.equal(summary.stages.ocr.overBudgetCount, 1);
+  assert.equal(summary.budgetFailureCount, 1);
+  assert.equal(summary.budgetFailures[0].stage, 'ocr');
+  assert.equal(summary.stages.segmentation.overBudget, false);
+});
+
+test('stroke capture latency uses finalized capture work instead of draw duration', () => {
+  const samples = strokeCaptureLatencySamples([{
+    id: 'stroke-a',
+    startTime: 1000,
+    endTime: 2400,
+    points: [{}, {}],
+    latency: {
+      strokeCaptureElapsedMs: 4.5,
+      drawDurationMs: 1400
+    }
+  }]);
+  assert.equal(samples[0].elapsedMs, 4.5);
+  assert.equal(samples[0].drawDurationMs, 1400);
+
+  const fallback = strokeCaptureLatencySamples([{
+    id: 'old-stroke',
+    startTime: 1000,
+    endTime: 2400,
+    points: [{}]
+  }]);
+  assert.equal(fallback[0].elapsedMs, 0);
+  assert.equal(fallback[0].drawDurationMs, 1400);
+  assert.equal(fallback[0].estimated, true);
 });
 
 test('OCR evidence can promote a parent candidate over child rows', () => {

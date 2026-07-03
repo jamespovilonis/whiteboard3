@@ -30,6 +30,13 @@ AUDIT_PROMPT_VERSION = "recognition-audit-v2"
 AUDIT_IMAGE_NAMES = ("problemCrop", "answerCrop", "answerContext")
 ANSWER_AUDIT_IMAGE_NAMES = ("answerCrop", "answerContext")
 PROBLEM_INPUT_AUDIT_IMAGE_NAMES = ("answerCrop", "problemCrop")
+AUDIT_LATENCY_BUDGETS_MS = {
+    "vlmAuditQueue": 1000.0,
+    "vlmAuditRender": 500.0,
+    "vlmAuditRequest": 120000.0,
+    "vlmAuditGrading": 750.0,
+    "vlmAuditWork": 125000.0,
+}
 
 
 class AuditSchemaError(ValueError):
@@ -353,10 +360,23 @@ class RecognitionAuditService:
         attached_images: list[str] = []
         vlm_request_profile = vlm_request_profile_for_payload(payload)
         retry_after_seconds: float | None = None
+        latency_samples: list[dict[str, Any]] = []
+        run_started_perf = time.perf_counter()
+        record_latency_sample(
+            latency_samples,
+            "vlmAuditQueue",
+            (started_at - queued_at).total_seconds() * 1000,
+        )
 
         try:
             failure_stage = "rendering_artifacts"
+            stage_started = time.perf_counter()
             rendered = render_audit_images(payload, audit_dir)
+            record_latency_sample(
+                latency_samples,
+                "vlmAuditRender",
+                (time.perf_counter() - stage_started) * 1000,
+            )
             crop_boxes = rendered.pop("cropBoxes", {})
             crops = {key: path for key, path in rendered.items() if isinstance(path, Path)}
             artifact_paths.update({key: str(path) for key, path in crops.items()})
@@ -364,6 +384,7 @@ class RecognitionAuditService:
             attached_images = attached_image_names_for_payload(payload, crops)
             failure_stage = "requesting_vlm"
             self._raise_if_vlm_circuit_open()
+            stage_started = time.perf_counter()
             raw_vlm, normalized = self._complete_and_normalize_vlm(
                 prompt=prompt,
                 image_paths=[crops[name] for name in attached_images],
@@ -374,12 +395,19 @@ class RecognitionAuditService:
                 audit_id=audit_id,
                 vlm_request_profile=vlm_request_profile,
             )
+            record_latency_sample(
+                latency_samples,
+                "vlmAuditRequest",
+                (time.perf_counter() - stage_started) * 1000,
+                {"attemptCount": len(audit_attempts), "vlmRequestProfile": vlm_request_profile},
+            )
             self._record_vlm_success()
             write_json(audit_dir / "vlm_raw.json", raw_vlm)
 
             write_json(audit_dir / "vlm_normalized.json", normalized)
 
             failure_stage = "grading_vlm"
+            stage_started = time.perf_counter()
             if is_problem_input_audit(payload):
                 vlm_grading = {"status": "skipped", "failed": False, "reason": "problem_input_audit"}
             else:
@@ -392,6 +420,12 @@ class RecognitionAuditService:
                     ],
                 })
                 vlm_grading = {"status": "complete", "failed": False, **vlm_grading}
+            record_latency_sample(
+                latency_samples,
+                "vlmAuditGrading",
+                (time.perf_counter() - stage_started) * 1000,
+                {"status": vlm_grading.get("status") if isinstance(vlm_grading, dict) else None},
+            )
             write_json(audit_dir / "vlm_grading.json", vlm_grading)
             failure_stage = "comparing_results"
             comparison = compare_audit_results(
@@ -426,6 +460,13 @@ class RecognitionAuditService:
             comparison = failure_comparison(failure_kind, "audit did not produce a comparison result", fast_result)
 
         failure_kind = failure_kind or first_failure_kind(comparison)
+        record_latency_sample(
+            latency_samples,
+            "vlmAuditWork",
+            (time.perf_counter() - run_started_perf) * 1000,
+            {"failureKind": failure_kind},
+        )
+        latency_summary = build_latency_summary(latency_samples)
         try:
             completed_at = datetime.now(timezone.utc)
             write_json(audit_dir / "comparison.json", comparison)
@@ -448,6 +489,7 @@ class RecognitionAuditService:
                 completed_at=completed_at,
                 vlm_request_profile=vlm_request_profile,
                 retry_after_seconds=retry_after_seconds,
+                latency=latency_summary,
             ))
             summary = build_event_summary(
                 audit_id=audit_id,
@@ -469,6 +511,7 @@ class RecognitionAuditService:
                 completed_at=completed_at,
                 vlm_request_profile=vlm_request_profile,
                 retry_after_seconds=retry_after_seconds,
+                latency=latency_summary,
             )
             append_jsonl(self.log_dir / "audit_events.jsonl", summary)
         except Exception as exc:
@@ -505,6 +548,7 @@ class RecognitionAuditService:
             "retryAfterSeconds": retry_after_seconds,
             **feedback_summary_fields(feedback),
             "completedAt": summary.get("completedAt"),
+            "latency": summary.get("latency"),
         })
         return summary
 
@@ -1195,6 +1239,7 @@ def build_event_summary(
     completed_at: datetime,
     vlm_request_profile: str,
     retry_after_seconds: float | None,
+    latency: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     discrepancies = comparison.get("discrepancies") or []
     observations = comparison.get("observations") or []
@@ -1242,6 +1287,8 @@ def build_event_summary(
         "inference_ms": last_attempt.get("inference_ms"),
         "attached_images": list(attached_images),
         "vlmRequestProfile": vlm_request_profile,
+        "latency": latency or {},
+        "latencyBudgetFailureCount": int((latency or {}).get("budgetFailureCount") or 0),
         **feedback_summary_fields(feedback),
         **({"retryAfterSeconds": retry_after_seconds} if retry_after_seconds is not None else {}),
     }
@@ -1267,6 +1314,7 @@ def build_audit_metadata(
     completed_at: datetime,
     vlm_request_profile: str,
     retry_after_seconds: float | None,
+    latency: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     last_attempt = attempts[-1] if attempts else {}
     flattened_attachments = flatten_annotation_attachments((normalized or {}).get("annotationAttachments") or [], source="vlm")
@@ -1312,11 +1360,74 @@ def build_audit_metadata(
         "attachedImages": list(attached_images),
         "attached_images": list(attached_images),
         "vlmRequestProfile": vlm_request_profile,
+        "latency": latency or {},
+        "latencyBudgetFailureCount": int((latency or {}).get("budgetFailureCount") or 0),
         **feedback_summary_fields(feedback),
         **({"retryAfterSeconds": retry_after_seconds} if retry_after_seconds is not None else {}),
         "annotationAttachments": flattened_attachments,
         "annotation_attachments": flattened_attachments,
     }
+
+
+def record_latency_sample(
+    samples: list[dict[str, Any]],
+    stage: str,
+    elapsed_ms: float,
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    try:
+        elapsed = float(elapsed_ms)
+    except (TypeError, ValueError):
+        return
+    if elapsed < 0:
+        return
+    budget = AUDIT_LATENCY_BUDGETS_MS.get(stage)
+    sample = {
+        "stage": stage,
+        "elapsedMs": round(elapsed, 1),
+        "budgetMs": round(float(budget), 1) if budget is not None else None,
+        "overBudget": bool(budget is not None and elapsed > float(budget)),
+    }
+    for key, value in (metadata or {}).items():
+        if value is not None:
+            sample[key] = sanitize_json(value)
+    samples.append(sample)
+
+
+def build_latency_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    stages: dict[str, dict[str, Any]] = {}
+    failures: list[dict[str, Any]] = []
+    for stage in sorted({str(sample.get("stage") or "") for sample in samples if sample.get("stage")}):
+        stage_samples = [sample for sample in samples if sample.get("stage") == stage]
+        values = sorted(float(sample.get("elapsedMs") or 0) for sample in stage_samples)
+        if not values:
+            continue
+        budget = stage_samples[-1].get("budgetMs")
+        stages[stage] = {
+            "count": len(values),
+            "p50Ms": percentile(values, 0.50),
+            "p95Ms": percentile(values, 0.95),
+            "maxMs": round(values[-1], 1),
+            "budgetMs": budget,
+            "overBudgetCount": sum(1 for sample in stage_samples if sample.get("overBudget")),
+            "overBudget": bool(budget is not None and percentile(values, 0.95) > float(budget)),
+        }
+        failures.extend(sample for sample in stage_samples if sample.get("overBudget"))
+    return {
+        "budgetsMs": AUDIT_LATENCY_BUDGETS_MS,
+        "stages": stages,
+        "samples": samples,
+        "budgetFailures": failures,
+        "budgetFailureCount": len(failures),
+        "overBudget": bool(failures),
+    }
+
+
+def percentile(sorted_values: list[float], ratio: float) -> float:
+    if not sorted_values:
+        return 0.0
+    index = min(len(sorted_values) - 1, max(0, int(len(sorted_values) * ratio + 0.999999) - 1))
+    return round(sorted_values[index], 1)
 
 
 def first_failure_kind(comparison: dict[str, Any]) -> Optional[str]:

@@ -372,7 +372,8 @@ function maybeEnqueueRecognitionAudit({
         auditId: response.auditId || null,
         triggerReasons: decision.triggerReasons,
         sampled: decision.sampled,
-        queued: response.queued !== false
+        queued: response.queued !== false,
+        latency: response.latency || null
       });
       if (response.queued === false) {
         onRecognitionEvent?.('recognition-audit-disabled', {

@@ -10,6 +10,10 @@ import { rasterizeLineCandidate } from './lineRasterizer.js';
 import { recognizeLineImage } from './ocrClient.js';
 import { requestLineDetections } from './segmentationClient.js';
 import { scoreLatexCandidates } from './semanticClient.js';
+import {
+  createRecognitionLatencyTelemetry,
+  strokeCaptureLatencySamples
+} from './latencyTelemetry.js';
 import { gradeMathWork } from '../grading/gradingClient.js';
 
 const FRACTION_CHUNK_RASTER_HEIGHTS = [72, 88, 104];
@@ -52,14 +56,25 @@ export async function recognizeStudentWriting(options = {}) {
     recognizeLine = recognizeLineImage,
     gradeWork = gradeMathWork,
     gradingTimeoutMs = 5000,
-    finalizationBudgetMs = 15000
+    finalizationBudgetMs = 15000,
+    latencyBudgetsMs = null
   } = options;
+  const latency = createRecognitionLatencyTelemetry({ budgetsMs: latencyBudgetsMs });
+  for (const sample of strokeCaptureLatencySamples(strokes)) {
+    latency.record('strokeCapture', sample.elapsedMs, {
+      strokeId: sample.strokeId,
+      pointCount: sample.pointCount,
+      drawDurationMs: sample.drawDurationMs,
+      estimated: sample.estimated
+    });
+  }
   const finalizationBudget = createFinalizationBudget(pipelineStartedAt, finalizationBudgetMs);
   const ignoredStrokeIds = (options.ignoredStrokeIds || [])
     .concat((strokes || []).filter((stroke) => stroke?.visualOnly).map((stroke) => stroke.id))
     .map(String);
 
   throwIfAborted(signal);
+  const detectionStartedAt = performanceNow();
   const detection = await resolveDetections({
     strokes,
     answerBox,
@@ -70,24 +85,34 @@ export async function recognizeStudentWriting(options = {}) {
     timeoutMs: detectionTimeoutMs,
     signal
   });
+  latency.record('detection', elapsedMsFromResult(detection, detectionStartedAt), {
+    source: detection.source,
+    failed: Boolean(detection.failed)
+  });
   throwIfAborted(signal);
 
-  const segmentation = segmentMathLines(strokes, {
+  const segmentation = latency.measure('segmentation', () => segmentMathLines(strokes, {
     answerBox,
     detections: detection.detections,
     ignoredStrokeIds,
     problemMetadata,
     problemLatex,
     previousLatex
+  }), {
+    source: detection.detections?.length ? 'detector' : 'deterministic',
+    strokeCount: strokes.length
   });
   const deterministicSegmentation = detection.detections?.length
-      ? segmentMathLines(strokes, {
+      ? latency.measure('segmentation', () => segmentMathLines(strokes, {
         answerBox,
         detections: [],
         ignoredStrokeIds,
         problemMetadata,
         problemLatex,
         previousLatex
+      }), {
+        source: 'deterministic-baseline',
+        strokeCount: strokes.length
       })
     : null;
   const baselineCover = recognitionBaselineCover(
@@ -121,7 +146,8 @@ export async function recognizeStudentWriting(options = {}) {
     deferCoveredParentRecognition: Boolean(deferCoveredParentRecognition),
     initialRecognitionConcurrency,
     signal,
-    recognizeLine
+    recognizeLine,
+    latency
   });
   throwIfAborted(signal);
 
@@ -145,10 +171,12 @@ export async function recognizeStudentWriting(options = {}) {
       pipelineStartedAt,
       rasterPadding,
       recognizeLine,
-      signal
+      signal,
+      latency
     });
     throwIfAborted(signal);
   }
+  let semanticStartedAt = performanceNow();
   let semantic = await resolveSemanticScores({
     candidatePredictions,
     problemLatex,
@@ -160,6 +188,11 @@ export async function recognizeStudentWriting(options = {}) {
     timeoutMs: semanticTimeoutMs,
     semanticCandidateLimit,
     signal
+  });
+  latency.record('semantic', elapsedMsFromResult(semantic, semanticStartedAt), {
+    source: 'candidate',
+    failed: Boolean(semantic.failed),
+    candidateCount: semantic.candidateScores?.length || 0
   });
   throwIfAborted(signal);
   const semanticByCandidateId = new Map(
@@ -190,6 +223,7 @@ export async function recognizeStudentWriting(options = {}) {
         baselineCandidates: baselineCover,
       })
     : segmentation.selected;
+  semanticStartedAt = performanceNow();
   const contextualCandidateSemantic = await resolveContextualCandidateSemanticScores({
     candidatePredictions,
     problemLatex,
@@ -201,6 +235,11 @@ export async function recognizeStudentWriting(options = {}) {
     timeoutMs: semanticTimeoutMs,
     semanticCandidateLimit,
     signal
+  });
+  latency.record('semantic', elapsedMsFromResult(contextualCandidateSemantic, semanticStartedAt), {
+    source: 'contextual-candidate',
+    failed: Boolean(contextualCandidateSemantic.failed),
+    candidateCount: contextualCandidateSemantic.candidateScores?.length || 0
   });
   throwIfAborted(signal);
   const contextualSemanticByCandidateId = new Map(
@@ -253,7 +292,8 @@ export async function recognizeStudentWriting(options = {}) {
       rasterPadding,
       recognizeLine,
       signal,
-      evidenceByCandidateId
+      evidenceByCandidateId,
+      latency
     });
   }
 
@@ -303,7 +343,8 @@ export async function recognizeStudentWriting(options = {}) {
         skipRasterHeights: [entry.initialTargetPixelHeight],
         extendedTimeoutMs: structuralRetryTimeoutMs,
         signal,
-        recognizeLine
+        recognizeLine,
+        latency
       });
       if (!retry.attempts.length) continue;
       entry.retryPredictions = retry.attempts;
@@ -338,7 +379,8 @@ export async function recognizeStudentWriting(options = {}) {
         problemLatex,
         previousLatex,
         signal,
-        evidenceByCandidateId
+        evidenceByCandidateId,
+        latency
       });
     }
   }
@@ -360,6 +402,7 @@ export async function recognizeStudentWriting(options = {}) {
   });
   applyGeometryOperationAnnotationRepairs(recognizedLines, problemLatex);
 
+  semanticStartedAt = performanceNow();
   let selectedLineSemantic = await resolveSelectedLineSemanticScores({
     recognizedLines,
     problemLatex,
@@ -371,6 +414,11 @@ export async function recognizeStudentWriting(options = {}) {
     timeoutMs: semanticTimeoutMs,
     semanticCandidateLimit,
     signal
+  });
+  latency.record('semantic', elapsedMsFromResult(selectedLineSemantic, semanticStartedAt), {
+    source: 'selected-line',
+    failed: Boolean(selectedLineSemantic.failed),
+    lineCount: selectedLineSemantic.lineScores?.length || 0
   });
   throwIfAborted(signal);
   const selectedLineSemanticBeforeRetry = selectedLineSemantic;
@@ -407,7 +455,8 @@ export async function recognizeStudentWriting(options = {}) {
         chunkFallbackMaxCssWidth,
         chunkFallbackMinGap,
         signal,
-        recognizeLine
+        recognizeLine,
+        latency
       });
       if (!retry.attempts.length) continue;
 
@@ -440,6 +489,7 @@ export async function recognizeStudentWriting(options = {}) {
   }
 
   if (semanticRetryUsed) {
+    semanticStartedAt = performanceNow();
     selectedLineSemantic = await resolveSelectedLineSemanticScores({
       recognizedLines,
       problemLatex,
@@ -451,6 +501,11 @@ export async function recognizeStudentWriting(options = {}) {
       timeoutMs: semanticTimeoutMs,
       semanticCandidateLimit,
       signal
+    });
+    latency.record('semantic', elapsedMsFromResult(selectedLineSemantic, semanticStartedAt), {
+      source: 'selected-line-after-retry',
+      failed: Boolean(selectedLineSemantic.failed),
+      lineCount: selectedLineSemantic.lineScores?.length || 0
     });
     throwIfAborted(signal);
     selectedLineSemanticById.clear();
@@ -586,6 +641,7 @@ export async function recognizeStudentWriting(options = {}) {
   // when the gateway is available. The JS aggregation is a fast fallback.
   if (apiUrl && typeof gradeWork === 'function') {
     try {
+      const gradingStartedAt = performanceNow();
       const pythonGrading = await gradeWork({
         problemLatex,
         problemMetadata,
@@ -595,6 +651,11 @@ export async function recognizeStudentWriting(options = {}) {
           candidates: gradingPayloadCandidates(line)
         }))
       }, { apiUrl, timeoutMs: gradingTimeoutMs, signal });
+      latency.record('grading', elapsedMsFromResult(pythonGrading, gradingStartedAt), {
+        source: 'python-grader',
+        failed: Boolean(pythonGrading.failed),
+        lineCount: gradableLines.length
+      });
       if (!pythonGrading.failed) {
         grading = {
           ...grading,
@@ -628,6 +689,9 @@ export async function recognizeStudentWriting(options = {}) {
     grading,
     timing: {
       totalElapsedSeconds: secondsSince(pipelineStartedAt),
+      latency: latency.summary({
+        totalElapsedMs: Math.round(secondsSince(pipelineStartedAt) * 10000) / 10
+      }),
       ...(finalizationBudget.check() ? { finalizationBudgetExceeded: true } : {}),
       ...(exhaustedWithInkButNoText ? { ocrTimeoutWithInk: true } : {}),
       ...(annotationExclusion.summary.length ? { annotationExclusionCount: annotationExclusion.summary.length } : {})
@@ -650,7 +714,8 @@ async function recognizeInitialCandidates(candidates, {
   deferCoveredParentRecognition,
   initialRecognitionConcurrency,
   signal,
-  recognizeLine
+  recognizeLine,
+  latency
 }) {
   const candidateList = Array.isArray(candidates) ? candidates : [];
   const recognizeCandidate = (candidate) => recognizeInitialCandidate(candidate, {
@@ -665,7 +730,8 @@ async function recognizeInitialCandidates(candidates, {
     pipelineStartedAt,
     initialRecognitionSkipContext,
     signal,
-    recognizeLine
+    recognizeLine,
+    latency
   });
 
   if (!deferCoveredParentRecognition || candidateList.length === 0) {
@@ -728,7 +794,8 @@ async function recognizeInitialCandidate(candidate, {
   pipelineStartedAt,
   initialRecognitionSkipContext,
   signal,
-  recognizeLine
+  recognizeLine,
+  latency
 }) {
   const initialTargetPixelHeight = initialTargetPixelHeightForCandidate(candidate, {
     rasterPadding,
@@ -769,9 +836,17 @@ async function recognizeInitialCandidate(candidate, {
     padding: rasterPadding,
     targetPixelHeight: initialTargetPixelHeight
   });
+  const ocrStartedAt = performanceNow();
   const prediction = await Promise.resolve()
       .then(() => recognizeLine(image, { apiUrl, model, timeoutMs, signal }))
       .catch((error) => recognitionFailureFromError(error, { model }));
+  latency?.record('ocr', elapsedMsFromResult(prediction, ocrStartedAt), {
+    phase: 'initial',
+    candidateId: candidate.candidateId,
+    cached: Boolean(prediction?.cached),
+    failed: Boolean(prediction?.failed),
+    timedOut: Boolean(prediction?.timedOut)
+  });
   throwIfAborted(signal);
   const initialPredictionElapsedSeconds = secondsSince(pipelineStartedAt);
   const evidenceScore = scoreRecognitionEvidence(
@@ -1124,7 +1199,8 @@ async function retrySelectedLineRecognition(candidate, {
   chunkFallbackMinGap = 18,
   finalizationBudget = null,
   signal,
-  recognizeLine
+  recognizeLine,
+  latency
 }) {
   const attempts = [];
   let sawTimeout = false;
@@ -1144,12 +1220,20 @@ async function retrySelectedLineRecognition(candidate, {
       padding: rasterPadding,
       targetPixelHeight
     });
+    const retryStartedAt = performanceNow();
     const prediction = await Promise.resolve()
       .then(() => recognizeLine(image, { apiUrl, model, timeoutMs, signal }))
       .catch((error) => recognitionFailureFromError(error, {
         model,
         retryTargetPixelHeight: targetPixelHeight
       }));
+    latency?.record('retry', elapsedMsFromResult(prediction, retryStartedAt), {
+      phase: 'raster-height',
+      candidateId: candidate.candidateId,
+      targetPixelHeight,
+      failed: Boolean(prediction?.failed),
+      timedOut: Boolean(prediction?.timedOut)
+    });
     throwIfAborted(signal);
     attempts.push({
       ...prediction,
@@ -1171,6 +1255,7 @@ async function retrySelectedLineRecognition(candidate, {
       padding: rasterPadding,
       targetPixelHeight
     });
+    const extendedStartedAt = performanceNow();
     const prediction = await Promise.resolve()
       .then(() => recognizeLine(image, { apiUrl, model, timeoutMs: Number(extendedTimeoutMs), signal }))
       .catch((error) => recognitionFailureFromError(error, {
@@ -1178,6 +1263,13 @@ async function retrySelectedLineRecognition(candidate, {
         retryTargetPixelHeight: targetPixelHeight,
         extendedTimeoutMs: Number(extendedTimeoutMs)
       }));
+    latency?.record('retry', elapsedMsFromResult(prediction, extendedStartedAt), {
+      phase: 'extended-timeout',
+      candidateId: candidate.candidateId,
+      targetPixelHeight,
+      failed: Boolean(prediction?.failed),
+      timedOut: Boolean(prediction?.timedOut)
+    });
     throwIfAborted(signal);
     attempts.push({
       ...prediction,
@@ -1192,6 +1284,7 @@ async function retrySelectedLineRecognition(candidate, {
     attempts.every((attempt) => predictionNeedsRetry(attempt)) &&
     !finalizationBudget?.check?.()
   ) {
+    const chunkStartedAt = performanceNow();
     const chunked = await recognizeChunkedLine(candidate, {
       apiUrl,
       model,
@@ -1204,6 +1297,11 @@ async function retrySelectedLineRecognition(candidate, {
       minGap: chunkFallbackMinGap,
       signal,
       recognizeLine
+    });
+    latency?.record('chunkFallback', elapsedMsFromResult(chunked, chunkStartedAt), {
+      phase: 'retry',
+      candidateId: candidate.candidateId,
+      failed: Boolean(chunked?.failed)
     });
     if (chunked && !predictionNeedsRetry(chunked)) {
       attempts.push({
@@ -1284,7 +1382,8 @@ async function recognizeSkippedSelectedEntry(entry, candidate, {
   rasterPadding,
   recognizeLine,
   signal,
-  evidenceByCandidateId
+  evidenceByCandidateId,
+  latency
 }) {
   if (!entry.image) {
     entry.image = rasterizeLineCandidate(candidate, {
@@ -1292,9 +1391,17 @@ async function recognizeSkippedSelectedEntry(entry, candidate, {
       targetPixelHeight: entry.initialTargetPixelHeight
     });
   }
+  const ocrStartedAt = performanceNow();
   const prediction = await Promise.resolve()
     .then(() => recognizeLine(entry.image, { apiUrl, model, timeoutMs, signal }))
     .catch((error) => recognitionFailureFromError(error, { model }));
+  latency?.record('ocr', elapsedMsFromResult(prediction, ocrStartedAt), {
+    phase: 'deferred-selected',
+    candidateId: candidate.candidateId,
+    cached: Boolean(prediction?.cached),
+    failed: Boolean(prediction?.failed),
+    timedOut: Boolean(prediction?.timedOut)
+  });
   throwIfAborted(signal);
 
   entry.prediction = prediction;
@@ -1326,7 +1433,8 @@ async function recognizeDeferredAlternativesInsideWeakSelection(selected, {
   pipelineStartedAt,
   rasterPadding,
   recognizeLine,
-  signal
+  signal,
+  latency
 }) {
   const selectedEntries = (selected || [])
     .map((candidate) => ({
@@ -1360,7 +1468,8 @@ async function recognizeDeferredAlternativesInsideWeakSelection(selected, {
       rasterPadding,
       recognizeLine,
       signal,
-      evidenceByCandidateId
+      evidenceByCandidateId,
+      latency
     });
   }
 }
@@ -2877,6 +2986,14 @@ function sumPredictionElapsedSeconds(predictions = []) {
   return total > 0 ? finiteSeconds(total) : null;
 }
 
+function elapsedMsFromResult(result, startedAt) {
+  const elapsedSeconds = Number(result?.elapsedSeconds);
+  if (Number.isFinite(elapsedSeconds) && elapsedSeconds >= 0) {
+    return elapsedSeconds * 1000;
+  }
+  return performanceNow() - startedAt;
+}
+
 async function mapWithConcurrency(items, concurrency, mapper) {
   const values = Array.isArray(items) ? items : [];
   if (values.length === 0) return [];
@@ -3425,8 +3542,10 @@ async function applyChunkFallbackToEntry(entry, candidate, {
   problemLatex,
   previousLatex,
   signal,
-  evidenceByCandidateId
+  evidenceByCandidateId,
+  latency
 }) {
+  const chunkStartedAt = performanceNow();
   const chunked = await recognizeChunkedLine(candidate, {
     apiUrl,
     model,
@@ -3439,6 +3558,11 @@ async function applyChunkFallbackToEntry(entry, candidate, {
     minGap,
     signal,
     recognizeLine
+  });
+  latency?.record('chunkFallback', elapsedMsFromResult(chunked, chunkStartedAt), {
+    phase: 'selected-line',
+    candidateId: candidate.candidateId,
+    failed: Boolean(chunked?.failed)
   });
   if (!chunked || chunked.failed) return false;
   entry.chunkFallback = chunked;

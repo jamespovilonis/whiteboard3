@@ -78,11 +78,17 @@ class AuditServiceTests(unittest.TestCase):
             self.assertIn("completedAt", metadata)
             self.assertIsInstance(metadata["queueMs"], (int, float))
             self.assertIsInstance(metadata["runElapsedSeconds"], (int, float))
+            self.assertIn("latency", metadata)
+            self.assertIn("vlmAuditWork", metadata["latency"]["stages"])
+            self.assertIn("vlmAuditRequest", metadata["latency"]["stages"])
+            self.assertIsInstance(metadata["latencyBudgetFailureCount"], int)
             self.assertEqual(summary["comparisonStatus"], "complete")
             self.assertIn("answerContext", summary["artifactTypes"])
             self.assertEqual(summary["attached_images"], ["answerCrop", "answerContext"])
             self.assertEqual(summary["vlmRequestProfile"], "answer-local-compact")
             self.assertEqual(summary["eventStage"], "terminal")
+            self.assertIn("latency", summary)
+            self.assertIn("vlmAuditRender", summary["latency"]["stages"])
             self.assertEqual(len(service.vlm_client.calls[0]["image_paths"]), 2)
             self.assertEqual(
                 [path.name for path in service.vlm_client.calls[0]["image_paths"]],
