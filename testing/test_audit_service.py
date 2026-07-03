@@ -379,6 +379,10 @@ class AuditServiceTests(unittest.TestCase):
                     "model": "qwen3:1.7b",
                     "promptVersion": "math-feedback-v1",
                     "skippedReason": "correct",
+                    "promptContext": {
+                        "targetLine": "x = 4",
+                        "targetLineSource": "answer_manifest",
+                    },
                 },
             })
 
@@ -387,6 +391,7 @@ class AuditServiceTests(unittest.TestCase):
             audit_dir = Path(summary["auditDir"])
             feedback = json.loads((audit_dir / "feedback.json").read_text())
             self.assertEqual(feedback["text"], "Correct! Great job!")
+            self.assertEqual(feedback["promptContext"]["targetLine"], "x = 4")
             metadata = json.loads((audit_dir / "audit_metadata.json").read_text())
             self.assertEqual(metadata["feedbackText"], "Correct! Great job!")
             self.assertEqual(metadata["feedbackSource"], "deterministic")

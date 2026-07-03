@@ -19,7 +19,7 @@ import {
   DEFAULT_PEN_COLOR,
   sliderToWidth
 } from './whiteboard/constants.js';
-import { isProblemReadyForNext } from './state/problemFlow.js';
+import { isProblemReadyForNext, isProblemSubmittable } from './state/problemFlow.js';
 
 export default function App() {
   const [penColor, setPenColor] = useState(DEFAULT_PEN_COLOR);
@@ -255,11 +255,4 @@ function auditStatusLabel(status) {
   if (status === 'disabled') return 'Audit disabled';
   if (status === 'unknown') return 'Audit status unknown';
   return 'Audit processing';
-}
-
-function isProblemSubmittable(problem) {
-  return Boolean(
-    problem &&
-    problem.status === 'solving'
-  );
 }

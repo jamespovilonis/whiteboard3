@@ -94,15 +94,15 @@ function deterministicFallbackText(request = {}) {
   const firstInvalid = (grading.steps || []).find((step) => step?.classification === 'invalid_step');
   if (status === 'incorrect' && firstInvalid) {
     const lineNumber = Number(firstInvalid.lineIndex) + 1;
-    return `Check line ${Number.isFinite(lineNumber) ? lineNumber : 1}: ${firstInvalid.studentLatex || 'that step'} is not a valid step. Try one valid correction or next step.`;
+    return `Check line ${Number.isFinite(lineNumber) ? lineNumber : 1}: ${firstInvalid.studentLatex || 'that step'} is not a valid step. Return to the previous valid line and keep the equation balanced.`;
   }
   if (status === 'incomplete') {
-    return 'Keep going from your last valid line. Give one valid next step.';
+    return 'Keep going from your last valid line and preserve the same value on both sides.';
   }
   if (status === 'not_started') {
     return 'Start by rewriting the problem or applying one valid operation to both sides.';
   }
-  return 'Give one valid correction or next step from your latest work.';
+  return 'Return to your latest valid work and continue with a balanced math step.';
 }
 
 function feedbackHttpErrorMessage(status, url, payload) {

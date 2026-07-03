@@ -27,6 +27,7 @@ import {
   getActiveProblem,
   getCompletedRecognitionResults,
   getActiveModelResponse,
+  isProblemSubmittable,
   reconcileProblemFlowWithStrokes,
   requestNextProblem,
   startCustomProblem,
@@ -240,13 +241,14 @@ export function useProblemFlowController({ moveHomeViewport, engineRef, onRecogn
     const activeProblem = getActiveProblem(problemFlow);
     const strokes = engineRef?.current?.getStrokes?.() || [];
     const result = submitActiveProblem(problemFlow, getViewportWidth());
+    const submittedProblem = getActiveProblem(result.flow);
     setProblemFlow(result.flow);
     schedulerRef.current?.flushNow?.();
     onRecognitionEvent?.('submit-active-problem', {
       problemId: activeProblem?.id || null,
       strokeCount: strokes.length,
       answerStrokeCount: activeProblem?.answerStrokeIds?.length || 0,
-      frozen: activeProblem?.status === 'solving'
+      frozen: Boolean(submittedProblem?.answerBoxFrozen)
     });
 
   }, [engineRef, onRecognitionEvent, problemFlow]);
@@ -291,18 +293,31 @@ function shouldAcceptRecognitionSnapshot(problem) {
   if (!problem) return false;
   if (problem.status === 'solving') return true;
   if (problem.status !== 'submitted') return false;
-  return !['complete', 'error', 'empty'].includes(problem.recognition?.status);
+  if (problem.revisionAllowed) return true;
+  return !recognitionIsSettled(problem.recognition);
 }
 
 function shouldKeepRecognitionAttached(problem) {
   if (!problem?.answerStrokeIds?.length) return false;
   if (problem.status === 'solving') return true;
   if (problem.status !== 'submitted') return false;
-  return !['complete', 'error', 'empty'].includes(problem.recognition?.status);
+  if (problem.revisionAllowed) return true;
+  return !recognitionIsSettled(problem.recognition);
 }
 
 export function shouldRunRecognitionForProblem(problem) {
   return shouldKeepRecognitionAttached(problem);
+}
+
+function recognitionIsSettled(recognition) {
+  if (['empty', 'error'].includes(recognition?.status)) return true;
+  if (recognition?.status !== 'complete') return false;
+  const realtime = recognition.result?.realtime || recognition.realtime || null;
+  if (realtime?.allFinal === false) return false;
+  const components = Array.isArray(realtime?.components) ? realtime.components : [];
+  if (components.some((component) => component?.status !== 'final' || component?.contested)) return false;
+  const grading = recognition.result?.grading || null;
+  return !grading || (grading.status !== 'pending' && !grading.running);
 }
 
 function maybeEnqueueRecognitionAudit({
@@ -521,7 +536,7 @@ function shouldAcceptFeedback(flow, problemId, inputSignature, generation, feedb
 
 function invalidateFeedbackForActiveProblem(flow, feedbackControllersRef, feedbackGenerationsRef) {
   const problem = getActiveProblem(flow);
-  if (!problem || problem.status !== 'solving') return;
+  if (!problem || !isProblemSubmittable(problem)) return;
   feedbackGenerationsRef.current.set(
     problem.id,
     (feedbackGenerationsRef.current.get(problem.id) || 0) + 1

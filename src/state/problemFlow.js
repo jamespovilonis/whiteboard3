@@ -56,7 +56,15 @@ export function getActiveModelResponse(flow) {
   const activeProblem = getActiveProblem(flow);
   if (activeProblem?.status === 'submitted') {
     const feedback = activeProblem.feedback || {};
-    if (feedback.status === 'pending') {
+    const submittedFeedbackVisible = feedbackMatchesSubmittedAttempt(activeProblem, feedback);
+    if (activeProblem.revisionAllowed && !submittedFeedbackVisible) {
+      return activeProblem.modelResponse || {
+        before: 'Keep working.',
+        latex: '',
+        after: 'Submit your work when you are ready.'
+      };
+    }
+    if (submittedFeedbackVisible && feedback.status === 'pending') {
       return {
         before: 'Getting feedback...',
         latex: '',
@@ -65,7 +73,7 @@ export function getActiveModelResponse(flow) {
         feedbackText: 'Getting feedback...'
       };
     }
-    if (feedback.status === 'complete' && feedback.text) {
+    if (submittedFeedbackVisible && feedback.status === 'complete' && feedback.text) {
       return {
         before: feedback.text,
         latex: '',
@@ -107,7 +115,7 @@ export function getCompletedRecognitionResults(flow) {
 
 export function reconcileProblemFlowWithStrokes(flow, strokes) {
   const activeProblem = getActiveProblem(flow);
-  if (!activeProblem || activeProblem.status !== 'solving') {
+  if (!isProblemEditable(activeProblem)) {
     return flow;
   }
 
@@ -128,6 +136,7 @@ export function reconcileProblemFlowWithStrokes(flow, strokes) {
       answerStrokeIds: answer.strokeIds,
       answerContentBox: answer.contentBox,
       answerBox: answer.answerBox,
+      submittedInputSignature: null,
       feedback: normalizeFeedbackState()
     };
   });
@@ -136,13 +145,20 @@ export function reconcileProblemFlowWithStrokes(flow, strokes) {
 export function submitActiveProblem(flow, viewportWidth) {
   const activeProblem = getActiveProblem(flow);
   if (!activeProblem) return { flow, targetViewport: null };
-  if (activeProblem.status !== 'solving') return { flow, targetViewport: null };
+  if (!isProblemSubmittable(activeProblem)) return { flow, targetViewport: null };
   const recognitionStatus = submissionRecognitionStatus(activeProblem);
+  const submittedInputSignature = currentInputSignature(activeProblem);
+  const retryableImmediately = recognitionStatus === 'empty' || recognitionStatus === 'error';
+  const existingFeedbackRetryable = feedbackAllowsRevisionAfterSubmit(activeProblem, submittedInputSignature);
+  const revisionAllowed = retryableImmediately || existingFeedbackRetryable;
 
   const completedFlow = updateProblem(flow, activeProblem.id, (problem) => ({
     ...problem,
     status: 'submitted',
-    answerBoxFrozen: true,
+    answerBoxFrozen: !revisionAllowed,
+    revisionAllowed,
+    submittedInputSignature,
+    submissionCount: Number(problem.submissionCount || 0) + 1,
     recognition: {
       ...problem.recognition,
       status: recognitionStatus,
@@ -166,7 +182,7 @@ export function submitActiveProblem(flow, viewportWidth) {
 export function requestNextProblem(flow, viewportWidth) {
   let workingFlow = flow;
   let activeProblem = getActiveProblem(workingFlow);
-  if (!activeProblem || activeProblem.status !== 'submitted') {
+  if (!isProblemReadyForNext(activeProblem)) {
     return { flow: workingFlow, targetViewport: null };
   }
 
@@ -297,37 +313,51 @@ export function normalizeProblemDefinitions(problemDefinitions = []) {
 }
 
 export function applyProblemRecognitionResult(flow, problemId, result) {
-  return updateProblem(flow, problemId, (problem) => ({
-    ...problem,
-    recognition: {
-      ...problem.recognition,
-      status: 'complete',
-      error: null,
-      result,
-      realtime: result?.realtime || problem.recognition.realtime || null,
-      completedAt: Date.now()
-    }
-  }));
+  return updateProblem(flow, problemId, (problem) => {
+    const inputSignature = recognitionInputSignature({ result, realtime: result?.realtime });
+    return {
+      ...problem,
+      submittedInputSignature: submittedSignatureAfterRecognition(problem, inputSignature),
+      recognition: {
+        ...problem.recognition,
+        status: 'complete',
+        error: null,
+        result,
+        realtime: result?.realtime || problem.recognition.realtime || null,
+        completedAt: Date.now()
+      }
+    };
+  });
 }
 
 export function applyProblemRecognitionProgress(flow, problemId, { status = 'pending', result = null, realtime = null } = {}) {
-  return updateProblem(flow, problemId, (problem) => ({
-    ...problem,
-    recognition: {
-      ...problem.recognition,
-      status,
-      error: null,
-      result: result || problem.recognition.result,
-      realtime: realtime || result?.realtime || problem.recognition.realtime || null,
-      updatedAt: Date.now(),
-      completedAt: status === 'complete' ? Date.now() : problem.recognition.completedAt || null
-    }
-  }));
+  return updateProblem(flow, problemId, (problem) => {
+    const nextResult = result || problem.recognition.result;
+    const nextRealtime = realtime || result?.realtime || problem.recognition.realtime || null;
+    const inputSignature = recognitionInputSignature({ result: nextResult, realtime: nextRealtime });
+    return {
+      ...problem,
+      submittedInputSignature: submittedSignatureAfterRecognition(problem, inputSignature),
+      revisionAllowed: status === 'error' ? true : problem.revisionAllowed,
+      answerBoxFrozen: status === 'error' ? false : problem.answerBoxFrozen,
+      recognition: {
+        ...problem.recognition,
+        status,
+        error: null,
+        result: nextResult,
+        realtime: nextRealtime,
+        updatedAt: Date.now(),
+        completedAt: status === 'complete' ? Date.now() : problem.recognition.completedAt || null
+      }
+    };
+  });
 }
 
 export function applyProblemRecognitionError(flow, problemId, error) {
   return updateProblem(flow, problemId, (problem) => ({
     ...problem,
+    revisionAllowed: true,
+    answerBoxFrozen: false,
     recognition: {
       ...problem.recognition,
       status: 'error',
@@ -349,16 +379,37 @@ export function applyProblemGradingProgress(flow, problemId, grading) {
 }
 
 export function applyProblemFeedbackProgress(flow, problemId, feedback) {
-  return updateProblem(flow, problemId, (problem) => ({
-    ...problem,
-    feedback: normalizeFeedbackState(feedback)
-  }));
+  return updateProblem(flow, problemId, (problem) => {
+    const normalized = normalizeFeedbackState(feedback);
+    const matchesSubmitted = feedbackMatchesSubmittedAttempt(problem, normalized);
+    const problemStatus = problem.recognition?.result?.grading?.result?.problemStatus || '';
+    const canRevise = matchesSubmitted &&
+      normalized.status === 'complete' &&
+      ['incorrect', 'incomplete', 'not_started'].includes(problemStatus);
+    const isCorrect = matchesSubmitted &&
+      normalized.status === 'complete' &&
+      problemStatus === 'correct';
+
+    return {
+      ...problem,
+      revisionAllowed: canRevise ? true : (isCorrect ? false : problem.revisionAllowed),
+      answerBoxFrozen: canRevise ? false : (isCorrect ? true : problem.answerBoxFrozen),
+      feedback: normalized
+    };
+  });
+}
+
+export function isProblemSubmittable(problem) {
+  if (!problem) return false;
+  return problem.status === 'solving' || (problem.status === 'submitted' && problem.revisionAllowed);
 }
 
 export function isProblemReadyForNext(problem) {
   if (!problem) return false;
-  if (problem.status === 'submitted' && ['complete', 'empty', 'error'].includes(problem.recognition?.status)) return true;
-  return false;
+  return problem.status === 'submitted' &&
+    !problem.revisionAllowed &&
+    recognitionProblemStatus(problem) === 'correct' &&
+    recognitionIsFinal(problem.recognition);
 }
 
 export function submittedProblemStatusLabel(problem) {
@@ -404,6 +455,9 @@ function createProblemSession({ definition, index, boardPosition, viewportWidth,
     answerContentBox: null,
     answerBox: null,
     answerBoxFrozen: false,
+    revisionAllowed: false,
+    submittedInputSignature: null,
+    submissionCount: 0,
     initialGrading: null,
     recognition: {
       status: 'idle',
@@ -413,6 +467,59 @@ function createProblemSession({ definition, index, boardPosition, viewportWidth,
     },
     feedback: normalizeFeedbackState()
   };
+}
+
+function isProblemEditable(problem) {
+  return Boolean(
+    problem &&
+    !problem.answerBoxFrozen &&
+    (problem.status === 'solving' || (problem.status === 'submitted' && problem.revisionAllowed))
+  );
+}
+
+function recognitionProblemStatus(problem) {
+  return problem?.recognition?.result?.grading?.result?.problemStatus || '';
+}
+
+function recognitionIsFinal(recognition) {
+  if (recognition?.status !== 'complete') return false;
+  const realtime = recognition.result?.realtime || recognition.realtime || null;
+  if (realtime?.allFinal === false) return false;
+  const components = Array.isArray(realtime?.components) ? realtime.components : [];
+  return components.every((component) => component?.status === 'final' && !component?.contested);
+}
+
+function currentInputSignature(problem) {
+  return problem?.recognition?.result?.realtime?.inputSignature ||
+    problem?.recognition?.realtime?.inputSignature ||
+    problem?.feedback?.inputSignature ||
+    '';
+}
+
+function recognitionInputSignature({ result, realtime }) {
+  return result?.realtime?.inputSignature || realtime?.inputSignature || '';
+}
+
+function submittedSignatureAfterRecognition(problem, inputSignature) {
+  if (!inputSignature) return problem.submittedInputSignature || null;
+  if (problem.status !== 'submitted') return problem.submittedInputSignature || null;
+  if (problem.revisionAllowed) return problem.submittedInputSignature || null;
+  return problem.submittedInputSignature || inputSignature;
+}
+
+function feedbackMatchesSubmittedAttempt(problem, feedback = {}) {
+  const submittedSignature = problem?.submittedInputSignature || '';
+  return Boolean(
+    submittedSignature &&
+    feedback?.inputSignature &&
+    feedback.inputSignature === submittedSignature
+  );
+}
+
+function feedbackAllowsRevisionAfterSubmit(problem, submittedInputSignature) {
+  if (!submittedInputSignature || problem?.feedback?.inputSignature !== submittedInputSignature) return false;
+  if (problem.feedback.status !== 'complete') return false;
+  return ['incorrect', 'incomplete', 'not_started'].includes(recognitionProblemStatus(problem));
 }
 
 function normalizeFeedbackState(feedback = {}) {

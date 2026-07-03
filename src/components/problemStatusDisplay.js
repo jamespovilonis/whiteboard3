@@ -13,6 +13,13 @@ export function problemStatusDisplay(problem, response = {}) {
     };
   }
 
+  if (problem.revisionAllowed && !response.feedbackText) {
+    return {
+      status: 'solving',
+      text: 'Try your best and press Submit when you are ready.'
+    };
+  }
+
   if (problem.recognition?.status === 'empty') {
     return {
       status: 'incomplete',

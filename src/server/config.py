@@ -21,7 +21,7 @@ class ServerSettings:
     vlm_audit_normal_sample_rate: float = 0.10
     vlm_audit_circuit_failures: int = 2
     vlm_audit_circuit_seconds: float = 300.0
-    feedback_base_url: str = "http://127.0.0.1:11434/v1"
+    feedback_base_url: str = "http://127.0.0.1:11434"
     feedback_model: str = "qwen3:1.7b"
     feedback_timeout_seconds: float = 10.0
 
@@ -41,7 +41,7 @@ def settings_from_env() -> ServerSettings:
         vlm_audit_normal_sample_rate=_env_float("VLM_AUDIT_NORMAL_SAMPLE_RATE", 0.10),
         vlm_audit_circuit_failures=_env_int("VLM_AUDIT_CIRCUIT_FAILURES", 2),
         vlm_audit_circuit_seconds=_env_float("VLM_AUDIT_CIRCUIT_SECONDS", 300.0),
-        feedback_base_url=os.environ.get("WHITEBOARD_FEEDBACK_BASE_URL", "http://127.0.0.1:11434/v1"),
+        feedback_base_url=os.environ.get("WHITEBOARD_FEEDBACK_BASE_URL", "http://127.0.0.1:11434"),
         feedback_model=os.environ.get("WHITEBOARD_FEEDBACK_MODEL", "qwen3:1.7b"),
         feedback_timeout_seconds=_env_float("WHITEBOARD_FEEDBACK_TIMEOUT_SECONDS", 10.0),
     )

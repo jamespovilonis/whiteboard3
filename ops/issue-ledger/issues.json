@@ -1,0 +1,1077 @@
+{
+  "issues": [
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-12",
+        "problem-8"
+      ],
+      "area": [
+        "candidate selection and grading candidate selection in src/recognition/studentWritingPipeline.js and Python gradeWork candidate payload handling"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 2,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T132349514705Z_0da52d6b90",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Candidate/grading path overtrusts ambiguous final-answer OCR"
+        },
+        {
+          "audit_id": "audit_20260702T133425158949Z_a1e84136a1",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Candidate/grading path overtrusts ambiguous final-answer OCR"
+        }
+      ],
+      "first_seen": "2026-07-02T13:23:49.515005Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0001",
+      "key": "candidate-selection-ambiguous-final-answer-overtrust",
+      "last_seen": "2026-07-02T13:34:25.159495Z",
+      "next_action": "Keep candidateSelectionSafeForGrading and restricted Python candidate payload behavior. Maintain replay tests for the ambiguous final-answer audits before marking resolved.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Candidate/grading path overtrusts ambiguous final-answer OCR",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-10"
+      ],
+      "area": [
+        "OCR repair in src/recognition/studentWritingPipeline.js, especially repairStandaloneOperationLatex"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 3,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T132601015622Z_44d23b674d",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Standalone operation repair rewrites numeric literals"
+        },
+        {
+          "audit_id": "audit_20260702T132606546543Z_9cc8f69a51",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Standalone operation repair rewrites numeric literals"
+        },
+        {
+          "audit_id": "audit_20260702T132819834470Z_44f1a28ce5",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Standalone operation repair rewrites numeric literals"
+        }
+      ],
+      "first_seen": "2026-07-02T13:26:14.512797Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0002",
+      "key": "standalone-operation-repair-overfires-on-numeric-literal",
+      "last_seen": "2026-07-02T13:28:23.822421Z",
+      "next_action": "Keep the plain numeric literal guard in repairStandaloneOperationLatex and exact fixture coverage for 2 / spaced decimals.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Standalone operation repair rewrites numeric literals",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-10"
+      ],
+      "area": [
+        "segmentation geometry in src/recognition/lineSegmentation.js and selection scoring in src/recognition/studentWritingPipeline.js"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 2,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T132606546543Z_9cc8f69a51",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Superscript layout is flattened into row text"
+        },
+        {
+          "audit_id": "audit_20260702T132819834470Z_44f1a28ce5",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Superscript layout is flattened into row text"
+        }
+      ],
+      "first_seen": "2026-07-02T13:26:40.717205Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0003",
+      "key": "exponent-layout-flattened-to-rows",
+      "last_seen": "2026-07-02T13:28:23.822421Z",
+      "next_action": "Keep the superscript-line candidate family and compact/equation-base guards; add post-fix replay evidence for the original exponent audit before marking resolved.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Superscript layout is flattened into row text",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-12",
+        "problem-4"
+      ],
+      "area": [
+        "operation annotation repair/filtering in src/recognition/studentWritingPipeline.js, line segmentation annotation handling in src/recognition/lineSegmentation.js, and selected-line handoff to Python grading"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 2,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T133425158949Z_a1e84136a1",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Detached/circled annotation is selected and graded as a final answer line"
+        },
+        {
+          "audit_id": "audit_20260703T141214622367Z_00171da20d",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Detached/circled annotation is selected and graded as a final answer line"
+        }
+      ],
+      "first_seen": "2026-07-02T13:34:25.159495Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0004",
+      "key": "detached-operation-annotations-selected-as-answer-lines",
+      "last_seen": "2026-07-03T14:13:05.020876Z",
+      "next_action": "Treat isolated circle/box-like strokes and detached operation marks as annotation candidates first, not answer-line candidates, unless they contain interior glyph strokes or are textually connected to an equation baseline. Exclude such annotation candidates from grading and preserve them only as annotationAttachments/visual marks. Add a regression fixture for audit_20260703T141214622367Z_00171da20d asserting latexLines stop at the unsimplified algebra rows and problemStatus remains incomplete, not correct.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Detached/circled annotation is selected and graded as a final answer line",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-1",
+        "problem-2"
+      ],
+      "area": [
+        "problem parsing/grading in src/grading/equation_grader.py"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 2,
+      "diagnostic_status": "deferred_replay_fixture_needed",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T142451952142Z_3f3e9f3660",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Inverse-trig manifest parse failure turns partial work into incorrect"
+        },
+        {
+          "audit_id": "audit_20260702T142858288579Z_d3a66ff397",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Inverse-trig manifest parse failure turns partial work into incorrect"
+        }
+      ],
+      "first_seen": "2026-07-02T14:24:51.952448Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0005",
+      "key": "inverse-trig-manifest-parse-failure-misgrades-partial-work",
+      "last_seen": "2026-07-02T14:28:58.288847Z",
+      "next_action": "Keep inverse-trig normalization before exponent parsing and the manifest-failure downgrade; add direct replay coverage before marking resolved.",
+      "notes": [
+        {
+          "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "deferred",
+      "suspected_files": [],
+      "title": "Inverse-trig manifest parse failure turns partial work into incorrect",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-2"
+      ],
+      "area": [
+        "fraction/line segmentation in src/recognition/lineSegmentation.js and selected-line/chunk fallback in src/recognition/studentWritingPipeline.js"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 1,
+      "diagnostic_status": "deferred_replay_fixture_needed",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T143019928891Z_14e2f278b4",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Two-fraction subtraction row is split into numerator/denominator fragments"
+        }
+      ],
+      "first_seen": "2026-07-02T14:30:19.930534Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0006",
+      "key": "fraction-subtraction-row-split-into-numerator-denominator-fragments",
+      "last_seen": "2026-07-02T14:30:19.930534Z",
+      "next_action": "Add audit_20260702T143019928891Z_14e2f278b4 as a fixture and prefer a single row-spanning fraction expression when two compact fraction stacks are connected by an inline operator on the shared baseline.",
+      "notes": [
+        {
+          "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
+          "timestamp": "2026-07-03T22:02:26Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "deferred",
+      "suspected_files": [],
+      "title": "Two-fraction subtraction row is split into numerator/denominator fragments",
+      "updated_at": "2026-07-03T22:02:26Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-3"
+      ],
+      "area": [
+        "line segmentation/selected candidate cover in src/recognition/lineSegmentation.js and final selected-line handoff in src/recognition/studentWritingPipeline.js"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 1,
+      "diagnostic_status": "deferred_replay_fixture_needed",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T190533049012Z_1dc4b772e2",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Intermediate algebra row dropped between recognized lines"
+        }
+      ],
+      "first_seen": "2026-07-02T19:05:33.049158Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0007",
+      "key": "intermediate-algebra-row-dropped-between-recognized-lines",
+      "last_seen": "2026-07-02T19:05:33.049158Z",
+      "next_action": "Add this audit as a real-handwriting fixture and assert the selected cover contains all three visually separated algebra rows. Add a final sanity pass for large unrecognized stroke clusters between recognized lines.",
+      "notes": [
+        {
+          "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
+          "timestamp": "2026-07-03T22:02:26Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "deferred",
+      "suspected_files": [],
+      "title": "Intermediate algebra row dropped between recognized lines",
+      "updated_at": "2026-07-03T22:02:26Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-8"
+      ],
+      "area": [
+        "Contextual OCR repair in src/recognition/studentWritingPipeline.js and compact exponent geometry in src/recognition/lineSegmentation.js"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 1,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T194443536522Z_07b99ef859",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Compact monomial exponent is read as multiplication or a baseline numeral"
+        }
+      ],
+      "first_seen": "2026-07-02T19:44:43.536772Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0008",
+      "key": "compact-monomial-exponent-omitted-after-variable",
+      "last_seen": "2026-07-02T19:44:43.536772Z",
+      "next_action": "Implemented in current worktree; keep regression fixture and wait for comparable post-fix audit evidence before marking likely resolved.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Compact monomial exponent is read as multiplication or a baseline numeral",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-11"
+      ],
+      "area": [
+        "Contextual OCR repair in src/recognition/studentWritingPipeline.js plus log-expression step classification in src/grading/equation_grader.py"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 1,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T195717638774Z_b8112da14e",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Change-of-base log denominators lose their base numerals"
+        }
+      ],
+      "first_seen": "2026-07-02T19:57:17.639094Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0009",
+      "key": "log-base-denominator-ocr-collapses-base-numerals",
+      "last_seen": "2026-07-02T19:57:17.639094Z",
+      "next_action": "Implemented in current worktree; keep regression fixture and wait for comparable post-fix audit evidence before marking likely resolved.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Change-of-base log denominators lose their base numerals",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-13",
+        "problem-15",
+        "problem-17",
+        "problem-22",
+        "problem-3",
+        "problem-6"
+      ],
+      "area": [
+        "src/recognition/studentWritingPipeline.js candidate alternate promotion, acceptedLatex/latexLines replacement, and Python gradeWork payload selection"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 8,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T200347844299Z_fee1a5b1b5",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Valid semantic OCR candidates are present but not promoted to accepted/final grading lines"
+        },
+        {
+          "audit_id": "audit_20260702T212502176190Z_d8041b0cd4",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Valid semantic OCR candidates are present but not promoted to accepted/final grading lines"
+        },
+        {
+          "audit_id": "audit_20260702T214406640165Z_33a704d394",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Valid semantic OCR candidates are present but not promoted to accepted/final grading lines"
+        },
+        {
+          "audit_id": "audit_20260702T214417603075Z_2cc1598b2a",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Valid semantic OCR candidates are present but not promoted to accepted/final grading lines"
+        },
+        {
+          "audit_id": "audit_20260702T220020765884Z_71983a33ea",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Valid semantic OCR candidates are present but not promoted to accepted/final grading lines"
+        },
+        {
+          "audit_id": "audit_20260703T125227496485Z_5e0ddd9d04",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Valid semantic OCR candidates are present but not promoted to accepted/final grading lines"
+        },
+        {
+          "audit_id": "audit_20260703T130912395585Z_bbbd388b6e",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Valid semantic OCR candidates are present but not promoted to accepted/final grading lines"
+        },
+        {
+          "audit_id": "audit_20260703T142416290747Z_ff29f8b9d9",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Valid semantic OCR candidates are present but not promoted to accepted/final grading lines"
+        }
+      ],
+      "first_seen": "2026-07-02T20:03:47.844501Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0010",
+      "key": "valid-semantic-alternate-not-promoted",
+      "last_seen": "2026-07-03T14:24:16.291076Z",
+      "next_action": "Current worktree now promotes safe grader-selected candidates consistently; add or keep a regression asserting a top-five `9` candidate replaces an OCR top `q` when gradeWork selects the numeric solution, then wait for post-fix audit evidence before marking resolved.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Valid semantic OCR candidates are present but not promoted to accepted/final grading lines",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-17",
+        "problem-input-evaluate",
+        "problem-input-simplify",
+        "problem-input-solve"
+      ],
+      "area": [
+        "Problem-input sqrt/radical OCR candidate selection in src/recognition/studentWritingPipeline.js and fraction/radical grouping in src/recognition/lineSegmentation.js"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 14,
+      "diagnostic_status": "active_recurred_after_replay_fix",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T214210100348Z_842cf3c5ad",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260702T214311827178Z_f5931328fc",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260702T214406640165Z_33a704d394",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260702T214417603075Z_2cc1598b2a",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260703T142009045331Z_b77caf301e",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260703T142042545229Z_a4a5636425",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260703T142108403836Z_cdea5bff51",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260703T150432454382Z_ab2a6ebc05",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260703T150449072590Z_6d58e8d860",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260703T150500335747Z_76031958ee",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260703T160259082821Z_65b2bed88a",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260703T162040163106Z_29aa7258fe",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260703T162055470646Z_3ef1226787",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        },
+        {
+          "audit_id": "audit_20260703T214322728771Z_95c77652c8",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+        }
+      ],
+      "first_seen": "2026-07-02T21:42:10.101158Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0011",
+      "key": "radical-index-root-structure-flattened",
+      "last_seen": "2026-07-03T21:43:52.351771Z",
+      "next_action": "Strengthen problem-input sqrt-fraction candidate ranking so exponent-preserving candidates such as x^{1 0} beat brace-repaired x^{0} candidates even when the latter has synthetic confidence 1; add replay fixture for audit_20260703T214322728771Z_95c77652c8.",
+      "notes": [
+        {
+          "text": "Diagnostic says issue recurred after replay fix.",
+          "timestamp": "2026-07-03T22:02:26Z"
+        }
+      ],
+      "severity": "P1",
+      "status": "reopened",
+      "suspected_files": [],
+      "title": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions",
+      "updated_at": "2026-07-03T22:02:26Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-19"
+      ],
+      "area": [
+        "src/recognition/studentWritingPipeline.js contextual log repair and problem input metadata validation"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 1,
+      "diagnostic_status": "deferred_replay_fixture_needed",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T215209128186Z_2c6498c760",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Fractional log bases lose their subscript braces and become multiplied arguments"
+        }
+      ],
+      "first_seen": "2026-07-02T21:54:12.999529Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0012",
+      "key": "log-fraction-base-subscript-lost",
+      "last_seen": "2026-07-02T21:54:12.999529Z",
+      "next_action": "Guardedly rewrite `\\log` followed by a fraction and variable/equality into a log-base subscript form when the problem expects a log-base solve, and validate/repair unclosed log-base braces in problem metadata.",
+      "notes": [
+        {
+          "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
+          "timestamp": "2026-07-03T22:02:26Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "deferred",
+      "suspected_files": [],
+      "title": "Fractional log bases lose their subscript braces and become multiplied arguments",
+      "updated_at": "2026-07-03T22:02:26Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-21"
+      ],
+      "area": [
+        "src/recognition/studentWritingPipeline.js finalizationBudgetMs flow and src/recognition/incrementalRecognitionScheduler.js timeout handoff"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 1,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T215813615519Z_3622a67128",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Finalization budget can return blank selected lines after OCR timeout"
+        }
+      ],
+      "first_seen": "2026-07-02T21:58:13.615624Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0013",
+      "key": "finalization-budget-blank-output",
+      "last_seen": "2026-07-02T21:58:13.615624Z",
+      "next_action": "When budget is exhausted and selected covers have strokes but no OCR candidates, run one bounded OCR fallback or return last non-empty partial; classify as incomplete/timeout, not not_started.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Finalization budget can return blank selected lines after OCR timeout",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-input-simplify",
+        "problem-input-evaluate"
+      ],
+      "area": [
+        "problem-input adjustment recognition, fraction/line segmentation in src/recognition/lineSegmentation.js, detached operation repair in src/recognition/studentWritingPipeline.js, and problem-input UI handoff"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 3,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260702T220328773710Z_d0ddea889f",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input fraction structure loses the numerator/denominator relationship"
+        },
+        {
+          "audit_id": "audit_20260703T124722130237Z_0c402355aa",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input fraction structure loses the numerator/denominator relationship"
+        },
+        {
+          "audit_id": "audit_20260703T135904053464Z_fff4e46f6d",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input fraction structure loses the numerator/denominator relationship"
+        }
+      ],
+      "first_seen": "2026-07-02T22:04:13.396389Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0014",
+      "key": "problem-input-fraction-structure-overwraps-numerator",
+      "last_seen": "2026-07-03T13:59:04.053650Z",
+      "next_action": "Keep the structural fraction merge behavior, but narrow the follow-up latex repair path tracked by problem-input-fraction-repair-overstrips-tail-and-denominator so it cannot strip valid problem-input equation tails or multi-token denominators.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Problem-input fraction structure loses the numerator/denominator relationship",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-input-solve",
+        "problem-input-evaluate"
+      ],
+      "area": [
+        "src/recognition/studentWritingPipeline.js problemInputOuterFractionLatexRepair / parseLeadingProblemInputNumerator / parseLeadingProblemInputDenominator and problem-input selected-line repair handoff"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 4,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260703T145757428980Z_f097b2eb7b",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input fraction repair over-strips numerators/denominators and equation tails"
+        },
+        {
+          "audit_id": "audit_20260703T145847809653Z_2c7ca1aee2",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input fraction repair over-strips numerators/denominators and equation tails"
+        },
+        {
+          "audit_id": "audit_20260703T145944835679Z_f48367f5a6",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input fraction repair over-strips numerators/denominators and equation tails"
+        },
+        {
+          "audit_id": "audit_20260703T150343943838Z_76819e33e8",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input fraction repair over-strips numerators/denominators and equation tails"
+        }
+      ],
+      "first_seen": "2026-07-03T14:57:57.429147Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0015",
+      "key": "problem-input-fraction-repair-overstrips-tail-and-denominator",
+      "last_seen": "2026-07-03T15:03:43.943976Z",
+      "next_action": "Keep the narrowed outer-fraction repair guard and replay tests; track the new merge-overwrite bug separately.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Problem-input fraction repair over-strips numerators/denominators and equation tails",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-input-solve"
+      ],
+      "area": [
+        "src/recognition/studentWritingPipeline.js problem-input fraction merge and full-parent candidate promotion"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 3,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260703T162343115812Z_32d4775fe7",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input fraction merge overwrites a correct full parent OCR candidate"
+        },
+        {
+          "audit_id": "audit_20260703T162357500310Z_c8fb6a97f6",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input fraction merge overwrites a correct full parent OCR candidate"
+        },
+        {
+          "audit_id": "audit_20260703T174802698645Z_6d9bb7844e",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input fraction merge overwrites a correct full parent OCR candidate"
+        }
+      ],
+      "first_seen": "2026-07-03T16:23:43.116038Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0016",
+      "key": "problem-input-fraction-merge-overrides-correct-parent-candidate",
+      "last_seen": "2026-07-03T17:48:26.995863Z",
+      "next_action": "Before problem-input fraction merge, promote a balanced same-stroke full-parent/top-five expression for additive fraction rows, not only single outer-fraction equations; reject nested synthetic merges when a cleaner full expression candidate exists.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Problem-input fraction merge overwrites a correct full parent OCR candidate",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-2"
+      ],
+      "area": [
+        "Evaluate-expression finality in src/grading/equation_grader.py and selected candidate promotion in src/recognition/studentWritingPipeline.js"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 1,
+      "diagnostic_status": "deferred_replay_fixture_needed",
+      "evidence": [
+        {
+          "audit_id": "audit_20260703T162152180907Z_1815d9d8cb",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Equivalent radical/power final answer is not accepted as complete"
+        }
+      ],
+      "first_seen": "2026-07-03T16:21:53.649029Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0017",
+      "key": "equivalent-radical-decimal-final-marked-unsimplified",
+      "last_seen": "2026-07-03T16:21:53.649029Z",
+      "next_action": "Accept exact equivalent power forms such as 2^{0.5} for sqrt(2) evaluate-expression finals; add grader replay coverage.",
+      "notes": [
+        {
+          "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
+          "timestamp": "2026-07-03T22:02:26Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "deferred",
+      "suspected_files": [],
+      "title": "Equivalent radical/power final answer is not accepted as complete",
+      "updated_at": "2026-07-03T22:02:26Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-input-evaluate"
+      ],
+      "area": [
+        "src/recognition/lineSegmentation.js problem-input structural grouping plus src/recognition/studentWritingPipeline.js mergeProblemInputFractionRows"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 2,
+      "diagnostic_status": "verified_by_replay",
+      "evidence": [
+        {
+          "audit_id": "audit_20260703T174802698645Z_6d9bb7844e",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input simple fraction addition is split into numerator/denominator rows or over-merged"
+        },
+        {
+          "audit_id": "audit_20260703T174821477617Z_59af8ac191",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input simple fraction addition is split into numerator/denominator rows or over-merged"
+        }
+      ],
+      "first_seen": "2026-07-03T17:48:26.995863Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0018",
+      "key": "problem-input-simple-fraction-addition-split-overmerged",
+      "last_seen": "2026-07-03T17:49:04.071453Z",
+      "next_action": "Treat adjacent simple fractions connected by plus/minus as one structural problem-input expression, prefer full-parent/top-five candidates for the whole additive expression, and block row merge outputs that introduce nested fractions, pi hallucinations, or line-count growth versus a complete parent candidate.",
+      "notes": [
+        {
+          "text": "Aligned with app discrepancy diagnostic replay verification status.",
+          "timestamp": "2026-07-03T22:02:25Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Problem-input simple fraction addition is split into numerator/denominator rows or over-merged",
+      "updated_at": "2026-07-03T22:02:25Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-4"
+      ],
+      "area": [
+        "src/recognition/studentWritingPipeline.js OCR candidate selection/context repair for compact exponent fractions; src/recognition/lineSegmentation.js secondary-line handling"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 1,
+      "diagnostic_status": "deferred_replay_fixture_needed",
+      "evidence": [
+        {
+          "audit_id": "audit_20260703T211024481616Z_9ac973d64b",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Superscript 1/2 exponent is read as a square-root exponent in simplification work"
+        }
+      ],
+      "first_seen": "2026-07-03T21:12:03.871772Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0019",
+      "key": "superscript-half-exponent-read-as-radical",
+      "last_seen": "2026-07-03T21:12:03.871772Z",
+      "next_action": "Add a conservative context repair/retry for compact superscript 1/2 patterns so candidates like (x^10)^{sqrt{2}}, v_2, V_2, or malformed 12} can become (x^10)^{1/2} only when geometry and simplify problem context support a fractional exponent; preserve the lower x-prime row as a separate line when present.",
+      "notes": [
+        {
+          "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
+          "timestamp": "2026-07-03T22:02:26Z"
+        }
+      ],
+      "severity": "P2",
+      "status": "deferred",
+      "suspected_files": [],
+      "title": "Superscript 1/2 exponent is read as a square-root exponent in simplification work",
+      "updated_at": "2026-07-03T22:02:26Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "affected_problem_ids": [
+        "problem-input-evaluate"
+      ],
+      "area": [
+        "src/recognition/studentWritingPipeline.js problemInputFullParentCandidateLine/full-parent repair scoring for problem-input operator candidates"
+      ],
+      "category": "recognition",
+      "diagnostic_occurrence_count": 1,
+      "diagnostic_status": "active_new",
+      "evidence": [
+        {
+          "audit_id": "audit_20260703T213932311256Z_4580bfe0d6",
+          "path": "",
+          "source": "app_discrepancy_diagnostic",
+          "summary": "Problem-input multiplication dot is promoted to equals between fractions"
+        }
+      ],
+      "first_seen": "2026-07-03T21:40:01.238215Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0020",
+      "key": "problem-input-multiplication-dot-promoted-to-equals",
+      "last_seen": "2026-07-03T21:40:01.238215Z",
+      "next_action": "Do not allow full-parent problem-input repair to promote a lower-confidence equals candidate over dot/multiply candidates for evaluate-expression input unless equation mode or strong equals geometry is present; prefer \\cdot/. candidates between adjacent fractions when the problem input mode is evaluate-expression and the visual mark is a small centered dot.",
+      "notes": [],
+      "severity": "P1",
+      "status": "triaged",
+      "suspected_files": [],
+      "title": "Problem-input multiplication dot is promoted to equals between fractions",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    }
+  ],
+  "next_id": 21,
+  "schema_version": 1
+}

@@ -37,6 +37,7 @@ import {
   getActiveProblem,
   getActiveModelResponse,
   isProblemReadyForNext,
+  isProblemSubmittable,
   reconcileProblemFlowWithStrokes,
   requestNextProblem,
   startCustomProblem,
@@ -5613,7 +5614,10 @@ test('submitting a blank custom problem marks it incomplete-ready', () => {
 
   assert.equal(submittedProblem.status, 'submitted');
   assert.equal(submittedProblem.recognition.status, 'empty');
-  assert.equal(isProblemReadyForNext(submittedProblem), true);
+  assert.equal(submittedProblem.revisionAllowed, true);
+  assert.equal(submittedProblem.answerBoxFrozen, false);
+  assert.equal(isProblemSubmittable(submittedProblem), true);
+  assert.equal(isProblemReadyForNext(submittedProblem), false);
 });
 
 test('submitted problem answer box ignores later strokes underneath it', () => {
@@ -5664,8 +5668,12 @@ test('next problem request opens the custom problem prompt after a custom submis
         : problem
     ))
   }, 1200).flow;
+  const readCorrect = applyProblemRecognitionProgress(submitted, active.id, {
+    status: 'complete',
+    result: correctRecognitionResult('x = 2', 'sig-custom-correct')
+  });
 
-  const next = requestNextProblem(submitted, 1200).flow;
+  const next = requestNextProblem(readCorrect, 1200).flow;
 
   assert.equal(next.activeProblemId, null);
   assert.equal(next.awaitingEquation, true);
@@ -5730,20 +5738,7 @@ test('next problem request waits for explicit submit after realtime read', () =>
   };
   const read = applyProblemRecognitionProgress(withAnswer, active.id, {
     status: 'complete',
-    result: {
-      latex: 'x = 2',
-      latexLines: ['x = 2'],
-      lines: [],
-      candidatePredictions: [],
-      realtime: {
-        allFinal: true,
-        components: [{
-          signature: 'a@0,0,20,20',
-          status: 'final',
-          contested: false
-        }]
-      }
-    }
+    result: correctRecognitionResult('x = 2', 'a@0,0,20,20')
   });
 
   assert.equal(isProblemReadyForNext(getActiveProblem(read)), false);
@@ -5781,20 +5776,7 @@ test('custom problem flow can render another user latex problem after realtime n
   };
   const read = applyProblemRecognitionProgress(withAnswer, firstProblem.id, {
     status: 'complete',
-    result: {
-      latex: 'x = 2',
-      latexLines: ['x = 2'],
-      lines: [],
-      candidatePredictions: [],
-      realtime: {
-        allFinal: true,
-        components: [{
-          signature: 'first-answer@0,0,80,40',
-          status: 'final',
-          contested: false
-        }]
-      }
-    }
+    result: correctRecognitionResult('x = 2', 'first-answer@0,0,80,40')
   });
   const submitted = submitActiveProblem(read, 1200).flow;
   const awaitingNextLatex = requestNextProblem(submitted, 1200).flow;
@@ -5829,7 +5811,11 @@ test('fixture-backed problem flow finishes after next problem request exhausts d
   };
 
   const submitted = submitActiveProblem(withAnswer, 1200).flow;
-  const finished = requestNextProblem(submitted, 1200).flow;
+  const readCorrect = applyProblemRecognitionProgress(submitted, active.id, {
+    status: 'complete',
+    result: correctRecognitionResult('x = 2', 'a@0,0,20,20')
+  });
+  const finished = requestNextProblem(readCorrect, 1200).flow;
 
   assert.equal(submitted.activeProblemId, active.id);
   assert.equal(submitted.awaitingEquation, false);
@@ -6115,11 +6101,23 @@ test('submitted model response shows pending feedback while llm is running', () 
         : problem
     ))
   }, 1200).flow;
-  const pending = applyProblemFeedbackProgress(submitted, active.id, {
+  const inputSignature = 'sig-pending';
+  const graded = applyProblemRecognitionProgress(submitted, active.id, {
+    status: 'complete',
+    result: {
+      ...correctRecognitionResult('x = 3', inputSignature),
+      grading: {
+        status: 'complete',
+        failed: false,
+        result: { problemStatus: 'incorrect' }
+      }
+    }
+  });
+  const pending = applyProblemFeedbackProgress(graded, active.id, {
     status: 'pending',
     source: 'ollama',
-    attemptId: buildAttemptId(active.id, 'sig-pending'),
-    inputSignature: 'sig-pending'
+    attemptId: buildAttemptId(active.id, inputSignature),
+    inputSignature
   });
 
   assert.equal(getActiveModelResponse(pending).before, 'Getting feedback...');
@@ -6144,6 +6142,218 @@ test('reconciling changed strokes clears stale feedback', () => {
 
   assert.equal(updated.feedback.status, 'idle');
   assert.equal(updated.feedback.text, '');
+});
+
+test('non-correct submitted feedback unlocks revision but not next problem', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const submitted = submitActiveProblem(problemWithAnswer(initial, active.id), 1200).flow;
+  const inputSignature = 'sig-incorrect';
+  const graded = applyProblemRecognitionProgress(submitted, active.id, {
+    status: 'complete',
+    result: {
+      latex: 'x = 5',
+      latexLines: ['x = 5'],
+      lines: [],
+      candidatePredictions: [],
+      grading: {
+        status: 'complete',
+        failed: false,
+        result: {
+          problemStatus: 'incorrect'
+        }
+      },
+      realtime: {
+        allFinal: true,
+        inputSignature,
+        components: []
+      }
+    }
+  });
+  const submittedForFeedback = {
+    ...graded,
+    problems: graded.problems.map((problem) => (
+      problem.id === active.id
+        ? { ...problem, submittedInputSignature: inputSignature }
+        : problem
+    ))
+  };
+  const withFeedback = applyProblemFeedbackProgress(submittedForFeedback, active.id, {
+    status: 'complete',
+    source: 'fallback',
+    text: 'Line 1 should be: x = 4.',
+    attemptId: buildAttemptId(active.id, inputSignature),
+    inputSignature
+  });
+  const problem = getActiveProblem(withFeedback);
+
+  assert.equal(problem.status, 'submitted');
+  assert.equal(problem.revisionAllowed, true);
+  assert.equal(problem.answerBoxFrozen, false);
+  assert.equal(isProblemSubmittable(problem), true);
+  assert.equal(isProblemReadyForNext(problem), false);
+  assert.equal(getActiveModelResponse(withFeedback).feedbackText, 'Line 1 should be: x = 4.');
+});
+
+test('editing retryable submitted work hides stale feedback and keeps recognition active', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const firstStroke = stroke('a', active.problemBox.xMin + 20, active.problemBox.yMax + 20, active.problemBox.xMin + 80, active.problemBox.yMax + 40);
+  const secondStroke = stroke('b', active.problemBox.xMin + 90, active.problemBox.yMax + 80, active.problemBox.xMin + 160, active.problemBox.yMax + 100);
+  const withAnswer = reconcileProblemFlowWithStrokes(initial, [firstStroke]);
+  const submitted = submitActiveProblem(withAnswer, 1200).flow;
+  const inputSignature = 'sig-retry';
+  const retryable = applyProblemFeedbackProgress({
+    ...submitted,
+    problems: submitted.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            submittedInputSignature: inputSignature,
+            recognition: {
+              ...problem.recognition,
+              status: 'complete',
+              result: {
+                ...correctRecognitionResult('x = 5', inputSignature),
+                grading: {
+                  status: 'complete',
+                  failed: false,
+                  result: { problemStatus: 'incomplete' }
+                }
+              }
+            }
+          }
+        : problem
+    ))
+  }, active.id, {
+    status: 'complete',
+    source: 'fallback',
+    text: 'A good next line is: x = 4.',
+    inputSignature,
+    attemptId: buildAttemptId(active.id, inputSignature)
+  });
+
+  const edited = reconcileProblemFlowWithStrokes(retryable, [firstStroke, secondStroke]);
+  const problem = getActiveProblem(edited);
+
+  assert.equal(problem.revisionAllowed, true);
+  assert.equal(problem.answerBoxFrozen, false);
+  assert.equal(problem.submittedInputSignature, null);
+  assert.equal(problem.feedback.status, 'idle');
+  assert.equal(shouldRunRecognitionForProblem(problem), true);
+  assert.equal(getActiveModelResponse(edited).feedbackText, undefined);
+});
+
+test('resubmitting retryable work freezes the revised attempt until feedback arrives', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const revisedSignature = 'sig-revised';
+  const retryable = {
+    ...problemWithAnswer(initial, active.id),
+    problems: initial.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            status: 'submitted',
+            revisionAllowed: true,
+            answerBoxFrozen: false,
+            answerStrokeIds: ['a', 'b'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 40, yMax: 80 },
+            recognition: {
+              ...problem.recognition,
+              status: 'complete',
+              realtime: { inputSignature: revisedSignature },
+              result: {
+                ...correctRecognitionResult('x = 4', revisedSignature),
+                grading: {
+                  status: 'complete',
+                  failed: false,
+                  result: { problemStatus: 'incomplete' }
+                }
+              }
+            }
+          }
+        : problem
+    ))
+  };
+
+  const resubmitted = submitActiveProblem(retryable, 1200).flow;
+  const problem = getActiveProblem(resubmitted);
+
+  assert.equal(problem.status, 'submitted');
+  assert.equal(problem.revisionAllowed, false);
+  assert.equal(problem.answerBoxFrozen, true);
+  assert.equal(problem.submittedInputSignature, revisedSignature);
+  assert.equal(problem.submissionCount, 1);
+});
+
+test('prewarmed feedback stays hidden until retryable work is resubmitted', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const inputSignature = 'sig-prewarmed';
+  const prewarmed = applyProblemFeedbackProgress({
+    ...problemWithAnswer(initial, active.id),
+    problems: initial.problems.map((problem) => (
+      problem.id === active.id
+        ? {
+            ...problem,
+            answerStrokeIds: ['a'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 20, yMax: 20 },
+            recognition: {
+              ...problem.recognition,
+              status: 'complete',
+              result: {
+                ...correctRecognitionResult('x = 5', inputSignature),
+                grading: {
+                  status: 'complete',
+                  failed: false,
+                  result: { problemStatus: 'incorrect' }
+                }
+              }
+            }
+          }
+        : problem
+    ))
+  }, active.id, {
+    status: 'complete',
+    source: 'fallback',
+    text: 'Line 1 should be: x = 4.',
+    inputSignature,
+    attemptId: buildAttemptId(active.id, inputSignature)
+  });
+
+  assert.equal(getActiveModelResponse(prewarmed).feedbackText, undefined);
+
+  const submitted = submitActiveProblem(prewarmed, 1200).flow;
+  const problem = getActiveProblem(submitted);
+
+  assert.equal(problem.submittedInputSignature, inputSignature);
+  assert.equal(problem.revisionAllowed, true);
+  assert.equal(getActiveModelResponse(submitted).feedbackText, 'Line 1 should be: x = 4.');
+});
+
+test('correct submitted work remains frozen and ready for next', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const inputSignature = 'sig-correct-final';
+  const submitted = submitActiveProblem(applyProblemRecognitionProgress(problemWithAnswer(initial, active.id), active.id, {
+    status: 'complete',
+    result: correctRecognitionResult('x = 4', inputSignature)
+  }), 1200).flow;
+  const withFeedback = applyProblemFeedbackProgress(submitted, active.id, {
+    status: 'complete',
+    source: 'deterministic',
+    text: 'Correct! Great job!',
+    inputSignature,
+    attemptId: buildAttemptId(active.id, inputSignature)
+  });
+  const problem = getActiveProblem(withFeedback);
+
+  assert.equal(problem.revisionAllowed, false);
+  assert.equal(problem.answerBoxFrozen, true);
+  assert.equal(isProblemSubmittable(problem), false);
+  assert.equal(isProblemReadyForNext(problem), true);
+  assert.equal(shouldRunRecognitionForProblem(problem), false);
 });
 
 test('submitted model response shows correct before all recognition is complete', () => {
@@ -6343,11 +6553,11 @@ test('recognition context does not leak previous problem latex into new submissi
     ))
   };
   const afterFirstSubmit = submitActiveProblem(withFirstAnswer, 1200).flow;
-  const completedFirst = applyProblemRecognitionResult(afterFirstSubmit, firstProblem.id, {
-    latex: '\\eta = 5',
-    latexLines: ['\\eta = 5'],
-    lines: []
-  });
+  const completedFirst = applyProblemRecognitionResult(
+    afterFirstSubmit,
+    firstProblem.id,
+    correctRecognitionResult('\\eta = 5', 'a@0,0,20,20')
+  );
   const withNextProblem = requestNextProblem(completedFirst, 1200).flow;
   const nextProblem = getActiveProblem(withNextProblem);
 
@@ -7820,6 +8030,49 @@ function bboxForStrokes(strokes) {
     xMax: -Infinity,
     yMax: -Infinity,
   });
+}
+
+function problemWithAnswer(flow, problemId, overrides = {}) {
+  return {
+    ...flow,
+    problems: flow.problems.map((problem) => (
+      problem.id === problemId
+        ? {
+            ...problem,
+            answerStrokeIds: ['a'],
+            answerBox: { xMin: 0, yMin: 0, xMax: 20, yMax: 20 },
+            ...overrides
+          }
+        : problem
+    ))
+  };
+}
+
+function correctRecognitionResult(latex = 'x = 2', inputSignature = 'sig-correct') {
+  return {
+    latex,
+    latexLines: [latex],
+    lines: [],
+    candidatePredictions: [],
+    grading: {
+      status: 'complete',
+      failed: false,
+      result: {
+        problemStatus: 'correct',
+        foundSolutions: [],
+        missingSolutions: []
+      }
+    },
+    realtime: {
+      allFinal: true,
+      inputSignature,
+      components: [{
+        signature: inputSignature,
+        status: 'final',
+        contested: false
+      }]
+    }
+  };
 }
 
 function stroke(id, xMin, yMin, xMax, yMax) {
