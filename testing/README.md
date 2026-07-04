@@ -102,19 +102,36 @@ Generate a linear-equation trace from those atoms:
 
 ```sh
 npm run handwriting:hybrid-linear -- \
-  --linear-a 3 \
-  --linear-b 2 \
-  --linear-x 4 \
+  --random-linear \
   --seed 31 \
   --include-crossout \
   --output testing/results/hybrid_handwriting/linear.json
 ```
 
-This emits a stroke-level solution for `3x + 2 = 14`, including subtraction,
-division, a final `x=4`, and optional visual annotations such as a circled final
-answer or crossed-out row. The normal regression suite validates the catalog,
-generated fixture schema, exact segmentation groups, calibration bands, and a
-mocked browser E2E flow that segments, reads, and grades the generated work.
+This samples a seeded positive-integer linear equation, solves it, and emits a
+stroke-level solution using real handwriting atoms. The generated work includes
+subtraction, division, per-character variant cycling, underlined intermediate
+operation rows, a final answer, and optional visual annotations such as a
+circled final answer or crossed-out row. Use `--linear-a`, `--linear-b`, and
+`--linear-x` without `--random-linear` when a fixed equation is needed. The
+normal regression suite validates the catalog, generated fixture schema, exact
+segmentation groups, calibration bands, and a mocked browser E2E flow that
+segments, reads, and grades the generated work.
+
+Generate a broader complex-math trace from the same real-stroke catalog:
+
+```sh
+npm run handwriting:hybrid-complex -- \
+  --seed 41 \
+  --include-crossout \
+  --output testing/results/hybrid_handwriting/complex.json
+```
+
+The complex fixture covers fractions, exponents, radicals, plus-minus answers,
+multi-line rational equation solving, and detached operation annotations. Its
+detached annotations and optional cross-out/circle marks are visual-only stroke
+groups, so the segmentation tests can verify the answer lines without grading
+the scratch marks as student work.
 
 Regenerate the curated seed drafts from the local audit log directory:
 

@@ -19,7 +19,9 @@ from realistic_handwriting import (
     DEFAULT_AUDIT_LOG_DIR,
     build_calibration_report,
     build_calibration_summary,
+    build_hybrid_complex_math_fixture,
     build_hybrid_linear_equation_fixture,
+    build_random_hybrid_linear_equation_fixture,
     build_realistic_fixture,
     classify_features,
     fixture_metrics,
@@ -27,6 +29,7 @@ from realistic_handwriting import (
     load_handwriting_atom_catalog,
     load_audit_input_payloads,
     load_corpus_records,
+    sample_linear_equation_parameters,
     summarize_distribution,
     validate_fixture_against_calibration,
 )
@@ -39,12 +42,56 @@ class RealisticHandwritingHarnessTests(unittest.TestCase):
     def test_curated_catalog_extracts_real_stroke_atoms(self):
         catalog = load_handwriting_atom_catalog()
 
-        for label in ["3x", "+", "2", "=", "12", "x=4", "circle", "crossout"]:
+        for label in ["3x", "+", "2", "=", "12", "x=4", "circle", "crossout", "underline"]:
             self.assertIn(label, catalog)
             self.assertGreater(len(catalog[label][0].strokes), 0)
             self.assertGreater(catalog[label][0].width, 0)
             self.assertGreater(catalog[label][0].height, 0)
             self.assertTrue(catalog[label][0].source_fixture_slug)
+        minimum_variants = {
+            "0": 4,
+            "x": 4,
+            "=": 3,
+            "1": 3,
+            "2": 4,
+            "3": 3,
+            "4": 4,
+            "5": 4,
+            "6": 3,
+            "7": 3,
+            "8": 4,
+            "9": 4,
+            "+": 3,
+            "-": 4,
+            "/": 3,
+            "3x": 2,
+            "12": 3,
+            "circle": 2,
+            "underline": 3,
+        }
+        for label, minimum in minimum_variants.items():
+            self.assertGreaterEqual(len(catalog[label]), minimum, label)
+        for digit in "0123456789":
+            self.assertIn(digit, catalog)
+        complex_labels = [
+            "fraction_addition_row",
+            "x_squared",
+            "frac_9_4",
+            "plus_minus",
+            "frac_3_2",
+            "frac_7_sqrt9",
+            "sqrt_x18_over_x",
+            "sqrt_25",
+            "frac_7_3",
+            "rational_factor_row",
+            "rational_linear_row",
+            "rational_isolated_row",
+            "detached_operation_left",
+            "detached_operation_right",
+        ]
+        for label in complex_labels:
+            self.assertIn(label, catalog)
+            self.assertGreater(len(catalog[label][0].strokes), 0)
 
     def test_builds_mixed_fixture_from_real_stroke_trajectories(self):
         fixture = build_realistic_fixture("mixed-marks", seed=17)
@@ -161,6 +208,28 @@ class RealisticHandwritingHarnessTests(unittest.TestCase):
         self.assertTrue(features["has_circled_answer"])
         self.assertTrue(features["has_crossout_or_scratch"])
         self.assertTrue(any(stroke.get("sourceAtomLabel") == "3x" for stroke in fixture["strokes"]))
+        self.assertGreaterEqual(
+            len({stroke.get("sourceFixtureSlug") for stroke in fixture["strokes"] if stroke.get("sourceAtomLabel") == "="}),
+            3,
+        )
+        self.assertGreaterEqual(
+            len({stroke.get("sourceFixtureSlug") for stroke in fixture["strokes"] if stroke.get("sourceAtomLabel") == "2"}),
+            2,
+        )
+        self.assertGreaterEqual(
+            len({stroke.get("sourceFixtureSlug") for stroke in fixture["strokes"] if stroke.get("sourceAtomLabel") == "-"}),
+            2,
+        )
+        self.assertGreaterEqual(
+            len({stroke.get("sourceFixtureSlug") for stroke in fixture["strokes"] if stroke.get("sourceAtomLabel") == "/"}),
+            2,
+        )
+        underline_strokes = [
+            stroke for stroke in fixture["strokes"]
+            if stroke.get("sourceAtomLabel") == "underline"
+        ]
+        self.assertEqual(len(underline_strokes), 4)
+        self.assertTrue({stroke["id"] for stroke in underline_strokes} <= set(fixture["visualOnlyStrokeIds"]))
 
     def test_hybrid_linear_fixture_segments_into_expected_rows(self):
         fixture = build_hybrid_linear_equation_fixture(a=3, b=2, x_value=4, seed=21)
@@ -178,6 +247,106 @@ class RealisticHandwritingHarnessTests(unittest.TestCase):
 
         self.assertEqual(result["strokeCount"], len(fixture["strokes"]))
         self.assertEqual(actual_keys, expected_keys, json.dumps(result["selected"], indent=2))
+
+    def test_random_hybrid_linear_generator_samples_and_solves_seeded_equations(self):
+        fixtures = [
+            build_random_hybrid_linear_equation_fixture(seed=seed, include_crossout=(seed % 2 == 0))
+            for seed in [3, 11, 19, 27]
+        ]
+        problems = {fixture["problemLatex"] for fixture in fixtures}
+
+        self.assertGreater(len(problems), 1)
+        for fixture in fixtures:
+            metadata = fixture["problemMetadata"]
+            a = metadata["a"]
+            b = metadata["b"]
+            c_value = metadata["c"]
+            solution = metadata["solution"]
+            self.assertEqual(metadata["problemSource"], "seeded-random-family")
+            self.assertEqual(c_value, a * solution + b)
+            self.assertEqual(fixture["problemLatex"], f"{a}x + {b} = {c_value}")
+            self.assertEqual(fixture["expectedLatexLines"][0], f"{a}x+{b}={c_value}")
+            self.assertEqual(fixture["expectedLatexLines"][-1], f"x={solution}")
+            self.assertEqual(metadata["answerLatex"], f"x={solution}")
+            self.assertIn("sampledParameters", metadata)
+
+    def test_random_hybrid_linear_fixture_segments_into_expected_rows(self):
+        fixture = build_random_hybrid_linear_equation_fixture(seed=31)
+        completed = subprocess.run(
+            ["node", str(SEGMENTER), "line-order"],
+            cwd=str(ROOT),
+            input=json.dumps(fixture),
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        result = json.loads(completed.stdout)
+        expected_keys = sorted(stroke_group_key(group["strokeIds"]) for group in fixture["expectedLineGroups"])
+        actual_keys = sorted(stroke_group_key(candidate["strokeIds"]) for candidate in result["selected"])
+
+        self.assertEqual(result["strokeCount"], len(fixture["strokes"]))
+        self.assertEqual(actual_keys, expected_keys, json.dumps(result["selected"], indent=2))
+
+    def test_hybrid_complex_math_fixture_covers_structural_math_and_annotations(self):
+        fixture = build_hybrid_complex_math_fixture(seed=41, include_crossout=True)
+        features = classify_features(fixture)
+
+        self.assertEqual(fixture["fixtureKind"], "hybrid-real-stroke-complex-math")
+        self.assertEqual(len(fixture["expectedLineGroups"]), 8)
+        self.assertIn("\\frac{1}{2}+\\frac{3}{4}", fixture["expectedLatexLines"])
+        self.assertIn("x^2=\\frac{9}{4}", fixture["expectedLatexLines"])
+        self.assertIn("x=\\pm\\frac{3}{2}", fixture["expectedLatexLines"])
+        self.assertIn("\\sqrt{25}", fixture["expectedLatexLines"])
+        self.assertIn("(x-1)(x-1)", fixture["expectedLatexLines"])
+        self.assertIn("12=4x-4", fixture["expectedLatexLines"])
+        self.assertIn("16=4x", fixture["expectedLatexLines"])
+        self.assertIn("detached-operation-annotations", fixture["problemMetadata"]["coveredStructures"])
+        self.assertTrue(features["has_pressure"])
+        self.assertTrue(features["has_multi_stroke_symbols"])
+        self.assertTrue(features["has_visual_only_marks"])
+        self.assertTrue(features["has_circled_answer"])
+        self.assertTrue(features["has_crossout_or_scratch"])
+        detached_marks = [
+            mark for mark in fixture["visualMarks"]
+            if mark.get("type") == "detached_operation_annotation"
+        ]
+        self.assertEqual(len(detached_marks), 2)
+        detached_strokes = [
+            stroke for stroke in fixture["strokes"]
+            if str(stroke.get("sourceAtomLabel") or "").startswith("detached_operation_")
+        ]
+        self.assertGreater(len(detached_strokes), 0)
+        self.assertTrue({stroke["id"] for stroke in detached_strokes} <= set(fixture["visualOnlyStrokeIds"]))
+
+    def test_hybrid_complex_math_fixture_segments_into_expected_rows(self):
+        fixture = build_hybrid_complex_math_fixture(seed=41, include_crossout=True)
+        completed = subprocess.run(
+            ["node", str(SEGMENTER), "line-order"],
+            cwd=str(ROOT),
+            input=json.dumps(fixture),
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        result = json.loads(completed.stdout)
+        expected_keys = sorted(stroke_group_key(group["strokeIds"]) for group in fixture["expectedLineGroups"])
+        actual_keys = sorted(stroke_group_key(candidate["strokeIds"]) for candidate in result["selected"])
+
+        self.assertEqual(result["strokeCount"], len(fixture["strokes"]))
+        self.assertEqual(actual_keys, expected_keys, json.dumps(result["selected"], indent=2))
+
+    def test_linear_sampler_is_reproducible_and_respects_bounds(self):
+        first = sample_linear_equation_parameters(seed=77, max_coefficient=5, max_constant=4, max_solution=6)
+        second = sample_linear_equation_parameters(seed=77, max_coefficient=5, max_constant=4, max_solution=6)
+
+        self.assertEqual(first, second)
+        self.assertGreaterEqual(first.a, 2)
+        self.assertLessEqual(first.a, 5)
+        self.assertGreaterEqual(first.b, 1)
+        self.assertLessEqual(first.b, 4)
+        self.assertGreaterEqual(first.x_value, 1)
+        self.assertLessEqual(first.x_value, 6)
+        self.assertEqual(first.c_value, first.a * first.x_value + first.b)
 
     def test_hybrid_linear_fixture_validates_against_real_distribution(self):
         calibration = build_calibration_summary(audit_log_dir=Path("/path/that/does/not/exist"))

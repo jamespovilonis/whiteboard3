@@ -10,10 +10,40 @@
       "strokeIds": ["s001", "s002"]
     },
     {
+      "label": "x",
+      "kind": "symbol",
+      "sourceFixtureSlug": "circled-intermediate-result",
+      "strokeIds": ["s013", "s014"]
+    },
+    {
+      "label": "x",
+      "kind": "symbol",
+      "sourceFixtureSlug": "crossout-scratch-division",
+      "strokeIds": ["s020", "s021"]
+    },
+    {
+      "label": "x",
+      "kind": "symbol",
+      "sourceFixtureSlug": "plus-minus-fraction-solution",
+      "strokeIds": ["s010", "s011"]
+    },
+    {
       "label": "=",
       "kind": "operator",
       "sourceFixtureSlug": "circled-x-equals-four",
       "strokeIds": ["s003", "s004"]
+    },
+    {
+      "label": "=",
+      "kind": "operator",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s015", "s016"]
+    },
+    {
+      "label": "=",
+      "kind": "operator",
+      "sourceFixtureSlug": "circled-intermediate-result",
+      "strokeIds": ["s009", "s010"]
     },
     {
       "label": "1",
@@ -22,10 +52,40 @@
       "strokeIds": ["s013"]
     },
     {
+      "label": "1",
+      "kind": "digit",
+      "sourceFixtureSlug": "fragmented-invalid-expression",
+      "strokeIds": ["s001"]
+    },
+    {
+      "label": "1",
+      "kind": "digit",
+      "sourceFixtureSlug": "circled-intermediate-result",
+      "strokeIds": ["s011"]
+    },
+    {
       "label": "2",
       "kind": "digit",
       "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
       "strokeIds": ["s014"]
+    },
+    {
+      "label": "2",
+      "kind": "digit",
+      "sourceFixtureSlug": "fragmented-invalid-expression",
+      "strokeIds": ["s007"]
+    },
+    {
+      "label": "2",
+      "kind": "digit",
+      "sourceFixtureSlug": "problem-input-simple-fraction-addition",
+      "strokeIds": ["s003"]
+    },
+    {
+      "label": "2",
+      "kind": "digit",
+      "sourceFixtureSlug": "compact-plus-minus-solution",
+      "strokeIds": ["s008"]
     },
     {
       "label": "3",
@@ -34,10 +94,40 @@
       "strokeIds": ["s006"]
     },
     {
+      "label": "3",
+      "kind": "digit",
+      "sourceFixtureSlug": "plus-minus-fraction-solution",
+      "strokeIds": ["s018"]
+    },
+    {
+      "label": "3",
+      "kind": "digit",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s053", "s054"]
+    },
+    {
       "label": "4",
       "kind": "digit",
       "sourceFixtureSlug": "circled-x-equals-four",
       "strokeIds": ["s005", "s006"]
+    },
+    {
+      "label": "4",
+      "kind": "digit",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s017", "s018"]
+    },
+    {
+      "label": "4",
+      "kind": "digit",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s040", "s041"]
+    },
+    {
+      "label": "4",
+      "kind": "digit",
+      "sourceFixtureSlug": "detached-circled-zero-annotation",
+      "strokeIds": ["s008"]
     },
     {
       "label": "5",
@@ -46,15 +136,154 @@
       "strokeIds": ["s024"]
     },
     {
+      "label": "5",
+      "kind": "digit",
+      "sourceFixtureSlug": "circled-final-answer",
+      "strokeIds": ["s007"]
+    },
+    {
+      "label": "5",
+      "kind": "digit",
+      "sourceFixtureSlug": "semantic-alternate-absolute-value-denominator",
+      "strokeIds": ["s001"],
+      "transform": {"scale": 0.72}
+    },
+    {
+      "label": "5",
+      "kind": "digit",
+      "sourceFixtureSlug": "problem-input-fraction-with-decimal-denominator",
+      "strokeIds": ["s009"]
+    },
+    {
       "label": "6",
       "kind": "digit",
       "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
       "strokeIds": ["s037"]
     },
     {
+      "label": "6",
+      "kind": "digit",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s037"],
+      "transform": {"scale": 0.88}
+    },
+    {
+      "label": "6",
+      "kind": "digit",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s037"],
+      "transform": {"scale": 1.12}
+    },
+    {
+      "label": "0",
+      "kind": "digit",
+      "sourceFixtureSlug": "fraction-subtraction-oversegmented",
+      "strokeIds": ["s008"]
+    },
+    {
+      "label": "0",
+      "kind": "digit",
+      "sourceFixtureSlug": "circled-intermediate-result",
+      "strokeIds": ["s012"]
+    },
+    {
+      "label": "0",
+      "kind": "digit",
+      "sourceFixtureSlug": "circled-final-answer",
+      "strokeIds": ["s010"]
+    },
+    {
+      "label": "0",
+      "kind": "digit",
+      "sourceFixtureSlug": "problem-input-two-fraction-equation-tail",
+      "strokeIds": ["s011"]
+    },
+    {
+      "label": "7",
+      "kind": "digit",
+      "sourceFixtureSlug": "detached-operation-radical-fraction",
+      "strokeIds": ["s001"]
+    },
+    {
+      "label": "7",
+      "kind": "digit",
+      "sourceFixtureSlug": "radical-fraction-simplification-no-leading-equals",
+      "strokeIds": ["s006"]
+    },
+    {
+      "label": "7",
+      "kind": "digit",
+      "sourceFixtureSlug": "radical-fraction-simplification-leading-minus",
+      "strokeIds": ["s001"]
+    },
+    {
+      "label": "8",
+      "kind": "digit",
+      "sourceFixtureSlug": "problem-input-fraction-3x-over-x-plus-1-equals-8",
+      "strokeIds": ["s012"],
+      "transform": {"scale": 0.62}
+    },
+    {
+      "label": "8",
+      "kind": "digit",
+      "sourceFixtureSlug": "problem-input-two-fraction-denominator-18",
+      "strokeIds": ["s001"],
+      "transform": {"scale": 0.62}
+    },
+    {
+      "label": "8",
+      "kind": "digit",
+      "sourceFixtureSlug": "problem-input-two-fraction-denominator-18",
+      "strokeIds": ["s004"],
+      "transform": {"scale": 0.72}
+    },
+    {
+      "label": "8",
+      "kind": "digit",
+      "sourceFixtureSlug": "problem-input-fraction-with-decimal-denominator",
+      "strokeIds": ["s001"],
+      "transform": {"scale": 0.72}
+    },
+    {
+      "label": "9",
+      "kind": "digit",
+      "sourceFixtureSlug": "circled-intermediate-result",
+      "strokeIds": ["s018"]
+    },
+    {
+      "label": "9",
+      "kind": "digit",
+      "sourceFixtureSlug": "detached-operation-radical-fraction",
+      "strokeIds": ["s005"]
+    },
+    {
+      "label": "9",
+      "kind": "digit",
+      "sourceFixtureSlug": "power-product-top-five-final",
+      "strokeIds": ["s008"]
+    },
+    {
+      "label": "9",
+      "kind": "digit",
+      "sourceFixtureSlug": "compact-monomial-exponent-ocr",
+      "strokeIds": ["s004"]
+    },
+    {
       "label": "+",
       "kind": "operator",
       "sourceFixtureSlug": "problem-input-simple-fraction-addition",
+      "strokeIds": ["s004", "s005"]
+    },
+    {
+      "label": "+",
+      "kind": "operator",
+      "sourceFixtureSlug": "fragmented-invalid-expression",
+      "strokeIds": ["s002", "s003"]
+    },
+    {
+      "label": "+",
+      "kind": "operator",
+      "sourceFixtureSlug": "crossout-scratch-division",
       "strokeIds": ["s004", "s005"]
     },
     {
@@ -64,11 +293,43 @@
       "strokeIds": ["s022"]
     },
     {
+      "label": "-",
+      "kind": "operator",
+      "sourceFixtureSlug": "circled-intermediate-result",
+      "strokeIds": ["s007"]
+    },
+    {
+      "label": "-",
+      "kind": "operator",
+      "sourceFixtureSlug": "detached-circled-zero-annotation",
+      "strokeIds": ["s010"]
+    },
+    {
+      "label": "-",
+      "kind": "operator",
+      "sourceFixtureSlug": "readable-expansion-empty-ocr",
+      "strokeIds": ["s024"]
+    },
+    {
       "label": "/",
       "kind": "operator",
       "sourceFixtureSlug": "crossout-scratch-division",
       "strokeIds": ["s012"],
       "transform": {"scale": 0.34}
+    },
+    {
+      "label": "/",
+      "kind": "operator",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s055"],
+      "transform": {"scale": 0.8}
+    },
+    {
+      "label": "/",
+      "kind": "operator",
+      "sourceFixtureSlug": "plus-minus-fraction-solution",
+      "strokeIds": ["s019"],
+      "transform": {"scale": 0.6}
     },
     {
       "label": "3x",
@@ -77,10 +338,28 @@
       "strokeIds": ["s001", "s002", "s003"]
     },
     {
+      "label": "3x",
+      "kind": "cluster",
+      "sourceFixtureSlug": "readable-expansion-empty-ocr",
+      "strokeIds": ["s012", "s013", "s014"]
+    },
+    {
       "label": "12",
       "kind": "cluster",
       "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
       "strokeIds": ["s013", "s014"]
+    },
+    {
+      "label": "12",
+      "kind": "cluster",
+      "sourceFixtureSlug": "fragmented-invalid-expression",
+      "strokeIds": ["s001", "s007"]
+    },
+    {
+      "label": "12",
+      "kind": "cluster",
+      "sourceFixtureSlug": "detached-circled-zero-annotation",
+      "strokeIds": ["s001", "s002"]
     },
     {
       "label": "x=4",
@@ -89,10 +368,137 @@
       "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006"]
     },
     {
+      "label": "frac_1_2",
+      "kind": "fraction",
+      "sourceFixtureSlug": "problem-input-simple-fraction-addition",
+      "strokeIds": ["s001", "s002", "s003"]
+    },
+    {
+      "label": "frac_3_4",
+      "kind": "fraction",
+      "sourceFixtureSlug": "problem-input-simple-fraction-addition",
+      "strokeIds": ["s006", "s007", "s008", "s009"]
+    },
+    {
+      "label": "fraction_addition_row",
+      "kind": "cluster",
+      "sourceFixtureSlug": "problem-input-simple-fraction-addition",
+      "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009"],
+      "transform": {"scale": 0.92}
+    },
+    {
+      "label": "x_squared",
+      "kind": "cluster",
+      "sourceFixtureSlug": "plus-minus-fraction-solution",
+      "strokeIds": ["s001", "s002", "s003"]
+    },
+    {
+      "label": "frac_9_4",
+      "kind": "fraction",
+      "sourceFixtureSlug": "plus-minus-fraction-solution",
+      "strokeIds": ["s006", "s007", "s008", "s009"]
+    },
+    {
+      "label": "plus_minus",
+      "kind": "operator",
+      "sourceFixtureSlug": "compact-plus-minus-solution",
+      "strokeIds": ["s005", "s006", "s007"],
+      "transform": {"scale": 0.82}
+    },
+    {
+      "label": "frac_3_2",
+      "kind": "fraction",
+      "sourceFixtureSlug": "plus-minus-fraction-solution",
+      "strokeIds": ["s018", "s019", "s020"]
+    },
+    {
+      "label": "frac_7_sqrt9",
+      "kind": "fraction",
+      "sourceFixtureSlug": "radical-fraction-simplification-no-leading-equals",
+      "strokeIds": ["s001", "s002", "s003", "s004", "s005"],
+      "transform": {"scale": 0.78}
+    },
+    {
+      "label": "frac_7_3",
+      "kind": "fraction",
+      "sourceFixtureSlug": "radical-fraction-simplification-no-leading-equals",
+      "strokeIds": ["s006", "s007", "s008", "s009"],
+      "transform": {"scale": 0.8}
+    },
+    {
+      "label": "sqrt_x18_over_x",
+      "kind": "fraction",
+      "sourceFixtureSlug": "problem-input-sqrt-fraction-over-x",
+      "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008"],
+      "transform": {"scale": 0.58}
+    },
+    {
+      "label": "sqrt_25",
+      "kind": "radical",
+      "sourceFixtureSlug": "problem-input-fraction-with-decimal-denominator",
+      "strokeIds": ["s007", "s008", "s009"],
+      "transform": {"scale": 0.86}
+    },
+    {
+      "label": "power_product_expanded",
+      "kind": "cluster",
+      "sourceFixtureSlug": "power-product-top-five-final",
+      "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007"],
+      "transform": {"scale": 0.74}
+    },
+    {
+      "label": "power_product_simplified",
+      "kind": "cluster",
+      "sourceFixtureSlug": "power-product-top-five-final",
+      "strokeIds": ["s008", "s009", "s010", "s011", "s012"],
+      "transform": {"scale": 0.78}
+    },
+    {
+      "label": "rational_factor_row",
+      "kind": "cluster",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010", "s011", "s012"],
+      "transform": {"scale": 0.46}
+    },
+    {
+      "label": "rational_linear_row",
+      "kind": "cluster",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s013", "s014", "s015", "s016", "s017", "s018", "s019", "s020", "s021", "s022", "s023", "s024"],
+      "transform": {"scale": 0.72}
+    },
+    {
+      "label": "rational_isolated_row",
+      "kind": "cluster",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s036", "s037", "s038", "s039", "s040", "s041", "s042", "s043"],
+      "transform": {"scale": 0.76}
+    },
+    {
+      "label": "detached_operation_left",
+      "kind": "visual-mark",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s025", "s026", "s027", "s028"],
+      "transform": {"scale": 0.86}
+    },
+    {
+      "label": "detached_operation_right",
+      "kind": "visual-mark",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s029", "s030", "s031", "s032", "s033", "s034", "s035"],
+      "transform": {"scale": 0.7}
+    },
+    {
       "label": "circle",
       "kind": "visual-mark",
       "sourceFixtureSlug": "circled-x-equals-four",
       "strokeIds": ["s007"]
+    },
+    {
+      "label": "circle",
+      "kind": "visual-mark",
+      "sourceFixtureSlug": "detached-circled-zero-annotation",
+      "strokeIds": ["s013"]
     },
     {
       "label": "crossout",
@@ -100,6 +506,27 @@
       "sourceFixtureSlug": "crossout-scratch-division",
       "strokeIds": ["s012"],
       "transform": {"scale": 0.62}
+    },
+    {
+      "label": "underline",
+      "kind": "visual-mark",
+      "sourceFixtureSlug": "rational-detached-parenthetical-annotations",
+      "strokeIds": ["s044"],
+      "transform": {"scale": 0.55}
+    },
+    {
+      "label": "underline",
+      "kind": "visual-mark",
+      "sourceFixtureSlug": "crossout-scratch-division",
+      "strokeIds": ["s016"],
+      "transform": {"scale": 0.55}
+    },
+    {
+      "label": "underline",
+      "kind": "visual-mark",
+      "sourceFixtureSlug": "compact-plus-minus-solution",
+      "strokeIds": ["s007"],
+      "transform": {"scale": 0.9}
     }
   ]
 }

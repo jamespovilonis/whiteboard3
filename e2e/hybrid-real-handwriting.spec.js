@@ -14,11 +14,32 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('hybrid real-stroke linear equation trace segments, reads, and grades correctly', async ({ page }) => {
   const fixture = generateHybridLinearFixture();
+  await runHybridFixtureE2E(page, fixture);
+});
+
+test('hybrid real-stroke complex math trace segments, reads, and grades correctly', async ({ page }) => {
+  const fixture = generateHybridComplexMathFixture();
+  await runHybridFixtureE2E(page, fixture);
+});
+
+async function runHybridFixtureE2E(page, fixture) {
+  const answerLatex = fixture.problemMetadata.answerLatex || 'x=4';
+  const solution = String(fixture.problemMetadata.solution ?? (answerLatex.replace(/^x\s*=\s*/, '') || '4'));
   await installInvalidProblemSourceRoute(page, { problems: [] });
   const mockRecognition = await installMockRecognitionRoutes(page, {
     latexLines: repeatedLatex(fixture.expectedLatexLines),
-    defaultLatex: 'x=4',
-    problemStatus: 'correct'
+    defaultLatex: answerLatex,
+    problemStatus: 'correct',
+    answerManifest: {
+      problem_raw: fixture.problemLatex,
+      responseKind: 'solution_set',
+      variable: 'x',
+      cardinality: 'finite',
+      exact_set: [solution],
+      decimal_set: [Number(solution)],
+      tolerance: 0.005,
+      acceptable_strings: [answerLatex, solution]
+    }
   });
 
   await page.clock.install({ time: new Date('2026-07-03T12:00:00.000Z') });
@@ -37,7 +58,7 @@ test('hybrid real-stroke linear equation trace segments, reads, and grades corre
   expect(result).not.toBeNull();
   expect(entry.recognition.status).toBe('complete');
   expect(result.lines.length).toBeGreaterThanOrEqual(1);
-  expect(result.lines.map((line) => line.acceptedLatex || line.latex || '')).toContain('x=4');
+  expect(result.lines.map((line) => line.acceptedLatex || line.latex || '')).toContain(answerLatex);
   expect(result.grading?.result?.problemStatus).toBe('correct');
   expect(mockRecognition.endpoints()).toContain('/segment-lines');
   expect(mockRecognition.endpoints()).toContain('/recognize');
@@ -50,16 +71,28 @@ test('hybrid real-stroke linear equation trace segments, reads, and grades corre
   ));
   const expectedKeys = fixture.expectedLineGroups.map((group) => strokeGroupKey(group.strokeIds));
   expect(new Set(selectedKeys)).toEqual(new Set(expectedKeys));
-});
+}
 
 function generateHybridLinearFixture() {
+  return generateHybridFixture([
+    '--hybrid-linear',
+    '--random-linear',
+    '--seed', '31'
+  ]);
+}
+
+function generateHybridComplexMathFixture() {
+  return generateHybridFixture([
+    '--hybrid-complex-math',
+    '--seed', '41',
+    '--include-crossout'
+  ]);
+}
+
+function generateHybridFixture(args) {
   const raw = execFileSync('python3', [
     'testing/realistic_handwriting.py',
-    '--hybrid-linear',
-    '--linear-a', '3',
-    '--linear-b', '2',
-    '--linear-x', '4',
-    '--seed', '31',
+    ...args,
     '--include-fixture'
   ], {
     cwd: ROOT,
@@ -77,9 +110,9 @@ async function injectTrace(page, fixture, activeProblem) {
   const dx = activeProblem.boardPosition.x + 8 - Number(fixture.answerBox?.xMin || 0);
   const dy = activeProblem.problemBox.yMax + 56 - Number(fixture.answerBox?.yMin || 0);
   const translated = fixture.strokes.map((stroke) => translateStroke(stroke, dx, dy));
-  await page.evaluate((strokes) => {
-    window.__whiteboardE2E?.replaceStrokes?.(strokes, 'hybrid-real-stroke-linear-equation');
-  }, translated);
+  await page.evaluate(({ strokes, fixtureKind }) => {
+    window.__whiteboardE2E?.replaceStrokes?.(strokes, fixtureKind);
+  }, { strokes: translated, fixtureKind: fixture.fixtureKind });
   await page.waitForFunction((count) => (
     window.__whiteboardE2E?.snapshot?.().strokes.length === count
   ), translated.length);
@@ -119,7 +152,8 @@ function shiftBox(box, dx, dy) {
 }
 
 function repeatedLatex(lines) {
-  return Array.from({ length: 80 }, (_, index) => lines[index % lines.length] || 'x=4');
+  const fallback = lines[lines.length - 1] || 'x=4';
+  return Array.from({ length: 80 }, (_, index) => lines[index % lines.length] || fallback);
 }
 
 function strokeGroupKey(strokeIds = []) {

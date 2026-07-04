@@ -158,6 +158,26 @@ class HandwritingAtom:
         }
 
 
+@dataclass(frozen=True)
+class LinearEquationParameters:
+    a: int
+    b: int
+    x_value: int
+    c_value: int
+    seed: int
+    constraints: dict[str, int]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "a": self.a,
+            "b": self.b,
+            "c": self.c_value,
+            "solution": self.x_value,
+            "seed": self.seed,
+            "constraints": dict(self.constraints),
+        }
+
+
 def load_real_handwriting_fixtures(fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR) -> list[dict[str, Any]]:
     return [
         json.loads(path.read_text(encoding="utf-8"))
@@ -376,12 +396,59 @@ def summarize_distribution(payloads: Sequence[dict[str, Any]], *, source_kind: s
     )
 
 
+def sample_linear_equation_parameters(
+    *,
+    seed: int = 0,
+    min_coefficient: int = 2,
+    max_coefficient: int = 9,
+    min_constant: int = 1,
+    max_constant: int = 9,
+    min_solution: int = 1,
+    max_solution: int = 9,
+    max_result: int = 99,
+) -> LinearEquationParameters:
+    constraints = {
+        "minCoefficient": int(min_coefficient),
+        "maxCoefficient": int(max_coefficient),
+        "minConstant": int(min_constant),
+        "maxConstant": int(max_constant),
+        "minSolution": int(min_solution),
+        "maxSolution": int(max_solution),
+        "maxResult": int(max_result),
+    }
+    if constraints["minCoefficient"] <= 0 or constraints["minCoefficient"] > constraints["maxCoefficient"]:
+        raise ValueError(f"Invalid coefficient bounds: {constraints}")
+    if constraints["minConstant"] < 0 or constraints["minConstant"] > constraints["maxConstant"]:
+        raise ValueError(f"Invalid constant bounds: {constraints}")
+    if constraints["minSolution"] < 0 or constraints["minSolution"] > constraints["maxSolution"]:
+        raise ValueError(f"Invalid solution bounds: {constraints}")
+
+    rng = random.Random(seed)
+    for _ in range(500):
+        a = rng.randint(constraints["minCoefficient"], constraints["maxCoefficient"])
+        b = rng.randint(constraints["minConstant"], constraints["maxConstant"])
+        x_value = rng.randint(constraints["minSolution"], constraints["maxSolution"])
+        c_value = a * x_value + b
+        if c_value <= constraints["maxResult"]:
+            return LinearEquationParameters(
+                a=a,
+                b=b,
+                x_value=x_value,
+                c_value=c_value,
+                seed=seed,
+                constraints=constraints,
+            )
+    raise ValueError(f"Could not sample a linear equation within constraints: {constraints}")
+
+
 def build_hybrid_linear_equation_fixture(
     *,
     a: int = 3,
     b: int = 2,
     x_value: int = 4,
     seed: int = 0,
+    problem_source: str = "explicit-parameters",
+    generation_constraints: Optional[dict[str, int]] = None,
     catalog_path: Path = DEFAULT_HANDWRITING_CATALOG,
     fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR,
     include_circle: bool = True,
@@ -405,11 +472,15 @@ def build_hybrid_linear_equation_fixture(
         "problemType": "equation-solving",
         "solveVariable": "x",
         "scenario": "hybrid-linear-equation",
+        "problemFamily": "linear-equation-positive-integer-one-variable",
+        "problemSource": problem_source,
         "seed": seed,
         "a": a,
         "b": b,
         "c": c_value,
         "solution": x_value,
+        "answerLatex": f"x={x_value}",
+        "generationConstraints": generation_constraints or {},
     }
     fixture["expectedLatexLines"] = [row["latex"] for row in rows]
 
@@ -422,6 +493,7 @@ def build_hybrid_linear_equation_fixture(
 
     time_cursor = 0.0
     row_boxes: dict[int, dict[str, float]] = {}
+    atom_cycle_state: dict[str, int] = {}
     for row_index in row_indexes:
         row = rows[row_index]
         row_x = base_x + row.get("xOffset", 0.0) + rng.uniform(-8.0, 8.0)
@@ -436,6 +508,8 @@ def build_hybrid_linear_equation_fixture(
             start_time=time_cursor,
             rng=rng,
             wide_gap_after=set(row.get("wideGapAfter") or []),
+            underline_groups=row.get("underlineGroups") or [],
+            atom_cycle_state=atom_cycle_state,
         )
         row_boxes[row_index] = row_box
         fixture["expectedLineGroups"].append({
@@ -497,6 +571,246 @@ def build_hybrid_linear_equation_fixture(
     return fixture
 
 
+def build_random_hybrid_linear_equation_fixture(
+    *,
+    seed: int = 0,
+    min_coefficient: int = 2,
+    max_coefficient: int = 9,
+    min_constant: int = 1,
+    max_constant: int = 9,
+    min_solution: int = 1,
+    max_solution: int = 9,
+    max_result: int = 99,
+    catalog_path: Path = DEFAULT_HANDWRITING_CATALOG,
+    fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR,
+    include_circle: bool = True,
+    include_crossout: bool = False,
+    non_sequential_final: bool = False,
+) -> dict[str, Any]:
+    params = sample_linear_equation_parameters(
+        seed=seed,
+        min_coefficient=min_coefficient,
+        max_coefficient=max_coefficient,
+        min_constant=min_constant,
+        max_constant=max_constant,
+        min_solution=min_solution,
+        max_solution=max_solution,
+        max_result=max_result,
+    )
+    fixture = build_hybrid_linear_equation_fixture(
+        a=params.a,
+        b=params.b,
+        x_value=params.x_value,
+        seed=seed,
+        problem_source="seeded-random-family",
+        generation_constraints=params.constraints,
+        catalog_path=catalog_path,
+        fixture_dir=fixture_dir,
+        include_circle=include_circle,
+        include_crossout=include_crossout,
+        non_sequential_final=non_sequential_final,
+    )
+    fixture["problemMetadata"]["sampledParameters"] = params.to_json()
+    fixture["sourceStats"]["randomLinearSampler"] = params.to_json()
+    return fixture
+
+
+def build_hybrid_complex_math_fixture(
+    *,
+    seed: int = 0,
+    catalog_path: Path = DEFAULT_HANDWRITING_CATALOG,
+    fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR,
+    include_circle: bool = True,
+    include_detached_annotations: bool = True,
+    include_crossout: bool = False,
+) -> dict[str, Any]:
+    catalog = load_handwriting_atom_catalog(catalog_path, fixture_dir=fixture_dir)
+    rows = complex_math_rows()
+    ensure_catalog_labels(catalog, sorted({token for row in rows for token in row["tokens"]}))
+    if include_detached_annotations:
+        ensure_catalog_labels(catalog, ["detached_operation_left", "detached_operation_right"])
+
+    rng = random.Random(seed)
+    fixture = empty_generated_fixture("hybrid-complex-math", seed)
+    fixture["fixtureKind"] = "hybrid-real-stroke-complex-math"
+    fixture["slug"] = f"hybrid-complex-math-seed-{seed}"
+    fixture["description"] = (
+        "Hybrid complex-math fixture composed from curated real handwriting atoms, "
+        "covering fractions, exponents, radicals, plus-minus answers, rational solving, "
+        "and detached operation annotations."
+    )
+    fixture["sourceAuditId"] = "generated-from-real-stroke-atom-catalog"
+    fixture["problemLatex"] = "\\frac{x - 1}{x} = \\frac{3}{4}"
+    fixture["problemMetadata"] = {
+        "problemType": "equation-solving",
+        "solveVariable": "x",
+        "scenario": "hybrid-complex-math",
+        "problemFamily": "complex-expression-and-rational-equation-corpus",
+        "problemSource": "seeded-complex-template-family",
+        "seed": seed,
+        "answerLatex": "x=4",
+        "coveredStructures": [
+            "fractions",
+            "exponents",
+            "radicals",
+            "plus-minus",
+            "multi-line-rational-equation-solving",
+            "detached-operation-annotations",
+        ],
+    }
+    fixture["expectedLatexLines"] = [row["latex"] for row in rows]
+
+    base_x = 92.0
+    base_y = 78.0
+    line_gap = 216.0
+    time_cursor = 0.0
+    row_boxes: dict[int, dict[str, float]] = {}
+    atom_cycle_state: dict[str, int] = {}
+    for row_index, row in enumerate(rows):
+        row_x = base_x + row.get("xOffset", 0.0) + rng.uniform(-7.0, 7.0)
+        row_y = base_y + row_index * line_gap + rng.uniform(-4.0, 4.0)
+        row_stroke_ids, row_box, time_cursor = append_token_row(
+            fixture,
+            catalog,
+            row["tokens"],
+            row_index=row_index,
+            x=row_x,
+            y=row_y,
+            start_time=time_cursor,
+            rng=rng,
+            wide_gap_after=set(row.get("wideGapAfter") or []),
+            underline_groups=row.get("underlineGroups") or [],
+            atom_cycle_state=atom_cycle_state,
+        )
+        row_boxes[row_index] = row_box
+        fixture["expectedLineGroups"].append({
+            "lineIndex": row_index,
+            "latex": row["latex"],
+            "strokeIds": row_stroke_ids,
+            "source": "hybrid-real-stroke-atom-catalog",
+            "sourceCandidateId": f"hybrid-complex-row-{row_index + 1}",
+        })
+        time_cursor += rng.uniform(620.0, 1080.0)
+
+    if include_detached_annotations:
+        annotation_specs = [
+            ("detached_operation_left", 4, -72.0, 68.0, "left-side rational multiplier"),
+            ("detached_operation_right", 5, 430.0, -76.0, "right-side rational multiplier"),
+        ]
+        for label, row_index, dx, dy, note in annotation_specs:
+            target_box = row_boxes.get(row_index)
+            if not target_box:
+                continue
+            visual_ids, _, time_cursor = append_detached_visual_atom(
+                fixture,
+                catalog,
+                label,
+                target_box,
+                x_offset=dx,
+                y_offset=dy,
+                start_time=time_cursor + rng.uniform(120.0, 320.0),
+                rng=rng,
+            )
+            fixture["visualOnlyStrokeIds"].extend(visual_ids)
+            fixture["visualMarks"].append({
+                "type": "detached_operation_annotation",
+                "latex": "(x-1)",
+                "lineIndex": row_index,
+                "notes": note,
+                "confidence": 0.9,
+            })
+
+    if include_circle and row_boxes.get(len(rows) - 1):
+        visual_ids, _, time_cursor = append_visual_atom_around_box(
+            fixture,
+            catalog,
+            "circle",
+            row_boxes[len(rows) - 1],
+            start_time=time_cursor + rng.uniform(180.0, 420.0),
+            rng=rng,
+        )
+        fixture["visualOnlyStrokeIds"].extend(visual_ids)
+        fixture["visualMarks"].append({
+            "type": "circled_answer",
+            "latex": rows[-1]["latex"],
+            "lineIndex": len(rows) - 1,
+            "notes": "Hybrid complex generator circled the final rational-equation answer.",
+            "confidence": 1.0,
+        })
+
+    if include_crossout and row_boxes.get(0):
+        visual_ids, _, _ = append_visual_atom_around_box(
+            fixture,
+            catalog,
+            "crossout",
+            row_boxes[0],
+            start_time=time_cursor + rng.uniform(200.0, 480.0),
+            rng=rng,
+            fit_mode="diagonal",
+        )
+        fixture["visualOnlyStrokeIds"].extend(visual_ids)
+        fixture["visualMarks"].append({
+            "type": "crossed_out",
+            "latex": rows[0]["latex"],
+            "lineIndex": 0,
+            "notes": "Hybrid complex generator added a crossed-out scratch row.",
+            "confidence": 1.0,
+        })
+
+    finish_generated_fixture(fixture)
+    fixture["sourceStats"] = {
+        **fixture.get("sourceStats", {}),
+        "catalogPath": relative_path_for_report(catalog_path),
+        "catalogAtomCount": sum(len(values) for values in catalog.values()),
+        "generatedProblemLatex": fixture["problemLatex"],
+    }
+    return fixture
+
+
+def complex_math_rows() -> list[dict[str, Any]]:
+    return [
+        {
+            "latex": "\\frac{1}{2}+\\frac{3}{4}",
+            "tokens": ["fraction_addition_row"],
+        },
+        {
+            "latex": "x^2=\\frac{9}{4}",
+            "tokens": ["x_squared", "=", "frac_9_4"],
+            "xOffset": 34.0,
+        },
+        {
+            "latex": "x=\\pm\\frac{3}{2}",
+            "tokens": ["x", "=", "plus_minus", "frac_3_2"],
+            "xOffset": 42.0,
+        },
+        {
+            "latex": "\\sqrt{25}",
+            "tokens": ["sqrt_25"],
+            "xOffset": 24.0,
+        },
+        {
+            "latex": "(x-1)(x-1)",
+            "tokens": ["rational_factor_row"],
+        },
+        {
+            "latex": "12=4x-4",
+            "tokens": ["rational_linear_row"],
+            "xOffset": 122.0,
+        },
+        {
+            "latex": "16=4x",
+            "tokens": ["rational_isolated_row"],
+            "xOffset": 144.0,
+            "underlineGroups": [[0]],
+        },
+        {
+            "latex": "x=4",
+            "tokens": ["x=4"],
+            "xOffset": 178.0,
+        },
+    ]
+
+
 def linear_equation_rows(a: int, b: int, c_value: int, x_value: int) -> list[dict[str, Any]]:
     return [
         {
@@ -508,6 +822,7 @@ def linear_equation_rows(a: int, b: int, c_value: int, x_value: int) -> list[dic
             "tokens": ["-", *digits_for(b), "-", *digits_for(b)],
             "xOffset": 56.0,
             "wideGapAfter": [1],
+            "underlineGroups": [[0, 1], [2, 3]],
         },
         {
             "latex": f"{a}x={c_value - b}",
@@ -519,10 +834,11 @@ def linear_equation_rows(a: int, b: int, c_value: int, x_value: int) -> list[dic
             "tokens": ["/", *digits_for(a), "/", *digits_for(a)],
             "xOffset": 78.0,
             "wideGapAfter": [1],
+            "underlineGroups": [[0, 1], [2, 3]],
         },
         {
             "latex": f"x={x_value}",
-            "tokens": [f"x={x_value}"] if x_value == 4 else ["x", "=", *digits_for(x_value)],
+            "tokens": ["x", "=", *digits_for(x_value)],
             "xOffset": 48.0,
         },
     ]
@@ -557,14 +873,17 @@ def append_token_row(
     start_time: float,
     rng: random.Random,
     wide_gap_after: set[int],
+    underline_groups: Sequence[Sequence[int]],
+    atom_cycle_state: dict[str, int],
 ) -> tuple[list[str], dict[str, float], float]:
     stroke_ids: list[str] = []
     boxes: list[dict[str, float]] = []
     cursor_x = x
     time_cursor = start_time
     row_scale = rng.uniform(0.94, 1.06)
+    token_boxes: dict[int, dict[str, float]] = {}
     for token_index, token in enumerate(tokens):
-        atom = choose_atom(catalog, token, rng)
+        atom = choose_atom(catalog, token, rng, cycle_state=atom_cycle_state)
         token_scale = row_scale * rng.uniform(0.92, 1.08)
         baseline_y = y + max(0.0, 82.0 - atom.height * token_scale)
         placed_ids, box, time_cursor = append_atom(
@@ -579,16 +898,41 @@ def append_token_row(
         )
         stroke_ids.extend(placed_ids)
         boxes.append(box)
+        token_boxes[token_index] = box
         gap = rng.uniform(13.0, 24.0)
         if token_index in wide_gap_after:
-            gap += rng.uniform(62.0, 96.0)
+            gap += rng.uniform(0.0, 6.0)
         cursor_x += (atom.width * token_scale) + gap
         time_cursor += rng.uniform(46.0, 135.0)
+    for group in underline_groups:
+        group_boxes = [token_boxes[index] for index in group if index in token_boxes]
+        if not group_boxes:
+            continue
+        underline_target = union_boxes(group_boxes)
+        underline_ids, underline_box, time_cursor = append_underline_for_box(
+            fixture,
+            catalog,
+            underline_target,
+            start_time=time_cursor + rng.uniform(30.0, 110.0),
+            rng=rng,
+        )
+        fixture["visualOnlyStrokeIds"].extend(underline_ids)
+        boxes.append(underline_box)
     return stroke_ids, union_boxes(boxes), time_cursor
 
 
-def choose_atom(catalog: dict[str, list[HandwritingAtom]], label: str, rng: random.Random) -> HandwritingAtom:
+def choose_atom(
+    catalog: dict[str, list[HandwritingAtom]],
+    label: str,
+    rng: random.Random,
+    *,
+    cycle_state: Optional[dict[str, int]] = None,
+) -> HandwritingAtom:
     choices = catalog[label]
+    if cycle_state is not None:
+        index = cycle_state.get(label, 0)
+        cycle_state[label] = index + 1
+        return choices[index % len(choices)]
     return choices[rng.randrange(len(choices))]
 
 
@@ -674,6 +1018,59 @@ def append_visual_atom_around_box(
         fixture,
         atom,
         prefix=f"v{len(fixture.get('visualOnlyStrokeIds') or []) + 1:02d}",
+        x=x,
+        y=y,
+        scale=scale,
+        start_time=start_time,
+        rng=rng,
+    )
+
+
+def append_detached_visual_atom(
+    fixture: dict[str, Any],
+    catalog: dict[str, list[HandwritingAtom]],
+    label: str,
+    target_box: dict[str, float],
+    *,
+    x_offset: float,
+    y_offset: float,
+    start_time: float,
+    rng: random.Random,
+) -> tuple[list[str], dict[str, float], float]:
+    atom = choose_atom(catalog, label, rng)
+    target_height = max(1.0, target_box["yMax"] - target_box["yMin"])
+    scale = min(1.0, (target_height * 0.92) / max(1.0, atom.height))
+    x = target_box["xMin"] + x_offset
+    y = target_box["yMin"] + y_offset
+    return append_atom(
+        fixture,
+        atom,
+        prefix=f"d{len(fixture.get('visualOnlyStrokeIds') or []) + 1:02d}",
+        x=x,
+        y=y,
+        scale=scale,
+        start_time=start_time,
+        rng=rng,
+    )
+
+
+def append_underline_for_box(
+    fixture: dict[str, Any],
+    catalog: dict[str, list[HandwritingAtom]],
+    target_box: dict[str, float],
+    *,
+    start_time: float,
+    rng: random.Random,
+) -> tuple[list[str], dict[str, float], float]:
+    atom = choose_atom(catalog, "underline", rng)
+    target_width = max(1.0, target_box["xMax"] - target_box["xMin"])
+    scale = (target_width * 1.18) / max(1.0, atom.width)
+    x = target_box["xMin"] - target_width * 0.08
+    y = target_box["yMax"] + 9.0 + rng.uniform(-1.5, 2.5)
+    return append_atom(
+        fixture,
+        atom,
+        prefix=f"u{len(fixture.get('visualOnlyStrokeIds') or []) + 1:02d}",
         x=x,
         y=y,
         scale=scale,
@@ -1301,11 +1698,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--audit-log-dir", type=Path, default=DEFAULT_AUDIT_LOG_DIR)
     parser.add_argument("--audit-limit", type=int, default=None)
     parser.add_argument("--hybrid-linear", action="store_true", help="Generate a hybrid real-stroke linear-equation fixture.")
+    parser.add_argument("--hybrid-complex-math", action="store_true", help="Generate a hybrid real-stroke complex-math fixture.")
+    parser.add_argument("--random-linear", action="store_true", help="Sample a new seeded linear equation instead of using explicit coefficients.")
     parser.add_argument("--linear-a", type=int, default=3)
     parser.add_argument("--linear-b", type=int, default=2)
     parser.add_argument("--linear-x", type=int, default=4)
+    parser.add_argument("--linear-min-coefficient", type=int, default=2)
+    parser.add_argument("--linear-max-coefficient", type=int, default=9)
+    parser.add_argument("--linear-min-constant", type=int, default=1)
+    parser.add_argument("--linear-max-constant", type=int, default=9)
+    parser.add_argument("--linear-min-solution", type=int, default=1)
+    parser.add_argument("--linear-max-solution", type=int, default=9)
+    parser.add_argument("--linear-max-result", type=int, default=99)
     parser.add_argument("--include-crossout", action="store_true")
     parser.add_argument("--no-circle", action="store_true")
+    parser.add_argument("--no-detached-annotations", action="store_true")
     parser.add_argument("--non-sequential-final", action="store_true")
     parser.add_argument(
         "--include-fixtures-with-audits",
@@ -1347,18 +1754,44 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps(calibration_report, indent=2, sort_keys=True))
         return 0
 
-    if args.hybrid_linear:
-        fixture = build_hybrid_linear_equation_fixture(
-            a=args.linear_a,
-            b=args.linear_b,
-            x_value=args.linear_x,
+    if args.hybrid_complex_math:
+        fixture = build_hybrid_complex_math_fixture(
             seed=args.seed,
             catalog_path=args.catalog_path,
             fixture_dir=args.fixture_dir,
             include_circle=not args.no_circle,
+            include_detached_annotations=not args.no_detached_annotations,
             include_crossout=args.include_crossout,
-            non_sequential_final=args.non_sequential_final,
         )
+    elif args.hybrid_linear:
+        if args.random_linear:
+            fixture = build_random_hybrid_linear_equation_fixture(
+                seed=args.seed,
+                min_coefficient=args.linear_min_coefficient,
+                max_coefficient=args.linear_max_coefficient,
+                min_constant=args.linear_min_constant,
+                max_constant=args.linear_max_constant,
+                min_solution=args.linear_min_solution,
+                max_solution=args.linear_max_solution,
+                max_result=args.linear_max_result,
+                catalog_path=args.catalog_path,
+                fixture_dir=args.fixture_dir,
+                include_circle=not args.no_circle,
+                include_crossout=args.include_crossout,
+                non_sequential_final=args.non_sequential_final,
+            )
+        else:
+            fixture = build_hybrid_linear_equation_fixture(
+                a=args.linear_a,
+                b=args.linear_b,
+                x_value=args.linear_x,
+                seed=args.seed,
+                catalog_path=args.catalog_path,
+                fixture_dir=args.fixture_dir,
+                include_circle=not args.no_circle,
+                include_crossout=args.include_crossout,
+                non_sequential_final=args.non_sequential_final,
+            )
     else:
         fixture = build_realistic_fixture(args.scenario, seed=args.seed, fixture_dir=args.fixture_dir)
     calibration = summarize_distribution(
