@@ -194,6 +194,11 @@ DEFAULT_FIXTURES: Sequence[dict[str, str]] = (
         "description": "Problem-input sqrt numerator over x cubed where related row evidence preserves the denominator exponent.",
     },
     {
+        "audit_id": "audit_20260703T214322728771Z_95c77652c8",
+        "slug": "problem-input-sqrt-fraction-x10-over-x-cubed-brace-regression",
+        "description": "Problem-input sqrt numerator over x cubed where brace repair must not rewrite x^10 as x^0.",
+    },
+    {
         "audit_id": "audit_20260703T162343115812Z_32d4775fe7",
         "slug": "problem-input-fraction-3x-over-x-plus-1-equals-8",
         "description": "Problem-input fraction equation where full parent OCR should beat split-row merge.",
@@ -212,6 +217,21 @@ DEFAULT_FIXTURES: Sequence[dict[str, str]] = (
         "audit_id": "audit_20260703T174821477617Z_59af8ac191",
         "slug": "problem-input-negative-simple-fraction-addition",
         "description": "Problem-input negative simple fraction addition where the leading sign belongs to the full expression.",
+    },
+    {
+        "audit_id": "audit_20260703T213932311256Z_4580bfe0d6",
+        "slug": "problem-input-fraction-multiply-dot",
+        "description": "Evaluate-mode problem input where a centered multiplication dot between fractions must not become equals.",
+    },
+    {
+        "audit_id": "audit_20260703T162152180907Z_1815d9d8cb",
+        "slug": "sqrt-two-power-half-final",
+        "description": "Evaluation work where the final 2^0.5 form is equivalent to sqrt(2).",
+    },
+    {
+        "audit_id": "audit_20260703T211024481616Z_9ac973d64b",
+        "slug": "sqrt-x10-half-exponent-simplification",
+        "description": "Simplification work where OCR rewrote the half exponent as a square root exponent.",
     },
 )
 
@@ -625,6 +645,15 @@ REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
             "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010|s011",
         },
     ],
+    "audit_20260703T214322728771Z_95c77652c8": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{\\sqrt{x^{10}}}{x^3}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009",
+        },
+    ],
     "audit_20260703T162343115812Z_32d4775fe7": [
         {
             "lineIndex": 0,
@@ -659,6 +688,47 @@ REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
             "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010"],
             "source": "reviewed-vlm-semantic-lines",
             "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010",
+        },
+    ],
+    "audit_20260703T213932311256Z_4580bfe0d6": [
+        {
+            "lineIndex": 0,
+            "latex": "\\frac{2}{3} \\cdot \\frac{1}{4}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008",
+        },
+    ],
+    "audit_20260703T162152180907Z_1815d9d8cb": [
+        {
+            "lineIndex": 0,
+            "latex": "1.5 \\\\ \\frac{2}{2}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "2^{0.5}",
+            "strokeIds": ["s008", "s009", "s010", "s011"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s008|s009|s010|s011",
+        },
+    ],
+    "audit_20260703T211024481616Z_9ac973d64b": [
+        {
+            "lineIndex": 0,
+            "latex": "(x^{10})^{1/2}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "x'",
+            "strokeIds": ["s011", "s012", "s013"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s011|s012|s013",
         },
     ],
 }

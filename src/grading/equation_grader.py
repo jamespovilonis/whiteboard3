@@ -787,7 +787,7 @@ def grade_expression_work(
                 "adjacent expressions are not equivalent",
             )
 
-    if first_invalid_index is None and expression_elements and exact_values:
+    if expression_elements and exact_values:
         final_element = expression_elements[-1]
         matched = tuple(
             index
@@ -796,16 +796,22 @@ def grade_expression_work(
         )
         if matched:
             finality = expression_value_finality(final_element["raw"], final_element["value"])
-            mark_expression_line_final(
+            final_line_index = int(final_element["lineIndex"])
+            if first_invalid_index is None or earlier_invalids_are_superseded_numeric_attempts(
                 selected_by_line,
-                int(final_element["lineIndex"]),
-                matched,
-                finality,
-            )
-            saw_valid = True
-            if finality.counts_toward_completion:
-                found_indices.update(matched)
-        else:
+                final_line_index,
+            ):
+                first_invalid_index = None
+                mark_expression_line_final(
+                    selected_by_line,
+                    final_line_index,
+                    matched,
+                    finality,
+                )
+                saw_valid = True
+                if finality.counts_toward_completion:
+                    found_indices.update(matched)
+        elif first_invalid_index is None:
             first_invalid_index = int(final_element["lineIndex"])
             mark_expression_line_invalid(
                 selected_by_line,
@@ -1656,6 +1662,27 @@ def mark_expression_line_invalid(
             **invalid_format(reason).public_fields(),
         })
         return
+
+
+def earlier_invalids_are_superseded_numeric_attempts(
+    selected_by_line: Sequence[dict[str, Any]],
+    final_line_index: int,
+) -> bool:
+    earlier_invalids = [
+        step for step in selected_by_line
+        if int(step.get("lineIndex", -1)) < int(final_line_index)
+        and step.get("classification") == "invalid_step"
+    ]
+    if not earlier_invalids:
+        return False
+
+    for step in earlier_invalids:
+        if step.get("finalityReason") != "numeric value does not match":
+            return False
+        latex = str(step.get("studentLatex") or "")
+        if "=" in latex or "\\\\" in latex:
+            return False
+    return True
 
 
 def clear_expression_completion_credit(selected_by_line: list[dict[str, Any]]) -> None:

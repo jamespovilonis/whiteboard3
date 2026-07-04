@@ -980,6 +980,19 @@ class ExpressionGraderTests(unittest.TestCase):
         self.assertEqual(rational_power["steps"][0]["answerFinality"], "final")
         self.assertEqual(wrong_decimal["result"]["problemStatus"], "incorrect")
 
+    def test_expression_power_final_supersedes_prior_numeric_attempts(self):
+        result = grade_expression_payload({
+            "problemLatex": r"\frac { \sqrt { 2 ^ { 3 } } } { 2 }",
+            "lines": [
+                {"latex": "1.5"},
+                {"latex": r"\frac { 2 } { 2 }"},
+                {"latex": r"2 ^ { 0 . 5 }"},
+            ],
+        })
+
+        self.assertEqual(result["result"]["problemStatus"], "correct")
+        self.assertEqual(result["steps"][-1]["answerFinality"], "final")
+
     def test_expression_chain_with_broken_middle_link_is_incorrect(self):
         result = grade_expression_payload({
             "problemLatex": r"\frac { 1 } { 2 } + \frac { 2 } { 4 }",

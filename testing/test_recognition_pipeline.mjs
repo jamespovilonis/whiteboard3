@@ -1896,6 +1896,27 @@ test('indexed radical OCR is repaired from rational-exponent problem context', a
   assert.equal(result.lines[0].ocrRepair.source, 'contextual-indexed-radical');
 });
 
+test('radical simplification half exponent OCR is repaired from sqrt problem context', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('sqrt-half-context', 0, 0, 300, 90)],
+    answerBox: { xMin: -5, yMin: -5, xMax: 330, yMax: 115 },
+    problemLatex: '\\sqrt { x ^ { 1 0 } }',
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex: '( x ^ { 1 0 } ) ^ { \\sqrt { 2 } }',
+      top: { latex: '( x ^ { 1 0 } ) ^ { \\sqrt { 2 } }', score: 3, confidence: 0.99 },
+      candidates: [{ latex: '( x ^ { 1 0 } ) ^ { \\sqrt { 2 } }', score: 3, confidence: 0.99 }],
+      elapsedSeconds: 0.03
+    })
+  });
+
+  assert.equal(result.lines[0].acceptedLatex, '(x^{10})^{1/2}');
+  assert.equal(result.lines[0].ocrRepair.source, 'contextual-radical-half-exponent');
+});
+
 test('fractional log base OCR is repaired from solve problem context', async () => {
   installFakeCanvas();
   const result = await recognizeStudentWriting({
@@ -5299,7 +5320,7 @@ test('incremental scheduler matches one-shot recognition on messy synthetic late
 test('student writing pipeline handles distilled real handwriting trace fixtures', async () => {
   installFakeCanvas();
   const fixtures = loadRealHandwritingFixtures();
-  assert.equal(fixtures.length, 39);
+  assert.equal(fixtures.length, 43);
 
   for (const fixture of fixtures) {
     const fakeReaders = fakeReadersForRealTrace(fixture);
@@ -5358,7 +5379,11 @@ test('segmentation ignores large enclosing circle annotation strokes', () => {
 });
 
 test('segmentation infers visual-only annotations from unlabeled real strokes', () => {
-  for (const slug of ['circled-intermediate-result', 'crossout-scratch-division']) {
+  for (const slug of [
+    'circled-intermediate-result',
+    'crossout-scratch-division',
+    'detached-circled-zero-annotation'
+  ]) {
     const fixture = loadRealHandwritingFixture(slug);
     const unlabeledStrokes = fixture.strokes.map((stroke) => {
       const copy = { ...stroke };
@@ -7115,6 +7140,36 @@ test('problem-input fraction merge preserves correct full parent OCR candidate',
 
   assert.deepEqual(result.latexLines, ['\\frac { 3 x } { x + 1 } = 8']);
   assert.notEqual(result.lines[0].acceptedLatex, '\\frac { 3 } { x + 1 } x - - 8');
+});
+
+test('evaluate problem-input fraction keeps multiplication dot over equals alternative', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('fraction-product', 0, 0, 360, 160)],
+    answerBox: { xMin: -5, yMin: -5, xMax: 390, yMax: 190 },
+    problemMetadata: {
+      auditSubject: 'problem-input',
+      mode: 'evaluate',
+      problemType: 'evaluate-expression',
+      source: 'user-handwriting'
+    },
+    semanticScoring: false,
+    recognizeAlternatives: true,
+    chunkFallback: false,
+    recognizeLine: async () => ({
+      latex: '\\frac { 2 } { 3 } = \\frac { 1 } { 4 }',
+      top: { latex: '\\frac { 2 } { 3 } = \\frac { 1 } { 4 }', score: 1.8, confidence: 0.86 },
+      candidates: [
+        { latex: '\\frac { 2 } { 3 } = \\frac { 1 } { 4 }', score: 1.8, confidence: 0.86 },
+        { latex: '\\frac { 2 } { 3 } \\cdot \\frac { 1 } { 4 }', score: 1.1, confidence: 0.71 }
+      ],
+      elapsedSeconds: 0.03
+    }),
+    gradeWork: null
+  });
+
+  assert.deepEqual(result.latexLines, ['\\frac { 2 } { 3 } \\cdot \\frac { 1 } { 4 }']);
+  assert.equal(result.lines[0].ocrRepair?.source, 'problem-input-full-parent-candidate');
 });
 
 test('problem-input sqrt fraction chooses balanced top-five candidate', async () => {

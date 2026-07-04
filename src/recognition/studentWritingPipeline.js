@@ -572,6 +572,7 @@ export async function recognizeStudentWriting(options = {}) {
     applyContextualProblemRepair(line, 'contextual-quadratic-formula', repairQuadraticFormulaFromProblem(line.latex, problemLatex));
     applyContextualProblemRepair(line, 'contextual-monomial-exponent', repairCompactMonomialExponentFromProblem(line.latex, problemLatex));
     applyContextualProblemRepair(line, 'contextual-indexed-radical', repairIndexedRadicalFromProblem(line.latex, problemLatex));
+    applyContextualProblemRepair(line, 'contextual-radical-half-exponent', repairRadicalHalfExponentFromProblem(line.latex, problemLatex));
     applyContextualProblemRepair(line, 'contextual-log-base-denominator', repairLogBaseDenominatorsFromProblem(line.latex, problemLatex));
     applyContextualProblemRepair(line, 'contextual-log-fraction-base', repairFractionalLogBaseFromProblem(line.latex, problemLatex));
     if (line.latex) acceptedContextLatex.push(line.latex);
@@ -589,6 +590,7 @@ export async function recognizeStudentWriting(options = {}) {
     applyContextualProblemRepair(line, 'contextual-rational-problem', repairInitialRationalProblemLine(line.latex, problemLatex, line.lineIndex));
     applyContextualProblemRepair(line, 'contextual-monomial-exponent', repairCompactMonomialExponentFromProblem(line.latex, problemLatex));
     applyContextualProblemRepair(line, 'contextual-indexed-radical', repairIndexedRadicalFromProblem(line.latex, problemLatex));
+    applyContextualProblemRepair(line, 'contextual-radical-half-exponent', repairRadicalHalfExponentFromProblem(line.latex, problemLatex));
     applyContextualProblemRepair(line, 'contextual-log-base-denominator', repairLogBaseDenominatorsFromProblem(line.latex, problemLatex));
     applyContextualProblemRepair(line, 'contextual-log-fraction-base', repairFractionalLogBaseFromProblem(line.latex, problemLatex));
     line.latex = normalizeContextualVariableCase(line.latex, [
@@ -1811,7 +1813,7 @@ function mergeProblemInputFractionRows(lines = [], { problemLatex = '', problemM
 
   const output = (lines || []).map((line) => ({ ...line }));
   const summary = [];
-  const fullParentCandidate = problemInputFullParentCandidateLine(output, candidatePredictions);
+  const fullParentCandidate = problemInputFullParentCandidateLine(output, candidatePredictions, problemMetadata);
   if (fullParentCandidate) {
     return {
       lines: [{ ...fullParentCandidate.line, lineIndex: 0 }],
@@ -1926,7 +1928,7 @@ function hasProblemInputFractionLatexRepairEvidence(line = {}, candidatePredicti
   return Boolean(problemInputOuterFractionLatexRepair(latex));
 }
 
-function problemInputFullParentCandidateLine(lines = [], candidatePredictions = []) {
+function problemInputFullParentCandidateLine(lines = [], candidatePredictions = [], problemMetadata = {}) {
   if (!Array.isArray(lines) || lines.length < 1) return null;
   const selected = lines[0] || {};
   const selectedStrokeIds = uniqueStrings((lines || []).flatMap((line) => line.strokeIds || []));
@@ -1942,6 +1944,7 @@ function problemInputFullParentCandidateLine(lines = [], candidatePredictions = 
     for (const option of latexOptionsFromEntry(entry)) {
       const latex = normalizeLatexWhitespace(option.latex || '');
       if (!problemInputBalancedFullFractionExpression(latex)) continue;
+      if (problemInputEvaluateEqualsCandidateUnsafe(latex, entry, problemMetadata)) continue;
       const score = problemInputFullFractionExpressionScore(latex, option);
       if (!best || score > best.score) best = { latex, score };
     }
@@ -1982,6 +1985,32 @@ function problemInputFullParentCandidateLine(lines = [], candidatePredictions = 
       reason: 'problem_input_full_parent_candidate'
     }
   };
+}
+
+function problemInputEvaluateEqualsCandidateUnsafe(latex = '', entry = {}, problemMetadata = {}) {
+  if (!isEvaluateProblemInputMetadata(problemMetadata)) return false;
+  const compact = compactLatexForGrading(latex);
+  if (!/\\frac/.test(compact) || !/=/.test(compact)) return false;
+  if ((compact.match(/\\frac/g) || []).length < 2) return false;
+
+  return latexOptionsFromEntry(entry).some((option) => {
+    const alternate = normalizeLatexWhitespace(option.latex || '');
+    if (sameLatexForGrading(alternate, latex)) return false;
+    const alternateCompact = compactLatexForGrading(alternate);
+    if ((alternateCompact.match(/\\frac/g) || []).length < 2) return false;
+    return /\\cdot|\\times|\*/.test(alternateCompact);
+  });
+}
+
+function isEvaluateProblemInputMetadata(problemMetadata = {}) {
+  const auditSubject = String(problemMetadata.auditSubject || '').toLowerCase();
+  const mode = String(problemMetadata.mode || '').toLowerCase();
+  const problemType = String(problemMetadata.problemType || '').toLowerCase();
+  return auditSubject === 'problem-input' && (
+    mode.includes('evaluate') ||
+    problemType.includes('evaluate') ||
+    problemType.includes('numeric-expression')
+  );
 }
 
 function problemInputFullParentEntryMatchesSelected(selectedStrokeIds = [], entry = {}) {
@@ -4730,6 +4759,37 @@ function repairIndexedRadicalFromProblem(latex, problemLatex = '') {
   if (flattened.base !== target.base || flattened.exponent !== target.numerator) return null;
 
   return `\\sqrt [ ${target.denominator} ] { ${target.base} ^ { ${target.numerator} } }`;
+}
+
+function repairRadicalHalfExponentFromProblem(latex, problemLatex = '') {
+  const target = parseSimpleSqrtPowerProblem(problemLatex);
+  if (!target) return null;
+
+  const current = parseSqrtPowerHalfExponentMisread(latex);
+  if (!current) return null;
+  if (current.variable !== target.variable || current.exponent !== target.exponent) return null;
+
+  return `(${target.variable}^{${target.exponent}})^{1/2}`;
+}
+
+function parseSimpleSqrtPowerProblem(latex = '') {
+  const compact = String(latex || '')
+    .replace(/\\left|\\right/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+  const match = compact.match(/^\\sqrt\{([A-Za-z])\^\{([0-9]+)\}\}$/);
+  if (!match) return null;
+  return { variable: match[1], exponent: match[2] };
+}
+
+function parseSqrtPowerHalfExponentMisread(latex = '') {
+  const compact = String(latex || '')
+    .replace(/\\left|\\right/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+  const match = compact.match(/^\(?([A-Za-z])\^\{([0-9]+)\}\)?\^\{\\sqrt\{2\}\}$/);
+  if (!match) return null;
+  return { variable: match[1], exponent: match[2] };
 }
 
 function parseSingleRationalExponent(latex = '') {

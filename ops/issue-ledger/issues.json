@@ -175,33 +175,64 @@
         },
         {
           "audit_id": "audit_20260703T141214622367Z_00171da20d",
-          "path": "",
+          "discrepancy_types": [
+            "equation_side_operation_annotation_mismatch",
+            "line_latex_mismatch",
+            "problem_status_mismatch",
+            "solution_set_mismatch",
+            "visual_intent_observed"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T141214622367Z_00171da20d/comparison.json",
           "source": "app_discrepancy_diagnostic",
-          "summary": "Detached/circled annotation is selected and graded as a final answer line"
+          "summary": "VLM audit raised: problem_status_mismatch, solution_set_mismatch, line_latex_mismatch, equation_side_operation_annotation_mismatch; fast=correct vlm=incomplete; types=equation_side_operation_annotation_mismatch,line_latex_mismatch,problem_status_mismatch,solution_set_mismatch,visual_intent_observed"
         }
       ],
       "first_seen": "2026-07-02T13:34:25.159495Z",
       "fix_commits": [],
-      "fixtures": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-04T12:50:06Z",
+          "note": "Replay fixture for audit_20260703T141214622367Z_00171da20d; unlabeled detached circle is inferred visual-only while standalone zero remains gradable.",
+          "path": "testing/fixtures/real_handwriting/detached-circled-zero-annotation.json"
+        }
+      ],
       "id": "WB3-0004",
       "key": "detached-operation-annotations-selected-as-answer-lines",
-      "last_seen": "2026-07-03T14:13:05.020876Z",
-      "next_action": "Treat isolated circle/box-like strokes and detached operation marks as annotation candidates first, not answer-line candidates, unless they contain interior glyph strokes or are textually connected to an equation baseline. Exclude such annotation candidates from grading and preserve them only as annotationAttachments/visual marks. Add a regression fixture for audit_20260703T141214622367Z_00171da20d asserting latexLines stop at the unsimplified algebra rows and problemStatus remains incomplete, not correct.",
+      "last_seen": "2026-07-04T12:12:59Z",
+      "next_action": "Monitor daily VLM audits for recurrence of unlabeled circle/box annotations being graded as final answers.",
       "notes": [
         {
           "text": "Aligned with app discrepancy diagnostic replay verification status.",
           "timestamp": "2026-07-03T22:02:25Z"
+        },
+        {
+          "text": "Reopened from daily VLM audit: audit_20260703T141214622367Z_00171da20d shows recurrence in live audit evidence.",
+          "timestamp": "2026-07-04T12:12:59Z"
+        },
+        {
+          "text": "Focused replay and full recognition suite passed after detached-loop annotation inference; wait for future live-audit evidence before verified_by_live_audit.",
+          "timestamp": "2026-07-04T12:50:37Z"
         }
+      ],
+      "observed_statuses": [
+        "complete"
       ],
       "severity": "P2",
       "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Detached/circled annotation is selected and graded as a final answer line",
-      "updated_at": "2026-07-03T22:02:25Z",
+      "updated_at": "2026-07-04T12:50:37Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "node --test --test-name-pattern \"segmentation infers visual-only annotations|isolated circled annotation|real standalone zero\" testing/test_recognition_pipeline.mjs",
+            "note": "Focused circled-annotation replay passed; unlabeled detached loop is excluded and real standalone zero remains gradable.",
+            "result": "passed",
+            "timestamp": "2026-07-04T12:50:23Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -611,33 +642,57 @@
         },
         {
           "audit_id": "audit_20260703T214322728771Z_95c77652c8",
-          "path": "",
+          "discrepancy_types": [
+            "line_latex_mismatch",
+            "problem_input_ocr_mismatch"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T214322728771Z_95c77652c8/comparison.json",
           "source": "app_discrepancy_diagnostic",
-          "summary": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions"
+          "summary": "VLM audit raised: line_latex_mismatch, problem_input_ocr_mismatch; types=line_latex_mismatch,problem_input_ocr_mismatch"
         }
       ],
       "first_seen": "2026-07-02T21:42:10.101158Z",
       "fix_commits": [],
-      "fixtures": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-04T12:50:06Z",
+          "note": "Replay fixture for audit_20260703T214322728771Z_95c77652c8; expected transcript preserves \\frac{\\sqrt{x^{10}}}{x^3}.",
+          "path": "testing/fixtures/real_handwriting/problem-input-sqrt-fraction-x10-over-x-cubed-brace-regression.json"
+        }
+      ],
       "id": "WB3-0011",
       "key": "radical-index-root-structure-flattened",
-      "last_seen": "2026-07-03T21:43:52.351771Z",
-      "next_action": "Strengthen problem-input sqrt-fraction candidate ranking so exponent-preserving candidates such as x^{1 0} beat brace-repaired x^{0} candidates even when the latter has synthetic confidence 1; add replay fixture for audit_20260703T214322728771Z_95c77652c8.",
+      "last_seen": "2026-07-04T12:13:12Z",
+      "next_action": "Monitor live problem-input sqrt-fraction audits for x^{10}/x^3 recurrence.",
       "notes": [
         {
           "text": "Diagnostic says issue recurred after replay fix.",
           "timestamp": "2026-07-03T22:02:26Z"
+        },
+        {
+          "text": "Focused problem-input and real fixture replay passed after preserving x^{10} evidence over x^0 brace repair; wait for future live-audit evidence before verified_by_live_audit.",
+          "timestamp": "2026-07-04T12:50:37Z"
         }
       ],
+      "observed_statuses": [
+        "complete"
+      ],
       "severity": "P1",
-      "status": "reopened",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Indexed radicals and root wrappers are flattened, malformed, or discarded in problem-input fractions",
-      "updated_at": "2026-07-03T22:02:26Z",
+      "updated_at": "2026-07-04T12:50:37Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "node --test --test-name-pattern \"distilled real handwriting trace fixtures|problem-input sqrt fraction\" testing/test_recognition_pipeline.mjs",
+            "note": "Real fixture and focused sqrt-fraction repairs passed; x^{10}/x^3 is preserved over x^0 brace repair.",
+            "result": "passed",
+            "timestamp": "2026-07-04T12:50:23Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -913,33 +968,53 @@
       "evidence": [
         {
           "audit_id": "audit_20260703T162152180907Z_1815d9d8cb",
-          "path": "",
+          "discrepancy_types": [
+            "line_latex_mismatch",
+            "visual_intent_observed"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T162152180907Z_1815d9d8cb/comparison.json",
           "source": "app_discrepancy_diagnostic",
-          "summary": "Equivalent radical/power final answer is not accepted as complete"
+          "summary": "VLM audit raised: line_latex_mismatch; fast=incorrect vlm=incorrect; types=line_latex_mismatch,visual_intent_observed"
         }
       ],
       "first_seen": "2026-07-03T16:21:53.649029Z",
       "fix_commits": [],
-      "fixtures": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-04T12:50:06Z",
+          "note": "Replay fixture for audit_20260703T162152180907Z_1815d9d8cb; final 2^{0.5} is equivalent to sqrt(2).",
+          "path": "testing/fixtures/real_handwriting/sqrt-two-power-half-final.json"
+        }
+      ],
       "id": "WB3-0017",
       "key": "equivalent-radical-decimal-final-marked-unsimplified",
-      "last_seen": "2026-07-03T16:21:53.649029Z",
-      "next_action": "Accept exact equivalent power forms such as 2^{0.5} for sqrt(2) evaluate-expression finals; add grader replay coverage.",
+      "last_seen": "2026-07-04T12:13:12Z",
+      "next_action": "Add a replay fixture for audit_20260703T162152180907Z_1815d9d8cb before broad grader edits, then accept exact equivalent power forms such as 2^{0.5} for sqrt(2) evaluate-expression finals.",
       "notes": [
         {
           "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
           "timestamp": "2026-07-03T22:02:26Z"
         }
       ],
+      "observed_statuses": [
+        "complete"
+      ],
       "severity": "P2",
-      "status": "deferred",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Equivalent radical/power final answer is not accepted as complete",
       "updated_at": "2026-07-03T22:02:26Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "python3 -m unittest testing.test_equation_grader && node --test --test-name-pattern \"distilled real handwriting trace fixtures\" testing/test_recognition_pipeline.mjs",
+            "note": "Python grader and real replay accept final 2^{0.5} as complete for sqrt(2)-equivalent evaluation.",
+            "result": "passed",
+            "timestamp": "2026-07-04T12:50:23Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -1005,33 +1080,56 @@
       "evidence": [
         {
           "audit_id": "audit_20260703T211024481616Z_9ac973d64b",
-          "path": "",
+          "discrepancy_types": [
+            "line_count_mismatch",
+            "line_latex_mismatch",
+            "problem_status_mismatch",
+            "simplification_policy_disagreement",
+            "visual_intent_observed"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T211024481616Z_9ac973d64b/comparison.json",
           "source": "app_discrepancy_diagnostic",
-          "summary": "Superscript 1/2 exponent is read as a square-root exponent in simplification work"
+          "summary": "VLM audit raised: problem_status_mismatch, simplification_policy_disagreement, line_count_mismatch, line_latex_mismatch; fast=incorrect vlm=incomplete; types=line_count_mismatch,line_latex_mismatch,problem_status_mismatch,simplification_policy_disagreement,visual_intent_observed"
         }
       ],
       "first_seen": "2026-07-03T21:12:03.871772Z",
       "fix_commits": [],
-      "fixtures": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-04T12:50:06Z",
+          "note": "Replay fixture for audit_20260703T211024481616Z_9ac973d64b; first line repairs to (x^{10})^{1/2} and lower row stays separate.",
+          "path": "testing/fixtures/real_handwriting/sqrt-x10-half-exponent-simplification.json"
+        }
+      ],
       "id": "WB3-0019",
       "key": "superscript-half-exponent-read-as-radical",
-      "last_seen": "2026-07-03T21:12:03.871772Z",
-      "next_action": "Add a conservative context repair/retry for compact superscript 1/2 patterns so candidates like (x^10)^{sqrt{2}}, v_2, V_2, or malformed 12} can become (x^10)^{1/2} only when geometry and simplify problem context support a fractional exponent; preserve the lower x-prime row as a separate line when present.",
+      "last_seen": "2026-07-04T12:13:12Z",
+      "next_action": "Add a replay fixture for audit_20260703T211024481616Z_9ac973d64b before broad layout repair edits, then conservatively repair compact superscript 1/2 patterns in simplify contexts while preserving lower rows as separate lines.",
       "notes": [
         {
           "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
           "timestamp": "2026-07-03T22:02:26Z"
         }
       ],
+      "observed_statuses": [
+        "complete"
+      ],
       "severity": "P2",
-      "status": "deferred",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Superscript 1/2 exponent is read as a square-root exponent in simplification work",
       "updated_at": "2026-07-03T22:02:26Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "node --test --test-name-pattern \"radical simplification half exponent|distilled real handwriting trace fixtures\" testing/test_recognition_pipeline.mjs",
+            "note": "Contextual half-exponent repair passed and lower-row fixture remains separate.",
+            "result": "passed",
+            "timestamp": "2026-07-04T12:50:23Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -1048,23 +1146,269 @@
       "evidence": [
         {
           "audit_id": "audit_20260703T213932311256Z_4580bfe0d6",
-          "path": "",
+          "discrepancy_types": [
+            "line_latex_mismatch",
+            "problem_input_ocr_mismatch"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T213932311256Z_4580bfe0d6/comparison.json",
           "source": "app_discrepancy_diagnostic",
-          "summary": "Problem-input multiplication dot is promoted to equals between fractions"
+          "summary": "VLM audit raised: line_latex_mismatch, problem_input_ocr_mismatch; types=line_latex_mismatch,problem_input_ocr_mismatch"
         }
       ],
       "first_seen": "2026-07-03T21:40:01.238215Z",
       "fix_commits": [],
-      "fixtures": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-04T12:50:06Z",
+          "note": "Replay fixture for audit_20260703T213932311256Z_4580bfe0d6; expected transcript is \\frac{2}{3} \\cdot \\frac{1}{4}.",
+          "path": "testing/fixtures/real_handwriting/problem-input-fraction-multiply-dot.json"
+        }
+      ],
       "id": "WB3-0020",
       "key": "problem-input-multiplication-dot-promoted-to-equals",
-      "last_seen": "2026-07-03T21:40:01.238215Z",
-      "next_action": "Do not allow full-parent problem-input repair to promote a lower-confidence equals candidate over dot/multiply candidates for evaluate-expression input unless equation mode or strong equals geometry is present; prefer \\cdot/. candidates between adjacent fractions when the problem input mode is evaluate-expression and the visual mark is a small centered dot.",
+      "last_seen": "2026-07-04T12:13:12Z",
+      "next_action": "Add a replay fixture for audit_20260703T213932311256Z_4580bfe0d6 before broad problem-input edits, then prevent evaluate-expression fraction inputs from promoting low-confidence equals candidates over centered dot/multiply candidates unless equation-mode geometry is strong.",
       "notes": [],
+      "observed_statuses": [
+        "complete"
+      ],
+      "severity": "P1",
+      "status": "verified_by_replay",
+      "suspected_files": [],
+      "title": "Problem-input multiplication dot is promoted to equals between fractions",
+      "verification": {
+        "commands": [
+          {
+            "command": "node --test --test-name-pattern \"evaluate problem-input fraction keeps|distilled real handwriting trace fixtures\" testing/test_recognition_pipeline.mjs",
+            "note": "Evaluate problem-input now keeps multiplication dot over equals when OCR alternatives support \\cdot.",
+            "result": "passed",
+            "timestamp": "2026-07-04T12:50:23Z"
+          }
+        ],
+        "live_audit": "missing",
+        "replay": "passed"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "area": [],
+      "category": "audit-infra",
+      "evidence": [
+        {
+          "audit_id": "audit_20260703T223159069590Z_8543e95e26",
+          "discrepancy_types": [
+            "vlm_timeout"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T223159069590Z_8543e95e26/comparison.json",
+          "summary": "timed out; fast=correct vlm=None; types=vlm_timeout"
+        },
+        {
+          "audit_id": "audit_20260703T144456547842Z_a8394ed135",
+          "discrepancy_types": [
+            "vlm_unavailable"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T144456547842Z_a8394ed135/comparison.json",
+          "summary": "VLM audit circuit open after repeated timeouts; retry in 300s; types=vlm_unavailable"
+        }
+      ],
+      "first_seen": "2026-07-04T12:13:30Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0021",
+      "key": "vlm-audit-timeouts-and-circuit-open",
+      "last_seen": "2026-07-04T12:13:30Z",
+      "next_action": "Add VLM request metadata, queue/inference timing, retry behavior, and circuit-open accounting. Keep timeout/circuit-open audits grouped here until daily failure volume drops.",
+      "notes": [],
+      "observed_statuses": [
+        "failed"
+      ],
       "severity": "P1",
       "status": "triaged",
       "suspected_files": [],
-      "title": "Problem-input multiplication dot is promoted to equals between fractions",
+      "title": "VLM audit timeouts and circuit-open skips",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "area": [],
+      "category": "audit-infra",
+      "evidence": [
+        {
+          "audit_id": "audit_20260703T125032301196Z_334c75e45e",
+          "discrepancy_types": [
+            "vlm_schema_error"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T125032301196Z_334c75e45e/comparison.json",
+          "summary": "VLM JSON must include latexLines as a list; fast=correct vlm=None; types=vlm_schema_error"
+        }
+      ],
+      "first_seen": "2026-07-04T12:13:30Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0022",
+      "key": "vlm-audit-schema-empty-json",
+      "last_seen": "2026-07-04T12:13:30Z",
+      "next_action": "Add schema-repair coverage and retry handling for VLM responses that omit latexLines, including empty JSON responses. Preserve raw response and parser error telemetry for every schema failure.",
+      "notes": [],
+      "observed_statuses": [
+        "failed"
+      ],
+      "severity": "P1",
+      "status": "triaged",
+      "suspected_files": [],
+      "title": "VLM audit schema errors return empty JSON",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "area": [],
+      "category": "audit-process",
+      "evidence": [
+        {
+          "audit_id": "audit_20260703T125227496485Z_5e0ddd9d04",
+          "discrepancy_types": [
+            "line_latex_mismatch",
+            "problem_status_mismatch",
+            "solution_set_mismatch",
+            "visual_intent_observed"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T125227496485Z_5e0ddd9d04/comparison.json",
+          "summary": "VLM audit raised: problem_status_mismatch, solution_set_mismatch, line_latex_mismatch; fast=incorrect vlm=correct; types=line_latex_mismatch,problem_status_mismatch,solution_set_mismatch,visual_intent_observed"
+        },
+        {
+          "audit_id": "audit_20260703T130912395585Z_bbbd388b6e",
+          "discrepancy_types": [
+            "line_latex_mismatch",
+            "problem_status_mismatch",
+            "solution_set_mismatch",
+            "visual_intent_observed"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T130912395585Z_bbbd388b6e/comparison.json",
+          "summary": "VLM audit raised: problem_status_mismatch, solution_set_mismatch, line_latex_mismatch; fast=incorrect vlm=correct; types=line_latex_mismatch,problem_status_mismatch,solution_set_mismatch,visual_intent_observed"
+        }
+      ],
+      "first_seen": "2026-07-04T12:13:48Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0023",
+      "key": "audit-overlay-visual-mark-false-positive",
+      "last_seen": "2026-07-04T12:13:48Z",
+      "next_action": "Add clean VLM crops or explicit overlay-ignore metadata/instructions so diagnostic red boxes are not interpreted as boxed-answer visual intent. Add fixture coverage before changing visual-intent comparison behavior.",
+      "notes": [],
+      "observed_statuses": [
+        "complete"
+      ],
+      "severity": "P2",
+      "status": "fixture_needed",
+      "suspected_files": [],
+      "title": "Audit overlay boxes are reported as visual marks",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "area": [],
+      "category": "tutor-feedback",
+      "evidence": [
+        {
+          "audit_id": "audit_20260703T213955419107Z_1abc4a8529",
+          "discrepancy_types": [
+            "visual_intent_observed"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T213955419107Z_1abc4a8529/comparison.json",
+          "summary": "Fast pipeline and VLM audit agreed on the checked signals.; fast=incorrect vlm=incorrect; types=visual_intent_observed"
+        },
+        {
+          "audit_id": "audit_20260703T174233152665Z_de476ff2a5",
+          "discrepancy_types": [
+            "vlm_schema_error"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T174233152665Z_de476ff2a5/comparison.json",
+          "summary": "VLM JSON must include latexLines as a list; fast=incorrect vlm=None; types=vlm_schema_error"
+        },
+        {
+          "audit_id": "audit_20260703T174901022130Z_232e0fa7c8",
+          "discrepancy_types": [
+            "vlm_timeout"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T174901022130Z_232e0fa7c8/comparison.json",
+          "summary": "timed out; fast=incorrect vlm=None; types=vlm_timeout"
+        }
+      ],
+      "first_seen": "2026-07-04T12:13:48Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0024",
+      "key": "tutor-feedback-prompt-leak-and-literal-feedback",
+      "last_seen": "2026-07-04T12:13:48Z",
+      "next_action": "Add tutor-feedback prompt/output contract tests that reject raw prompt instruction leakage and require actionable, line-specific feedback instead of literal phrases like fix the error.",
+      "notes": [
+        {
+          "text": "Daily audit personal notes: audit_20260703T213955419107Z_1abc4a8529 says tutor output still includes raw prompt instructions; audit_20260703T174233152665Z_de476ff2a5 says feedback was too literal; audit_20260703T174901022130Z_232e0fa7c8 says tutor identified the line error but only said to fix the error.",
+          "timestamp": "2026-07-04T12:13:48Z"
+        }
+      ],
+      "observed_statuses": [
+        "complete",
+        "failed"
+      ],
+      "severity": "P2",
+      "status": "triaged",
+      "suspected_files": [],
+      "title": "Tutor feedback leaks prompt text or gives literal fixes",
+      "updated_at": "2026-07-04T12:13:48Z",
+      "verification": {
+        "commands": [],
+        "live_audit": "missing",
+        "replay": "missing"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "area": [],
+      "category": "recognition-ux",
+      "evidence": [
+        {
+          "audit_id": "audit_20260703T144210547539Z_fe7e799b0c",
+          "discrepancy_types": [
+            "vlm_unavailable"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T144210547539Z_fe7e799b0c/comparison.json",
+          "summary": "timed out; fast=correct vlm=None; types=vlm_unavailable"
+        }
+      ],
+      "first_seen": "2026-07-04T12:13:55Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0025",
+      "key": "realtime-segmentation-status-flips",
+      "last_seen": "2026-07-04T12:13:55Z",
+      "next_action": "Add instrumentation and tests for live segmentation status stability so a problem that has reached correct does not repeatedly flip to incomplete during late segmentation/resegmentation unless new evidence invalidates it.",
+      "notes": [
+        {
+          "text": "Daily audit personal note: audit_20260703T144210547539Z_fe7e799b0c flipped between correct and incomplete for roughly 20 seconds while segmentation phases ran.",
+          "timestamp": "2026-07-04T12:13:56Z"
+        }
+      ],
+      "observed_statuses": [
+        "failed"
+      ],
+      "severity": "P2",
+      "status": "triaged",
+      "suspected_files": [],
+      "title": "Realtime segmentation status flips during grading",
+      "updated_at": "2026-07-04T12:13:56Z",
       "verification": {
         "commands": [],
         "live_audit": "missing",
@@ -1072,6 +1416,6 @@
       }
     }
   ],
-  "next_id": 21,
+  "next_id": 26,
   "schema_version": 1
 }

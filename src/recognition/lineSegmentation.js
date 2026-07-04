@@ -14,7 +14,8 @@ export function segmentMathLines(strokes, options = {}) {
   for (const stroke of [
     ...detectEnclosingAnnotationStrokes(strokes || []),
     ...detectSeparatedTopAnnotationStrokes(strokes || []),
-    ...detectTinyIsolatedScratchStrokes(strokes || [])
+    ...detectTinyIsolatedScratchStrokes(strokes || []),
+    ...detectDetachedLoopAnnotationStrokes(strokes || [])
   ]) {
     ignoredStrokeIds.add(String(stroke.id));
   }
@@ -2658,6 +2659,94 @@ export function detectTinyIsolatedScratchStrokes(strokes) {
       return Math.hypot(horizontalGap, verticalGap) <= 32;
     });
   });
+}
+
+export function detectDetachedLoopAnnotationStrokes(strokes) {
+  const usable = (strokes || []).filter((stroke) => stroke?.canvasBbox);
+  if (usable.length < 8) return [];
+
+  const medianHeight = median(usable.map(strokeHeight)) || 1;
+  const medianWidth = median(usable.map(strokeWidth)) || 1;
+  const out = [];
+
+  for (const stroke of usable) {
+    const box = stroke.canvasBbox;
+    const width = bboxWidth(box);
+    const height = bboxHeight(box);
+    const aspect = width / Math.max(1, height);
+
+    if (width < Math.max(42, medianWidth * 1.35) || width > Math.max(140, medianWidth * 5.5)) continue;
+    if (height < Math.max(42, medianHeight * 1.35) || height > Math.max(150, medianHeight * 5.5)) continue;
+    if (aspect < 0.55 || aspect > 1.55) continue;
+    if (!strokeLooksLikeClosedLoop(stroke)) continue;
+
+    const others = usable.filter((other) => other !== stroke);
+    const above = others.filter((other) => centerY(other.canvasBbox) < box.yMin - medianHeight * 0.2);
+    if (above.length < 6) continue;
+    if (countVerticalBands(above, medianHeight) < 2) continue;
+
+    const nearestAbove = above.reduce((best, other) => {
+      if (!best) return other;
+      return other.canvasBbox.yMax > best.canvasBbox.yMax ? other : best;
+    }, null);
+    if (!nearestAbove) continue;
+    const gap = box.yMin - nearestAbove.canvasBbox.yMax;
+    if (gap < Math.max(18, medianHeight * 0.55)) continue;
+
+    const aboveBox = computeTightBbox(above);
+    if (!aboveBox) continue;
+    if (horizontalOverlapRatio(box, aboveBox) < 0.18) continue;
+    out.push(stroke);
+  }
+
+  return out;
+}
+
+function strokeLooksLikeClosedLoop(stroke) {
+  const box = stroke?.canvasBbox;
+  if (!box) return false;
+  const points = stroke.rawPoints || stroke.points || stroke.outlinePoints || [];
+  if (points.length < 8) return false;
+
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (!first || !last) return false;
+
+  const width = bboxWidth(box);
+  const height = bboxHeight(box);
+  const closeDistance = Math.hypot(floatCoord(first.x) - floatCoord(last.x), floatCoord(first.y) - floatCoord(last.y));
+  if (closeDistance > Math.max(width, height) * 0.6) return false;
+
+  let pathLength = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    pathLength += Math.hypot(
+      floatCoord(points[index].x) - floatCoord(points[index - 1].x),
+      floatCoord(points[index].y) - floatCoord(points[index - 1].y)
+    );
+  }
+  return pathLength >= (width + height) * 1.25;
+}
+
+function countVerticalBands(strokes, medianHeight) {
+  const centers = (strokes || [])
+    .filter((stroke) => stroke?.canvasBbox)
+    .map((stroke) => centerY(stroke.canvasBbox))
+    .sort((left, right) => left - right);
+  if (centers.length === 0) return 0;
+
+  let bands = 1;
+  let previous = centers[0];
+  const threshold = Math.max(18, medianHeight * 1.25);
+  for (const center of centers.slice(1)) {
+    if (center - previous > threshold) bands += 1;
+    previous = center;
+  }
+  return bands;
+}
+
+function floatCoord(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
 }
 
 /**
