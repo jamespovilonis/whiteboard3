@@ -110,8 +110,9 @@ class MathFeedbackService:
         try:
             raw = self.llm_client.complete(system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt)
             text = trim_feedback_text(extract_chat_content(raw))
-            if not acceptable_llm_feedback(text, prompt_context):
-                raise RuntimeError("Feedback LLM did not include the target line")
+            rejection_reason = llm_feedback_rejection_reason(text, prompt_context)
+            if rejection_reason:
+                raise RuntimeError(f"Feedback LLM rejected: {rejection_reason}")
             return {
                 **base,
                 "source": "ollama",
@@ -406,20 +407,33 @@ def deterministic_fallback_feedback(context: dict[str, Any]) -> str:
 
 
 def acceptable_llm_feedback(text: str, context: dict[str, Any]) -> bool:
+    return llm_feedback_rejection_reason(text, context) is None
+
+
+def llm_feedback_rejection_reason(text: str, context: dict[str, Any]) -> str | None:
     stripped = str(text or "").strip()
     if not stripped:
-        return False
+        return "empty"
     if stripped.startswith("{") or stripped.startswith("["):
-        return False
+        return "json_or_list_output"
     lowered = stripped.lower()
-    if "give one valid correction or next step" in lowered:
-        return False
-    if "student line to respond" in lowered or "reason to mention" in lowered:
-        return False
+    rejected_phrases = [
+        "give one valid correction or next step",
+        "student line to respond",
+        "reason to mention",
+        "correct target line is exactly",
+        "use the exact targetline",
+        "do not output json",
+        "do not mention these rules",
+        "rules:",
+        "fix the error",
+    ]
+    if any(phrase in lowered for phrase in rejected_phrases):
+        return "prompt_or_literal_feedback"
     target_line = str(context.get("targetLine") or "").strip()
     if target_line and target_line not in stripped:
-        return False
-    return True
+        return "missing_target_line"
+    return None
 
 
 def correct_feedback_text() -> str:
@@ -477,5 +491,6 @@ __all__ = [
     "correct_feedback_text",
     "deterministic_fallback_feedback",
     "extract_chat_content",
+    "llm_feedback_rejection_reason",
     "trim_feedback_text",
 ]

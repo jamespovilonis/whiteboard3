@@ -95,7 +95,26 @@ class MathFeedbackServiceTests(unittest.TestCase):
         context = build_prompt_context(feedback_payload(problem_status="incomplete"))
         self.assertFalse(acceptable_llm_feedback("A good next line is x=4.", context))
         self.assertFalse(acceptable_llm_feedback("Student line to respond to: 2x = 8. The correct target line is exactly: x = 4.", context))
+        self.assertFalse(acceptable_llm_feedback("The correct target line is exactly: x = 4.", context))
+        self.assertFalse(acceptable_llm_feedback("Fix the error: x = 4.", context))
+        self.assertFalse(acceptable_llm_feedback("Rules: include the exact target line x = 4.", context))
         self.assertTrue(acceptable_llm_feedback("A good next line is: x = 4.", context))
+
+    def test_prompt_leak_and_literal_feedback_fall_back(self):
+        cases = [
+            "Student line to respond to: 2x = 8. The correct target line is exactly: x = 4.",
+            "Fix the error: x = 4.",
+            "Rules: include the exact target line x = 4 and do not output JSON.",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                service = service_with(FakeTextClient(text))
+                result = service.generate(feedback_payload(problem_status="incomplete"))
+
+                self.assertEqual(result["source"], "fallback")
+                self.assertIn("Feedback LLM rejected", result["error"])
+                self.assertIn("x = 4", result["text"])
+                self.assertNotIn("fix the error", result["text"].lower())
 
     def test_feedback_prompt_is_not_raw_json(self):
         context = build_prompt_context(feedback_payload(problem_status="incomplete"))

@@ -315,6 +315,19 @@ export function normalizeProblemDefinitions(problemDefinitions = []) {
 export function applyProblemRecognitionResult(flow, problemId, result) {
   return updateProblem(flow, problemId, (problem) => {
     const inputSignature = recognitionInputSignature({ result, realtime: result?.realtime });
+    const preserveCorrect = shouldPreserveSubmittedCorrectRecognition(problem, result, result?.realtime);
+    const nextResult = preserveCorrect ? {
+      ...(problem.recognition.result || {}),
+      realtime: result?.realtime || problem.recognition.result?.realtime || problem.recognition.realtime || null
+    } : result;
+    const nextRealtime = nextResult?.realtime || problem.recognition.realtime || null;
+    const transition = recognitionTransitionEvent(problem, {
+      nextStatus: 'complete',
+      nextResult,
+      nextRealtime,
+      inputSignature,
+      reason: preserveCorrect ? 'preserve_submitted_correct_same_input' : 'result'
+    });
     return {
       ...problem,
       submittedInputSignature: submittedSignatureAfterRecognition(problem, inputSignature),
@@ -322,9 +335,10 @@ export function applyProblemRecognitionResult(flow, problemId, result) {
         ...problem.recognition,
         status: 'complete',
         error: null,
-        result,
-        realtime: result?.realtime || problem.recognition.realtime || null,
-        completedAt: Date.now()
+        result: nextResult,
+        realtime: nextRealtime,
+        completedAt: Date.now(),
+        transitionLog: appendRecognitionTransition(problem.recognition.transitionLog, transition)
       }
     };
   });
@@ -332,9 +346,22 @@ export function applyProblemRecognitionResult(flow, problemId, result) {
 
 export function applyProblemRecognitionProgress(flow, problemId, { status = 'pending', result = null, realtime = null } = {}) {
   return updateProblem(flow, problemId, (problem) => {
-    const nextResult = result || problem.recognition.result;
-    const nextRealtime = realtime || result?.realtime || problem.recognition.realtime || null;
+    const rawNextResult = result || problem.recognition.result;
+    const rawNextRealtime = realtime || result?.realtime || problem.recognition.realtime || null;
+    const preserveCorrect = shouldPreserveSubmittedCorrectRecognition(problem, rawNextResult, rawNextRealtime);
+    const nextResult = preserveCorrect ? {
+      ...(problem.recognition.result || {}),
+      realtime: rawNextRealtime || problem.recognition.result?.realtime || problem.recognition.realtime || null
+    } : rawNextResult;
+    const nextRealtime = rawNextRealtime || nextResult?.realtime || problem.recognition.realtime || null;
     const inputSignature = recognitionInputSignature({ result: nextResult, realtime: nextRealtime });
+    const transition = recognitionTransitionEvent(problem, {
+      nextStatus: status,
+      nextResult,
+      nextRealtime,
+      inputSignature,
+      reason: preserveCorrect ? 'preserve_submitted_correct_same_input' : 'progress'
+    });
     return {
       ...problem,
       submittedInputSignature: submittedSignatureAfterRecognition(problem, inputSignature),
@@ -347,7 +374,8 @@ export function applyProblemRecognitionProgress(flow, problemId, { status = 'pen
         result: nextResult,
         realtime: nextRealtime,
         updatedAt: Date.now(),
-        completedAt: status === 'complete' ? Date.now() : problem.recognition.completedAt || null
+        completedAt: status === 'complete' ? Date.now() : problem.recognition.completedAt || null,
+        transitionLog: appendRecognitionTransition(problem.recognition.transitionLog, transition)
       }
     };
   });
@@ -487,6 +515,69 @@ function recognitionIsFinal(recognition) {
   if (realtime?.allFinal === false) return false;
   const components = Array.isArray(realtime?.components) ? realtime.components : [];
   return components.every((component) => component?.status === 'final' && !component?.contested);
+}
+
+function shouldPreserveSubmittedCorrectRecognition(problem, nextResult, nextRealtime) {
+  if (problem?.status !== 'submitted' || problem?.revisionAllowed) return false;
+  if (recognitionProblemStatus(problem) !== 'correct') return false;
+  const nextStatus = nextResult?.grading?.result?.problemStatus || '';
+  if (!['incomplete', 'not_started', 'incorrect'].includes(nextStatus)) return false;
+  const submittedSignature = problem.submittedInputSignature || currentInputSignature(problem);
+  const nextSignature = recognitionInputSignature({ result: nextResult, realtime: nextRealtime });
+  return Boolean(submittedSignature && nextSignature && submittedSignature === nextSignature);
+}
+
+function recognitionTransitionEvent(problem, {
+  nextStatus,
+  nextResult,
+  nextRealtime,
+  inputSignature,
+  reason
+}) {
+  const previousRecognition = problem?.recognition || {};
+  const previousRealtime = previousRecognition.result?.realtime || previousRecognition.realtime || null;
+  const previousProblemStatus = previousRecognition.result?.grading?.result?.problemStatus || '';
+  const nextProblemStatus = nextResult?.grading?.result?.problemStatus || '';
+  const previousAllFinal = previousRealtime?.allFinal;
+  const nextAllFinal = nextRealtime?.allFinal;
+  if (
+    previousRecognition.status === nextStatus &&
+    previousProblemStatus === nextProblemStatus &&
+    previousAllFinal === nextAllFinal
+  ) {
+    return null;
+  }
+  return {
+    at: Date.now(),
+    reason,
+    inputSignature: inputSignature || recognitionInputSignature({ result: nextResult, realtime: nextRealtime }) || null,
+    submittedInputSignature: problem?.submittedInputSignature || null,
+    previous: {
+      status: previousRecognition.status || null,
+      problemStatus: previousProblemStatus || null,
+      allFinal: previousAllFinal ?? null,
+      components: summarizeRealtimeComponents(previousRealtime),
+    },
+    next: {
+      status: nextStatus || null,
+      problemStatus: nextProblemStatus || null,
+      allFinal: nextAllFinal ?? null,
+      components: summarizeRealtimeComponents(nextRealtime),
+    }
+  };
+}
+
+function appendRecognitionTransition(existing, transition) {
+  if (!transition) return existing || [];
+  return [...(existing || []), transition].slice(-20);
+}
+
+function summarizeRealtimeComponents(realtime) {
+  return (Array.isArray(realtime?.components) ? realtime.components : []).map((component) => ({
+    signature: component?.signature || null,
+    status: component?.status || null,
+    contested: Boolean(component?.contested),
+  }));
 }
 
 function currentInputSignature(problem) {

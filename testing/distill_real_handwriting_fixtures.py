@@ -74,6 +74,26 @@ DEFAULT_FIXTURES: Sequence[dict[str, str]] = (
         "description": "Invalid expression answer that must stay one semantic line instead of fragmenting into correct-looking single digits.",
     },
     {
+        "audit_id": "audit_20260702T142451952142Z_3f3e9f3660",
+        "slug": "inverse-trig-partial-expression",
+        "description": "Inverse-trig evaluation where a partial expression must not become an incorrect final answer.",
+    },
+    {
+        "audit_id": "audit_20260702T143019928891Z_14e2f278b4",
+        "slug": "two-fraction-subtraction-shared-baseline",
+        "description": "Two compact fraction stacks connected by a baseline subtraction operator must stay one expression line.",
+    },
+    {
+        "audit_id": "audit_20260702T190533049012Z_1dc4b772e2",
+        "slug": "intermediate-algebra-row-retained",
+        "description": "Three visually separated algebra rows where the middle row must not be dropped.",
+    },
+    {
+        "audit_id": "audit_20260702T215209128186Z_2c6498c760",
+        "slug": "fractional-log-base-solve-context",
+        "description": "Log solve work where a fractional log base must remain a subscript base.",
+    },
+    {
         "audit_id": "audit_20260701T220344096316Z_166bcd217a",
         "slug": "radical-fraction-simplification-no-leading-equals",
         "description": "Radical fraction simplification without leading equals strokes; stale OCR split numerator and radical body.",
@@ -375,6 +395,84 @@ REVIEWED_LINE_GROUP_OVERRIDES: dict[str, list[dict[str, Any]]] = {
             "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007"],
             "source": "reviewed-vlm-semantic-lines",
             "sourceCandidateId": "parent_s001|s002|s003|s004|s005|s006|s007",
+        },
+    ],
+    "audit_20260702T142451952142Z_3f3e9f3660": [
+        {
+            "lineIndex": 0,
+            "latex": "\\pi -",
+            "strokeIds": ["s001", "s002", "s003", "s004"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004",
+        },
+    ],
+    "audit_20260702T143019928891Z_14e2f278b4": [
+        {
+            "lineIndex": 0,
+            "latex": "\\pi - \\frac{3\\pi}{2}",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "\\frac{2\\pi}{2} - \\frac{3\\pi}{2}",
+            "strokeIds": ["s011", "s012", "s013", "s014", "s015", "s016", "s017", "s018", "s019", "s020", "s021", "s022", "s023"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s011|s012|s013|s014|s015|s016|s017|s018|s019|s020|s021|s022|s023",
+        },
+        {
+            "lineIndex": 2,
+            "latex": "-\\frac{\\pi}{2}",
+            "strokeIds": ["s024", "s026", "s025", "s027", "s028", "s029", "s030"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s024|s026|s025|s027|s028|s029|s030",
+        },
+    ],
+    "audit_20260702T190533049012Z_1dc4b772e2": [
+        {
+            "lineIndex": 0,
+            "latex": "5x - 8 = 14",
+            "strokeIds": ["s001", "s002", "s003", "s004", "s005", "s006", "s007", "s008", "s009", "s010"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s004|s005|s006|s007|s008|s009|s010",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "5x = 22",
+            "strokeIds": ["s011", "s012", "s013", "s014", "s015", "s016", "s017"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s011|s012|s013|s014|s015|s016|s017",
+        },
+        {
+            "lineIndex": 2,
+            "latex": "x = \\frac{22}{5}",
+            "strokeIds": ["s018", "s019", "s020", "s021", "s022", "s023", "s024", "s025"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s018|s019|s020|s021|s022|s023|s024|s025",
+        },
+    ],
+    "audit_20260702T215209128186Z_2c6498c760": [
+        {
+            "lineIndex": 0,
+            "latex": "\\log_{\\frac{1}{2}} x = 4",
+            "strokeIds": ["s001", "s002", "s003", "s005", "s004", "s006", "s007", "s008", "s009", "s010", "s011", "s012", "s013", "s014"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s001|s002|s003|s005|s004|s006|s007|s008|s009|s010|s011|s012|s013|s014",
+        },
+        {
+            "lineIndex": 1,
+            "latex": "(\\frac{1}{2})^4 = x",
+            "strokeIds": ["s020", "s021", "s015", "s022", "s024", "s025", "s016", "s018", "s019", "s023", "s017"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s020|s021|s015|s022|s024|s025|s016|s018|s019|s023|s017",
+        },
+        {
+            "lineIndex": 2,
+            "latex": "\\frac{1}{16} = x",
+            "strokeIds": ["s026", "s027", "s030", "s032", "s033", "s034", "s028", "s029", "s031", "s035"],
+            "source": "reviewed-vlm-semantic-lines",
+            "sourceCandidateId": "reviewed_s026|s027|s030|s032|s033|s034|s028|s029|s031|s035",
         },
     ],
     "audit_20260702T132819834470Z_44f1a28ce5": [

@@ -347,6 +347,9 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
 
   if (candidate.strokes.length <= 1) score -= 1.8;
   if (candidate.strokes.length <= 2 && width < medianHeight * 4) score -= 0.8;
+  if (profiles.includes('fraction-stack-line') && rowsContainIndependentEquationContinuation(rawRows, candidate)) {
+    score -= 14;
+  }
   if (structural && candidate.strokes.length > 2) score += 0.85;
   if (
     rawRows.length > 1 &&
@@ -361,6 +364,7 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
     score += Math.min(8.5, (rawRows.length - 1) * 4.1);
   }
   if (compactFractionLine) score += 4.2;
+  if (profiles.includes('fraction-stack-line') && hasSharedBaselineFractionBars(candidate)) score += 7.0;
   if (profiles.includes('fraction-stack-line') && fractionStructural) score += 3.2;
   if (problemInputFractionLine) score += 9.5;
   if (problemInputFractionLine && parentLike) score += 24;
@@ -438,8 +442,9 @@ export function scoreCandidateGeometry(candidate, allCandidates = []) {
     if (childLinesCoverParent(candidate, children) && children.length > 1) {
       const independentRows = childrenLookLikeIndependentRows(children, width, medianHeight, candidate);
       const protectedFractionStack = profiles.includes('fraction-stack-line') && fractionStructural;
-      if ((independentRows && !protectedFractionStack) || !structural) {
-        score -= (children.length - 1) * (independentRows ? 9.8 : 4.2);
+      const independentEquationContinuation = childRowsIncludeIndependentEquationContinuation(children, candidate);
+      if ((independentRows && (!protectedFractionStack || independentEquationContinuation)) || !structural) {
+        score -= (children.length - 1) * (independentRows ? (protectedFractionStack ? 7.2 : 9.8) : 4.2);
       }
     }
   }
@@ -1394,6 +1399,8 @@ function buildTallFractionStackGroups(rows, config) {
       });
       const height = bboxHeight(candidate.tightBbox);
       if (height <= 150 || height > 285) continue;
+      if (sliceStartsWithIndependentEquationRow(slice, candidate)) continue;
+      if (hasDetachedTallStackGap(slice)) continue;
       const candidateRows = clusterStrokeRows(candidate, config);
       const wideSupportedFraction = hasWideFractionBar(candidate) &&
         hasProminentLocalFractionBridge(candidate, candidateRows);
@@ -1411,6 +1418,92 @@ function buildTallFractionStackGroups(rows, config) {
     }
   }
   return groups;
+}
+
+function hasDetachedTallStackGap(rows) {
+  const sortedRows = (rows || []).slice().sort(compareRows);
+  for (let index = 0; index < sortedRows.length - 1; index += 1) {
+    const upper = sortedRows[index];
+    const lower = sortedRows[index + 1];
+    if (!upper?.bbox || !lower?.bbox) continue;
+    const gap = verticalGap(upper.bbox, lower.bbox);
+    const upperMedian = rowMedianHeight(upper) || bboxHeight(upper.bbox);
+    const lowerMedian = rowMedianHeight(lower) || bboxHeight(lower.bbox);
+    if (gap > Math.max(44, Math.min(upperMedian, lowerMedian) * 1.05)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function sliceStartsWithIndependentEquationRow(rows, candidate) {
+  const sortedRows = (rows || []).slice().sort(compareRows);
+  if (sortedRows.length < 2) return false;
+  return rowsFormIndependentEquationContinuation(sortedRows[0], sortedRows[1], candidate);
+}
+
+function rowsContainIndependentEquationContinuation(rows, candidate) {
+  const sortedRows = (rows || []).slice().sort(compareRows);
+  for (let index = 0; index < sortedRows.length - 1; index += 1) {
+    if (rowsFormIndependentEquationContinuation(sortedRows[index], sortedRows[index + 1], candidate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function childRowsIncludeIndependentEquationContinuation(children, candidate) {
+  const rows = (children || [])
+    .filter((child) => child?.strokes?.length)
+    .map((child) => ({
+      bbox: child.tightBbox || child.bbox,
+      strokes: child.strokes || []
+    }));
+  return rowsContainIndependentEquationContinuation(rows, candidate);
+}
+
+function rowsFormIndependentEquationContinuation(rowA, rowB, candidate) {
+  const rowABox = rowA?.bbox || rowA?.tightBbox;
+  const rowBBox = rowB?.bbox || rowB?.tightBbox;
+  if (!rowABox || !rowBBox) return false;
+  const normalizedA = { ...rowA, bbox: rowABox };
+  const normalizedB = { ...rowB, bbox: rowBBox };
+  const upper = centerY(normalizedA.bbox) <= centerY(normalizedB.bbox) ? normalizedA : normalizedB;
+  const lower = upper === normalizedA ? normalizedB : normalizedA;
+  if (!rowLooksLikeEquationWithEquals(upper) && !rowHasCompactEqualsPair(upper)) return false;
+
+  const upperWidth = bboxWidth(upper.bbox);
+  const candidateWidth = candidate?.tightBbox ? bboxWidth(candidate.tightBbox) : upperWidth;
+  const gap = verticalGap(upper.bbox, lower.bbox);
+  const upperMedian = rowMedianHeight(upper) || bboxHeight(upper.bbox);
+  const lowerMedian = rowMedianHeight(lower) || bboxHeight(lower.bbox);
+  const detachedGap = gap > Math.max(18, upperMedian * 0.34, lowerMedian * 0.34);
+  const broadEquationRow = upperWidth >= Math.max(140, candidateWidth * 0.42);
+  return detachedGap && broadEquationRow && (upper.strokes || []).length >= 5;
+}
+
+function rowHasCompactEqualsPair(row) {
+  const horizontals = (row?.strokes || [])
+    .filter((stroke) => {
+      const box = stroke.canvasBbox;
+      if (!box) return false;
+      const width = bboxWidth(box);
+      const height = Math.max(1, bboxHeight(box));
+      return width >= 14 && width <= 95 && height <= 16 && width / height >= 2.2;
+    })
+    .sort((a, b) => centerY(a.canvasBbox) - centerY(b.canvasBbox));
+
+  for (let i = 0; i < horizontals.length; i += 1) {
+    for (let j = i + 1; j < horizontals.length; j += 1) {
+      const upper = horizontals[i].canvasBbox;
+      const lower = horizontals[j].canvasBbox;
+      const gap = verticalGap(upper, lower);
+      if (gap > 24) continue;
+      if (horizontalOverlapRatio(upper, lower) < 0.55) continue;
+      return true;
+    }
+  }
+  return false;
 }
 
 function buildProblemInputFractionLineGroups(rows, config) {
@@ -1985,6 +2078,9 @@ function isStructuralAttachment(child, parent, candidate) {
   if (looksLikeIndependentLowerContinuation(child, parent, candidate)) {
     return false;
   }
+  if (rowsFormIndependentEquationContinuation(child, parent, candidate)) {
+    return false;
+  }
 
   const decoration = childCenter > parentCenter &&
     mostlyHorizontal(child) &&
@@ -2281,6 +2377,45 @@ function hasWideFractionBar(candidate) {
     if (!box || !isHorizontalStroke(stroke)) return false;
     return bboxWidth(box) >= Math.max(90, candidateWidth * 0.42);
   });
+}
+
+function hasSharedBaselineFractionBars(candidate) {
+  if (!candidate?.strokes?.length || !candidate.tightBbox) return false;
+  const candidateWidth = Math.max(1, bboxWidth(candidate.tightBbox));
+  const bars = candidate.strokes
+    .filter((stroke) => {
+      const box = stroke.canvasBbox;
+      if (!box || !isHorizontalStroke(stroke)) return false;
+      const width = bboxWidth(box);
+      const height = bboxHeight(box);
+      return width >= Math.max(55, candidateWidth * 0.24) && height <= 18;
+    })
+    .map((stroke) => stroke.canvasBbox)
+    .sort((a, b) => centerX(a) - centerX(b));
+
+  for (let i = 0; i < bars.length; i += 1) {
+    for (let j = i + 1; j < bars.length; j += 1) {
+      if (Math.abs(centerY(bars[i]) - centerY(bars[j])) > 18) continue;
+      if (Math.abs(centerX(bars[i]) - centerX(bars[j])) < Math.max(90, candidateWidth * 0.32)) continue;
+      if (!barHasInkAboveAndBelow(candidate, bars[i]) || !barHasInkAboveAndBelow(candidate, bars[j])) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+function barHasInkAboveAndBelow(candidate, bar) {
+  let above = false;
+  let below = false;
+  for (const stroke of candidate?.strokes || []) {
+    const box = stroke.canvasBbox;
+    if (!box || box === bar) continue;
+    if (horizontalOverlapRatio(bar, box) < 0.12 && horizontalGap(bar, box) > 20) continue;
+    if (centerY(box) < centerY(bar) - 4) above = true;
+    if (centerY(box) > centerY(bar) + 4) below = true;
+    if (above && below) return true;
+  }
+  return false;
 }
 
 function rowLooksLikeOperationAnnotation(row) {

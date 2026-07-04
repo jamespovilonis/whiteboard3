@@ -263,26 +263,43 @@
       ],
       "first_seen": "2026-07-02T14:24:51.952448Z",
       "fix_commits": [],
-      "fixtures": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-04T13:13:55Z",
+          "note": "Replay fixture distilled from audit_20260702T142451952142Z_3f3e9f3660.",
+          "path": "testing/fixtures/real_handwriting/inverse-trig-partial-expression.json"
+        }
+      ],
       "id": "WB3-0005",
       "key": "inverse-trig-manifest-parse-failure-misgrades-partial-work",
       "last_seen": "2026-07-02T14:28:58.288847Z",
-      "next_action": "Keep inverse-trig normalization before exponent parsing and the manifest-failure downgrade; add direct replay coverage before marking resolved.",
+      "next_action": "Monitor live inverse-trig audits for comparable recurrence.",
       "notes": [
         {
           "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
           "timestamp": "2026-07-03T22:02:25Z"
+        },
+        {
+          "text": "Replay verification passed via distilled real handwriting fixture.",
+          "timestamp": "2026-07-04T13:14:28Z"
         }
       ],
       "severity": "P2",
-      "status": "deferred",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Inverse-trig manifest parse failure turns partial work into incorrect",
-      "updated_at": "2026-07-03T22:02:25Z",
+      "updated_at": "2026-07-04T13:14:28Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "node --test --test-name-pattern \"distilled real handwriting trace fixtures\" testing/test_recognition_pipeline.mjs",
+            "note": "Covers inverse-trig partial-expression fixture without turning partial work into a final answer.",
+            "result": "passed",
+            "timestamp": "2026-07-04T13:14:11Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -306,26 +323,43 @@
       ],
       "first_seen": "2026-07-02T14:30:19.930534Z",
       "fix_commits": [],
-      "fixtures": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-04T13:13:56Z",
+          "note": "Replay fixture distilled from audit_20260702T143019928891Z_14e2f278b4.",
+          "path": "testing/fixtures/real_handwriting/two-fraction-subtraction-shared-baseline.json"
+        }
+      ],
       "id": "WB3-0006",
       "key": "fraction-subtraction-row-split-into-numerator-denominator-fragments",
       "last_seen": "2026-07-02T14:30:19.930534Z",
-      "next_action": "Add audit_20260702T143019928891Z_14e2f278b4 as a fixture and prefer a single row-spanning fraction expression when two compact fraction stacks are connected by an inline operator on the shared baseline.",
+      "next_action": "Monitor live compact-fraction subtraction audits for comparable recurrence.",
       "notes": [
         {
           "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
           "timestamp": "2026-07-03T22:02:26Z"
+        },
+        {
+          "text": "Replay verification passed via distilled real handwriting fixture.",
+          "timestamp": "2026-07-04T13:14:28Z"
         }
       ],
       "severity": "P2",
-      "status": "deferred",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Two-fraction subtraction row is split into numerator/denominator fragments",
-      "updated_at": "2026-07-03T22:02:26Z",
+      "updated_at": "2026-07-04T13:14:28Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "node --test --test-name-pattern \"distilled real handwriting trace fixtures\" testing/test_recognition_pipeline.mjs",
+            "note": "Covers two compact fraction stacks connected by a shared-baseline subtraction operator.",
+            "result": "passed",
+            "timestamp": "2026-07-04T13:14:11Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -349,26 +383,43 @@
       ],
       "first_seen": "2026-07-02T19:05:33.049158Z",
       "fix_commits": [],
-      "fixtures": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-04T13:13:56Z",
+          "note": "Replay fixture distilled from audit_20260702T190533049012Z_1dc4b772e2.",
+          "path": "testing/fixtures/real_handwriting/intermediate-algebra-row-retained.json"
+        }
+      ],
       "id": "WB3-0007",
       "key": "intermediate-algebra-row-dropped-between-recognized-lines",
       "last_seen": "2026-07-02T19:05:33.049158Z",
-      "next_action": "Add this audit as a real-handwriting fixture and assert the selected cover contains all three visually separated algebra rows. Add a final sanity pass for large unrecognized stroke clusters between recognized lines.",
+      "next_action": "Monitor live algebra-row audits for comparable recurrence.",
       "notes": [
         {
           "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
           "timestamp": "2026-07-03T22:02:26Z"
+        },
+        {
+          "text": "Replay verification passed via distilled real handwriting fixture.",
+          "timestamp": "2026-07-04T13:14:28Z"
         }
       ],
       "severity": "P2",
-      "status": "deferred",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Intermediate algebra row dropped between recognized lines",
-      "updated_at": "2026-07-03T22:02:26Z",
+      "updated_at": "2026-07-04T13:14:28Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "node --test --test-name-pattern \"distilled real handwriting trace fixtures\" testing/test_recognition_pipeline.mjs",
+            "note": "Covers retained intermediate algebra row and prevents merging it into the final row.",
+            "result": "passed",
+            "timestamp": "2026-07-04T13:14:11Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -716,26 +767,43 @@
       ],
       "first_seen": "2026-07-02T21:54:12.999529Z",
       "fix_commits": [],
-      "fixtures": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-04T13:13:56Z",
+          "note": "Replay fixture distilled from audit_20260702T215209128186Z_2c6498c760.",
+          "path": "testing/fixtures/real_handwriting/fractional-log-base-solve-context.json"
+        }
+      ],
       "id": "WB3-0012",
       "key": "log-fraction-base-subscript-lost",
       "last_seen": "2026-07-02T21:54:12.999529Z",
-      "next_action": "Guardedly rewrite `\\log` followed by a fraction and variable/equality into a log-base subscript form when the problem expects a log-base solve, and validate/repair unclosed log-base braces in problem metadata.",
+      "next_action": "Monitor live fractional-log-base audits for comparable recurrence.",
       "notes": [
         {
           "text": "Aligned with diagnostic deferred_replay_fixture_needed status.",
           "timestamp": "2026-07-03T22:02:26Z"
+        },
+        {
+          "text": "Replay verification passed via distilled real handwriting fixture.",
+          "timestamp": "2026-07-04T13:14:28Z"
         }
       ],
       "severity": "P2",
-      "status": "deferred",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Fractional log bases lose their subscript braces and become multiplied arguments",
-      "updated_at": "2026-07-03T22:02:26Z",
+      "updated_at": "2026-07-04T13:14:28Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "node --test --test-name-pattern \"distilled real handwriting trace fixtures\" testing/test_recognition_pipeline.mjs",
+            "note": "Covers fractional log-base solve-context fixture and keeps log-base fraction grouped.",
+            "result": "passed",
+            "timestamp": "2026-07-04T13:14:11Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -1217,19 +1285,32 @@
       "id": "WB3-0021",
       "key": "vlm-audit-timeouts-and-circuit-open",
       "last_seen": "2026-07-04T12:13:30Z",
-      "next_action": "Add VLM request metadata, queue/inference timing, retry behavior, and circuit-open accounting. Keep timeout/circuit-open audits grouped here until daily failure volume drops.",
-      "notes": [],
+      "next_action": "Monitor comparable live audit evidence for timeout/circuit-open recurrence before reopening.",
+      "notes": [
+        {
+          "text": "Replay verification passed for timeout/circuit-open audit metadata and suppression behavior.",
+          "timestamp": "2026-07-04T13:14:27Z"
+        }
+      ],
       "observed_statuses": [
         "failed"
       ],
       "severity": "P1",
-      "status": "triaged",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "VLM audit timeouts and circuit-open skips",
+      "updated_at": "2026-07-04T13:14:27Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "python3 -m unittest testing.test_audit_service",
+            "note": "Covers timeout/circuit-open metadata, suppressed audit events, retry accounting, and audit artifact metadata.",
+            "result": "passed",
+            "timestamp": "2026-07-04T13:14:11Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -1252,19 +1333,32 @@
       "id": "WB3-0022",
       "key": "vlm-audit-schema-empty-json",
       "last_seen": "2026-07-04T12:13:30Z",
-      "next_action": "Add schema-repair coverage and retry handling for VLM responses that omit latexLines, including empty JSON responses. Preserve raw response and parser error telemetry for every schema failure.",
-      "notes": [],
+      "next_action": "Monitor live audits for malformed or empty VLM JSON recurrence.",
+      "notes": [
+        {
+          "text": "Replay verification passed for schema retry/repair and raw/parser metadata preservation.",
+          "timestamp": "2026-07-04T13:14:27Z"
+        }
+      ],
       "observed_statuses": [
         "failed"
       ],
       "severity": "P1",
-      "status": "triaged",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "VLM audit schema errors return empty JSON",
+      "updated_at": "2026-07-04T13:14:27Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "python3 -m unittest testing.test_audit_service",
+            "note": "Covers schema-empty/missing-latexLines retry, raw attempt preservation, parser metadata, and successful retry normalization.",
+            "result": "passed",
+            "timestamp": "2026-07-04T13:14:11Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -1301,19 +1395,32 @@
       "id": "WB3-0023",
       "key": "audit-overlay-visual-mark-false-positive",
       "last_seen": "2026-07-04T12:13:48Z",
-      "next_action": "Add clean VLM crops or explicit overlay-ignore metadata/instructions so diagnostic red boxes are not interpreted as boxed-answer visual intent. Add fixture coverage before changing visual-intent comparison behavior.",
-      "notes": [],
+      "next_action": "Monitor live audit artifacts for diagnostic overlay false positives before reopening.",
+      "notes": [
+        {
+          "text": "Replay verification passed for clean VLM crops and overlay categorization.",
+          "timestamp": "2026-07-04T13:14:32Z"
+        }
+      ],
       "observed_statuses": [
         "complete"
       ],
       "severity": "P2",
-      "status": "fixture_needed",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Audit overlay boxes are reported as visual marks",
+      "updated_at": "2026-07-04T13:14:32Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "python3 -m unittest testing.test_audit_service",
+            "note": "Covers clean VLM crops, diagnostic overlay metadata, prompt instruction, and audit_overlay_visual_mark categorization.",
+            "result": "passed",
+            "timestamp": "2026-07-04T13:14:11Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -1352,11 +1459,15 @@
       "id": "WB3-0024",
       "key": "tutor-feedback-prompt-leak-and-literal-feedback",
       "last_seen": "2026-07-04T12:13:48Z",
-      "next_action": "Add tutor-feedback prompt/output contract tests that reject raw prompt instruction leakage and require actionable, line-specific feedback instead of literal phrases like fix the error.",
+      "next_action": "Monitor live feedback artifacts for prompt leakage or non-actionable literal feedback recurrence.",
       "notes": [
         {
           "text": "Daily audit personal notes: audit_20260703T213955419107Z_1abc4a8529 says tutor output still includes raw prompt instructions; audit_20260703T174233152665Z_de476ff2a5 says feedback was too literal; audit_20260703T174901022130Z_232e0fa7c8 says tutor identified the line error but only said to fix the error.",
           "timestamp": "2026-07-04T12:13:48Z"
+        },
+        {
+          "text": "Replay verification passed for tutor-feedback output contract and fallback rejection handling.",
+          "timestamp": "2026-07-04T13:14:28Z"
         }
       ],
       "observed_statuses": [
@@ -1364,14 +1475,21 @@
         "failed"
       ],
       "severity": "P2",
-      "status": "triaged",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Tutor feedback leaks prompt text or gives literal fixes",
-      "updated_at": "2026-07-04T12:13:48Z",
+      "updated_at": "2026-07-04T13:14:28Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "python3 -m unittest testing.test_feedback_service",
+            "note": "Covers prompt leakage, literal fix-the-error feedback, raw/rules echoes, target-line enforcement, and fallback rejection reasons.",
+            "result": "passed",
+            "timestamp": "2026-07-04T13:14:11Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -1394,25 +1512,36 @@
       "id": "WB3-0025",
       "key": "realtime-segmentation-status-flips",
       "last_seen": "2026-07-04T12:13:55Z",
-      "next_action": "Add instrumentation and tests for live segmentation status stability so a problem that has reached correct does not repeatedly flip to incomplete during late segmentation/resegmentation unless new evidence invalidates it.",
+      "next_action": "Monitor live recognition telemetry for status flips after correct submissions.",
       "notes": [
         {
           "text": "Daily audit personal note: audit_20260703T144210547539Z_fe7e799b0c flipped between correct and incomplete for roughly 20 seconds while segmentation phases ran.",
           "timestamp": "2026-07-04T12:13:56Z"
+        },
+        {
+          "text": "Replay verification passed for same-signature submitted-correct status preservation and transition telemetry.",
+          "timestamp": "2026-07-04T13:14:28Z"
         }
       ],
       "observed_statuses": [
         "failed"
       ],
       "severity": "P2",
-      "status": "triaged",
+      "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Realtime segmentation status flips during grading",
-      "updated_at": "2026-07-04T12:13:56Z",
+      "updated_at": "2026-07-04T13:14:28Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "node --test --test-name-pattern \"realtime|segmentation|submitted|status\" testing/test_recognition_pipeline.mjs",
+            "note": "Covers same-input submitted-correct status preservation and recognition transition telemetry.",
+            "result": "passed",
+            "timestamp": "2026-07-04T13:14:11Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     }
   ],

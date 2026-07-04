@@ -5320,7 +5320,7 @@ test('incremental scheduler matches one-shot recognition on messy synthetic late
 test('student writing pipeline handles distilled real handwriting trace fixtures', async () => {
   installFakeCanvas();
   const fixtures = loadRealHandwritingFixtures();
-  assert.equal(fixtures.length, 43);
+  assert.equal(fixtures.length, 47);
 
   for (const fixture of fixtures) {
     const fakeReaders = fakeReadersForRealTrace(fixture);
@@ -6487,6 +6487,77 @@ test('submitted model response shows correct before all recognition is complete'
       text: 'Correct'
     }
   );
+});
+
+test('submitted correct recognition is not downgraded by late same-signature incomplete realtime update', () => {
+  const initial = createInitialProblemFlow(1200, FLOW_TEST_PROBLEMS);
+  const active = getActiveProblem(initial);
+  const inputSignature = 'sig-realtime-stable';
+  const submitted = submitActiveProblem(problemWithAnswer(initial, active.id), 1200).flow;
+  const correct = applyProblemRecognitionProgress(submitted, active.id, {
+    status: 'complete',
+    result: correctRecognitionResult('x = 4', inputSignature)
+  });
+
+  const lateIncomplete = applyProblemRecognitionProgress(correct, active.id, {
+    status: 'pending',
+    result: {
+      latex: 'x = 4',
+      latexLines: ['x = 4'],
+      lines: [],
+      candidatePredictions: [],
+      grading: {
+        status: 'complete',
+        failed: false,
+        result: {
+          problemStatus: 'incomplete',
+          foundSolutions: [],
+          missingSolutions: ['4']
+        }
+      },
+      realtime: {
+        inputSignature,
+        allFinal: false,
+        components: [{
+          signature: 'a@0,0,20,20',
+          status: 'running',
+          contested: false
+        }]
+      }
+    }
+  });
+  const stableProblem = getActiveProblem(lateIncomplete);
+
+  assert.equal(stableProblem.recognition.result.grading.result.problemStatus, 'correct');
+  assert.equal(problemStatusDisplay(stableProblem).status, 'correct');
+  assert.equal(stableProblem.recognition.transitionLog.at(-1).reason, 'preserve_submitted_correct_same_input');
+
+  const changedInk = applyProblemRecognitionProgress(lateIncomplete, active.id, {
+    status: 'complete',
+    result: {
+      ...stableProblem.recognition.result,
+      grading: {
+        status: 'complete',
+        failed: false,
+        result: {
+          problemStatus: 'incomplete',
+          foundSolutions: [],
+          missingSolutions: ['4']
+        }
+      },
+      realtime: {
+        inputSignature: 'sig-realtime-changed',
+        allFinal: true,
+        components: [{
+          signature: 'changed@0,0,20,20',
+          status: 'final',
+          contested: false
+        }]
+      }
+    }
+  });
+
+  assert.equal(getActiveProblem(changedInk).recognition.result.grading.result.problemStatus, 'incomplete');
 });
 
 test('recognition summary preserves debug crop state and final line order', () => {

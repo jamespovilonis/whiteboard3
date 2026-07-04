@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -70,8 +72,18 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(metadata["prompt_version"], "recognition-audit-v2")
             self.assertEqual(metadata["attached_images"], ["answerCrop", "answerContext"])
             self.assertEqual(metadata["vlmRequestProfile"], "answer-local-compact")
+            self.assertTrue(metadata["artifactMetadata"]["fastOverlay"]["diagnosticOverlay"])
+            self.assertFalse(metadata["artifactMetadata"]["fastOverlay"]["sentToVlm"])
+            self.assertFalse(metadata["artifactMetadata"]["answerContext"]["diagnosticOverlay"])
+            self.assertTrue(metadata["artifactMetadata"]["answerContext"]["sentToVlm"])
             self.assertEqual(metadata["attempts"][0]["attachedImages"], ["answerCrop", "answerContext"])
             self.assertEqual(metadata["attempts"][0]["vlmRequestProfile"], "answer-local-compact")
+            self.assertEqual(metadata["attempts"][0]["attemptIndex"], 0)
+            self.assertIn("requestStartedAt", metadata["attempts"][0])
+            self.assertIn("requestCompletedAt", metadata["attempts"][0])
+            self.assertIsInstance(metadata["attempts"][0]["requestElapsedMs"], (int, float))
+            self.assertEqual(metadata["circuitState"], "closed")
+            self.assertIsInstance(metadata["circuitFailureCount"], int)
             self.assertIn("auditIdTimestamp", metadata)
             self.assertIn("queuedAt", metadata)
             self.assertIn("startedAt", metadata)
@@ -94,6 +106,9 @@ class AuditServiceTests(unittest.TestCase):
                 [path.name for path in service.vlm_client.calls[0]["image_paths"]],
                 ["answer_crop.png", "answer_context.png"],
             )
+            self.assertEqual(red_pixel_count(audit_dir / "answer_context.png"), 0)
+            self.assertGreater(red_pixel_count(audit_dir / "fast_overlay.png"), 0)
+            self.assertIn("diagnostic red boxes", service.vlm_client.calls[0]["prompt"])
 
     def test_disagreement_records_status_and_solution_discrepancies(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -129,6 +144,26 @@ class AuditServiceTests(unittest.TestCase):
             comparison = json.loads((Path(summary["auditDir"]) / "comparison.json").read_text())
             self.assertEqual(comparison["observations"][0]["type"], "visual_intent_observed")
             self.assertEqual(len(comparison["observation_only_discrepancies"]), 1)
+
+    def test_diagnostic_overlay_visual_marks_are_not_student_intent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": ["x = 4"],
+                "lineObservations": [{"lineIndex": 0, "latex": "x = 4", "confidence": 0.9}],
+                "visualMarks": [{
+                    "type": "boxed_answer",
+                    "lineIndex": 0,
+                    "confidence": 0.9,
+                    "notes": "red rectangle around the answer",
+                }],
+                "overallConfidence": 0.9,
+                "notes": "diagnostic box",
+            })
+            summary = service.run_audit(audit_payload(), "audit_overlay_mark")
+
+            self.assertEqual(summary["observationTypes"], ["audit_overlay_visual_mark"])
+            comparison = json.loads((Path(summary["auditDir"]) / "comparison.json").read_text())
+            self.assertEqual(comparison["observations"][0]["type"], "audit_overlay_visual_mark")
 
     def test_evaluate_expression_vlm_transcript_uses_math_grader(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -177,7 +212,15 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(summary["discrepancyCount"], 0)
             self.assertEqual(len(metadata["attempts"]), 2)
             self.assertEqual(metadata["attempts"][0]["failureKind"], "vlm_schema_error")
+            self.assertEqual(metadata["attempts"][0]["attemptIndex"], 0)
+            self.assertEqual(metadata["attempts"][0]["retryReason"], "missing_or_invalid_schema")
+            self.assertIn("requestStartedAt", metadata["attempts"][0])
+            self.assertIn("requestCompletedAt", metadata["attempts"][0])
+            self.assertIsInstance(metadata["attempts"][0]["requestElapsedMs"], (int, float))
+            self.assertEqual(metadata["attempts"][1]["attemptIndex"], 1)
+            self.assertEqual(metadata["attempts"][1]["retryReason"], "schema_repair")
             self.assertTrue((audit_dir / "vlm_raw_attempt_1.json").exists())
+            self.assertEqual(metadata["attempts"][0]["rawResponsePath"], str(audit_dir / "vlm_raw_attempt_1.json"))
             self.assertEqual(metadata["attempts"][1]["prompt_version"], "recognition-audit-v2")
 
     def test_unavailable_vlm_records_unavailable_error(self):
@@ -217,9 +260,12 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(third["failureKind"], "vlm_circuit_open")
             self.assertEqual(third["discrepancyTypes"], [])
             self.assertIn("retryAfterSeconds", third)
+            self.assertEqual(third["circuitState"], "open")
+            self.assertGreaterEqual(third["circuitFailureCount"], 2)
             self.assertEqual(suppressed["eventStage"], "suppressed")
             self.assertEqual(suppressed["comparisonStatus"], "skipped")
             self.assertEqual(suppressed["suppressedByAuditId"], "audit_timeout_3")
+            self.assertEqual(suppressed["circuitState"], "open")
             self.assertNotIn("auditDir", suppressed)
             event_lines = [
                 json.loads(line)
@@ -484,6 +530,16 @@ def service_for(directory: str, content: Any, *, error: Exception | None = None)
         settings,
         vlm_client=FakeVlmClient(content, error=error),
     )
+
+
+def red_pixel_count(path: Path) -> int:
+    with Image.open(path) as image:
+        rgb = image.convert("RGB")
+        return sum(
+            1
+            for red, green, blue in rgb.getdata()
+            if red > 180 and green < 80 and blue < 80
+        )
 
 
 def audit_payload() -> dict[str, Any]:

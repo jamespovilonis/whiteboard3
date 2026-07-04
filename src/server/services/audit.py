@@ -467,6 +467,7 @@ class RecognitionAuditService:
             {"failureKind": failure_kind},
         )
         latency_summary = build_latency_summary(latency_samples)
+        circuit_health = self._vlm_circuit_state()
         try:
             completed_at = datetime.now(timezone.utc)
             write_json(audit_dir / "comparison.json", comparison)
@@ -490,6 +491,7 @@ class RecognitionAuditService:
                 vlm_request_profile=vlm_request_profile,
                 retry_after_seconds=retry_after_seconds,
                 latency=latency_summary,
+                circuit_health=circuit_health,
             ))
             summary = build_event_summary(
                 audit_id=audit_id,
@@ -512,6 +514,7 @@ class RecognitionAuditService:
                 vlm_request_profile=vlm_request_profile,
                 retry_after_seconds=retry_after_seconds,
                 latency=latency_summary,
+                circuit_health=circuit_health,
             )
             append_jsonl(self.log_dir / "audit_events.jsonl", summary)
         except Exception as exc:
@@ -581,6 +584,16 @@ class RecognitionAuditService:
             if self._consecutive_vlm_timeouts < self.vlm_timeout_circuit_failures:
                 self._circuit_signature_suppression.clear()
 
+    def _vlm_circuit_state(self) -> dict[str, Any]:
+        with self._vlm_health_lock:
+            remaining = max(0.0, self._vlm_circuit_open_until - time.monotonic())
+            return {
+                "state": "open" if remaining > 0 else "closed",
+                "failureCount": self._consecutive_vlm_timeouts,
+                "failureThreshold": self.vlm_timeout_circuit_failures,
+                "retryAfterSeconds": round(remaining, 3) if remaining > 0 else None,
+            }
+
     def _queued_at_for(self, audit_id: str) -> datetime | None:
         with self._status_lock:
             queued_at = self._statuses.get(audit_id, {}).get("queuedAt")
@@ -638,6 +651,8 @@ class RecognitionAuditService:
             "discrepancyTypes": [],
             "description": "Suppressed duplicate audit while local VLM circuit was open.",
             "retryAfterSeconds": retry_after_seconds,
+            "circuitState": "open",
+            "circuitFailureCount": self._vlm_circuit_state().get("failureCount"),
             "suppressedByAuditId": self._circuit_signature_suppression.get(signature),
             "vlmRequestProfile": vlm_request_profile_for_payload(payload),
         }
@@ -659,41 +674,56 @@ class RecognitionAuditService:
         last_schema_error: AuditSchemaError | None = None
         for attempt_index in range(2):
             started = time.perf_counter()
+            request_started_at = datetime.now(timezone.utc)
             raw_vlm: dict[str, Any] | None = None
             request_id = f"{audit_id}:attempt:{attempt_index + 1}"
             try:
                 raw_vlm = self.vlm_client.complete(prompt=prompt, image_paths=image_paths)
                 elapsed = time.perf_counter() - started
+                request_completed_at = datetime.now(timezone.utc)
                 response_request_id = request_id_for_response(raw_vlm) or request_id
                 normalized = normalize_vlm_response(raw_vlm)
-                attempts.append({
+                attempt = {
+                    "attemptIndex": attempt_index,
                     "attempt": attempt_index + 1,
                     "status": "complete",
                     "elapsedSeconds": round(elapsed, 3),
+                    "requestStartedAt": request_started_at.isoformat().replace("+00:00", "Z"),
+                    "requestCompletedAt": request_completed_at.isoformat().replace("+00:00", "Z"),
+                    "requestElapsedMs": round(elapsed * 1000, 1),
                     "requestId": response_request_id,
                     "request_id": response_request_id,
                     "promptVersion": prompt_version,
                     "prompt_version": prompt_version,
                     "attachedImages": list(image_names),
                     "vlmRequestProfile": vlm_request_profile,
+                    "retryReason": "schema_repair" if attempt_index > 0 else None,
                     "queueMs": None,
                     "queue_ms": None,
                     "inferenceMs": round(elapsed * 1000, 1),
                     "inference_ms": round(elapsed * 1000, 1),
-                })
+                }
                 if attempt_index > 0:
-                    write_json(audit_dir / f"vlm_raw_attempt_{attempt_index + 1}.json", raw_vlm)
+                    raw_path = audit_dir / f"vlm_raw_attempt_{attempt_index + 1}.json"
+                    write_json(raw_path, raw_vlm)
+                    attempt["rawResponsePath"] = str(raw_path)
+                attempts.append(attempt)
                 return raw_vlm, normalized
             except AuditSchemaError as exc:
                 elapsed = time.perf_counter() - started
+                request_completed_at = datetime.now(timezone.utc)
                 response_request_id = request_id_for_response(raw_vlm) or request_id
                 last_schema_error = AuditSchemaError(str(exc), raw_response=raw_vlm)
-                attempts.append({
+                attempt = {
+                    "attemptIndex": attempt_index,
                     "attempt": attempt_index + 1,
                     "status": "failed",
                     "failureKind": "vlm_schema_error",
                     "error": str(exc),
                     "elapsedSeconds": round(elapsed, 3),
+                    "requestStartedAt": request_started_at.isoformat().replace("+00:00", "Z"),
+                    "requestCompletedAt": request_completed_at.isoformat().replace("+00:00", "Z"),
+                    "requestElapsedMs": round(elapsed * 1000, 1),
                     "failureStage": "normalizing_vlm",
                     "requestId": response_request_id,
                     "request_id": response_request_id,
@@ -701,22 +731,32 @@ class RecognitionAuditService:
                     "prompt_version": prompt_version,
                     "attachedImages": list(image_names),
                     "vlmRequestProfile": vlm_request_profile,
+                    "retryReason": "missing_or_invalid_schema" if attempt_index == 0 else None,
                     "queueMs": None,
                     "queue_ms": None,
                     "inferenceMs": round(elapsed * 1000, 1),
                     "inference_ms": round(elapsed * 1000, 1),
-                })
+                }
                 if raw_vlm is not None:
-                    write_json(audit_dir / f"vlm_raw_attempt_{attempt_index + 1}.json", raw_vlm)
+                    raw_path = audit_dir / f"vlm_raw_attempt_{attempt_index + 1}.json"
+                    write_json(raw_path, raw_vlm)
+                    attempt["rawResponsePath"] = str(raw_path)
+                    attempt["parserErrorPath"] = str(raw_path)
+                attempts.append(attempt)
             except Exception as exc:
                 elapsed = time.perf_counter() - started
+                request_completed_at = datetime.now(timezone.utc)
                 attempt_failure_kind, attempt_retry_after_seconds = classify_vlm_runtime_failure(exc)
                 attempts.append({
+                    "attemptIndex": attempt_index,
                     "attempt": attempt_index + 1,
                     "status": "failed",
                     "failureKind": attempt_failure_kind,
                     "error": str(exc),
                     "elapsedSeconds": round(elapsed, 3),
+                    "requestStartedAt": request_started_at.isoformat().replace("+00:00", "Z"),
+                    "requestCompletedAt": request_completed_at.isoformat().replace("+00:00", "Z"),
+                    "requestElapsedMs": round(elapsed * 1000, 1),
                     "failureStage": "requesting_vlm",
                     "requestId": request_id,
                     "request_id": request_id,
@@ -724,6 +764,7 @@ class RecognitionAuditService:
                     "prompt_version": prompt_version,
                     "attachedImages": list(image_names),
                     "vlmRequestProfile": vlm_request_profile,
+                    "retryReason": None,
                     "queueMs": None,
                     "queue_ms": None,
                     "inferenceMs": round(elapsed * 1000, 1),
@@ -780,6 +821,8 @@ def build_vlm_prompt(payload: dict[str, Any]) -> str:
         "Read the student's handwritten math answer from the attached images. "
         "The printed problem is not rendered in the image; it is provided here as LaTeX. "
         "Attached image 1 is the answer crop. Attached image 2 is wider answer context for interpreting detached operation marks.\n\n"
+        "The attached VLM images are intended to be clean handwriting crops. If any diagnostic red boxes or rectangles are visible, "
+        "treat them as app overlays and do not report them as boxed_answer or visualMarks.\n\n"
         f"Problem LaTeX: {problem_latex}\n"
         f"Audit trigger reasons: {', '.join(map(str, trigger_reasons)) or 'none'}\n\n"
         f"{attachment_context}"
@@ -807,6 +850,7 @@ def build_problem_input_vlm_prompt(payload: dict[str, Any]) -> str:
         "Read the user's handwritten math problem input from the attached images. "
         "This is the problem-entry box, not a student's answer to a printed problem. "
         "Attached image 1 is the handwritten input crop. Attached image 2 is the full problem-input crop.\n"
+        "Ignore any diagnostic red boxes or rectangles if visible; they are app overlays, not user handwriting.\n"
         "The app's fast OCR thought the input was: "
         f"{json.dumps(fast_lines, sort_keys=True)}\n"
         f"Audit trigger reasons: {', '.join(map(str, trigger_reasons)) or 'none'}\n\n"
@@ -847,12 +891,7 @@ def render_audit_images(payload: dict[str, Any], audit_dir: Path) -> dict[str, A
     line_boxes = fast_line_boxes(payload.get("fastResult") or {})
     render_stroke_crop(strokes, problem_crop_box, problem_crop)
     render_stroke_crop(strokes, answer_crop_box, answer_crop)
-    render_stroke_crop(
-        strokes,
-        answer_context_box,
-        answer_context,
-        boxes=line_boxes,
-    )
+    render_stroke_crop(strokes, answer_context_box, answer_context)
     render_stroke_crop(
         strokes,
         problem_crop_box,
@@ -1088,14 +1127,26 @@ def compare_audit_results(
 
     visual_marks = normalized_vlm.get("visualMarks") or []
     if visual_marks:
-        visual_observation = {
-            "type": "visual_intent_observed",
-            "source": "vlm_normalization",
-            "description": f"VLM observed {len(visual_marks)} visual mark(s).",
-            "visualMarks": visual_marks,
-        }
-        observations.append(visual_observation)
-        observation_only_discrepancies.append(visual_observation)
+        overlay_marks = [mark for mark in visual_marks if visual_mark_looks_like_diagnostic_overlay(mark)]
+        intent_marks = [mark for mark in visual_marks if mark not in overlay_marks]
+        if intent_marks:
+            visual_observation = {
+                "type": "visual_intent_observed",
+                "source": "vlm_normalization",
+                "description": f"VLM observed {len(intent_marks)} student visual mark(s).",
+                "visualMarks": intent_marks,
+            }
+            observations.append(visual_observation)
+            observation_only_discrepancies.append(visual_observation)
+        if overlay_marks:
+            overlay_observation = {
+                "type": "audit_overlay_visual_mark",
+                "source": "vlm_normalization",
+                "description": f"VLM reported {len(overlay_marks)} diagnostic overlay mark(s); ignored as student intent.",
+                "visualMarks": overlay_marks,
+            }
+            observations.append(overlay_observation)
+            observation_only_discrepancies.append(overlay_observation)
 
     low_confidence = vlm_confidence_is_low(normalized_vlm)
     if low_confidence:
@@ -1114,6 +1165,18 @@ def compare_audit_results(
         "observation_only_discrepancies": observation_only_discrepancies,
         "description": describe_discrepancies(discrepancies),
     }
+
+
+def visual_mark_looks_like_diagnostic_overlay(mark: Any) -> bool:
+    if not isinstance(mark, dict):
+        return False
+    kind = str(mark.get("type") or "").lower()
+    notes = str(mark.get("notes") or "").lower()
+    latex = str(mark.get("latex") or "").lower()
+    text = " ".join([kind, notes, latex])
+    if "red" not in text:
+        return False
+    return any(token in text for token in ("box", "boxed", "rectangle", "rectangular", "overlay"))
 
 
 def is_problem_input_audit(payload: dict[str, Any]) -> bool:
@@ -1240,6 +1303,7 @@ def build_event_summary(
     vlm_request_profile: str,
     retry_after_seconds: float | None,
     latency: Optional[dict[str, Any]] = None,
+    circuit_health: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     discrepancies = comparison.get("discrepancies") or []
     observations = comparison.get("observations") or []
@@ -1289,6 +1353,8 @@ def build_event_summary(
         "vlmRequestProfile": vlm_request_profile,
         "latency": latency or {},
         "latencyBudgetFailureCount": int((latency or {}).get("budgetFailureCount") or 0),
+        "circuitState": (circuit_health or {}).get("state"),
+        "circuitFailureCount": (circuit_health or {}).get("failureCount"),
         **feedback_summary_fields(feedback),
         **({"retryAfterSeconds": retry_after_seconds} if retry_after_seconds is not None else {}),
     }
@@ -1315,6 +1381,7 @@ def build_audit_metadata(
     vlm_request_profile: str,
     retry_after_seconds: float | None,
     latency: Optional[dict[str, Any]] = None,
+    circuit_health: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     last_attempt = attempts[-1] if attempts else {}
     flattened_attachments = flatten_annotation_attachments((normalized or {}).get("annotationAttachments") or [], source="vlm")
@@ -1349,6 +1416,7 @@ def build_audit_metadata(
         "cropBoxes": crop_boxes,
         "imagePaths": artifact_paths,
         "artifactTypes": sorted(artifact_paths.keys()),
+        "artifactMetadata": audit_artifact_metadata(artifact_paths, attached_images),
         "promptVersion": prompt_version,
         "prompt_version": prompt_version,
         "requestId": last_attempt.get("request_id"),
@@ -1362,10 +1430,24 @@ def build_audit_metadata(
         "vlmRequestProfile": vlm_request_profile,
         "latency": latency or {},
         "latencyBudgetFailureCount": int((latency or {}).get("budgetFailureCount") or 0),
+        "circuitState": (circuit_health or {}).get("state"),
+        "circuitFailureCount": (circuit_health or {}).get("failureCount"),
+        "circuitFailureThreshold": (circuit_health or {}).get("failureThreshold"),
         **feedback_summary_fields(feedback),
         **({"retryAfterSeconds": retry_after_seconds} if retry_after_seconds is not None else {}),
         "annotationAttachments": flattened_attachments,
         "annotation_attachments": flattened_attachments,
+    }
+
+
+def audit_artifact_metadata(artifact_paths: dict[str, str], attached_images: list[str]) -> dict[str, dict[str, Any]]:
+    sent = set(attached_images or [])
+    return {
+        name: {
+            "diagnosticOverlay": name == "fastOverlay",
+            "sentToVlm": name in sent,
+        }
+        for name in sorted(artifact_paths.keys())
     }
 
 
