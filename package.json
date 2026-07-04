@@ -21,7 +21,9 @@
     "audit:real-handwriting": "python3 testing/summarize_real_audit_logs.py",
     "handwriting:calibration": "python3 testing/realistic_handwriting.py --calibration-only --print-calibration",
     "handwriting:hybrid-linear": "python3 testing/realistic_handwriting.py --hybrid-linear --include-fixture",
-    "handwriting:hybrid-complex": "python3 testing/realistic_handwriting.py --hybrid-complex-math --include-fixture"
+    "handwriting:hybrid-complex": "python3 testing/realistic_handwriting.py --hybrid-complex-math --include-fixture",
+    "handwriting:hybrid-pack": "python3 testing/realistic_handwriting.py --hybrid-pack problem-input --include-fixture",
+    "handwriting:dashboard": "python3 testing/realistic_handwriting.py --dashboard-only"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

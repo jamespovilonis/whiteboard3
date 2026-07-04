@@ -43,6 +43,109 @@ SCENARIO_SLUGS: dict[str, tuple[str, ...]] = {
     "non-sequential": ("rational-detached-parenthetical-annotations", "radical-fraction-simplification"),
 }
 
+HARNESS_PACKS: dict[str, dict[str, Any]] = {
+    "failure-modes": {
+        "description": "Log-observed recognition/grading failure modes with known discrepancy labels.",
+        "slugs": (
+            "fragmented-invalid-expression",
+            "fraction-subtraction-oversegmented",
+            "readable-expansion-empty-ocr",
+            "circled-intermediate-result",
+        ),
+        "contracts": ("segmentation", "ocr", "grading", "audit"),
+        "focus": ("line_count_mismatch", "line_latex_mismatch", "problem_status_mismatch", "line_segmentation_empty"),
+    },
+    "problem-input": {
+        "description": "Handwritten problem input recognition stressors, separate from answer-work grading.",
+        "slugs": (
+            "problem-input-fraction-sqrt-numerator-equation",
+            "problem-input-fraction-with-decimal-denominator",
+            "problem-input-indexed-root",
+        ),
+        "contracts": ("problem-input-recognition", "segmentation", "ocr"),
+        "focus": ("problem_input_ocr_mismatch", "line_latex_mismatch"),
+    },
+    "ambiguous-fractions": {
+        "description": "Neighboring, tall, and equation-tail fraction rows that tend to split or merge.",
+        "slugs": (
+            "problem-input-two-fraction-denominator-18",
+            "problem-input-two-fraction-equation-tail",
+            "problem-input-fraction-3x-over-x-plus-1-equals-8",
+        ),
+        "contracts": ("segmentation", "ocr"),
+        "focus": ("fraction_merge", "fraction_split", "line_latex_mismatch"),
+    },
+    "visual-intent": {
+        "description": "Circled answers, cross-outs, scratch work, underlines, and detached operation annotations.",
+        "slugs": (
+            "crossout-scratch-division",
+            "circled-x-equals-four",
+            "rational-detached-parenthetical-annotations",
+        ),
+        "contracts": ("segmentation", "visual-intent", "grading"),
+        "focus": ("visual_intent_observed", "equation_side_operation_annotation_mismatch"),
+    },
+    "non-sequential": {
+        "description": "Rows written out of spatial order, with later annotations inserted above earlier work.",
+        "slugs": (
+            "rational-detached-parenthetical-annotations",
+            "radical-fraction-simplification",
+            "readable-expansion-empty-ocr",
+        ),
+        "contracts": ("segmentation", "ocr", "grading"),
+        "focus": ("non_sequential_writing", "line_latex_mismatch"),
+        "nonSequential": True,
+    },
+    "bad-handwriting-valid-math": {
+        "description": "Compact or visually ambiguous handwriting that represents mathematically valid work.",
+        "slugs": (
+            "compact-monomial-exponent-ocr",
+            "compact-plus-minus-solution",
+            "semantic-alternate-absolute-value-denominator",
+        ),
+        "contracts": ("ocr", "semantic", "grading"),
+        "focus": ("line_latex_mismatch", "solution_set_mismatch", "semantic_candidate_promotion"),
+    },
+}
+
+VISUAL_INTENT_POLICIES: dict[str, dict[str, str]] = {
+    "circled_answer": {
+        "segmentationPolicy": "exclude_visual_strokes",
+        "gradingPolicy": "preserve_answer_context",
+        "auditPolicy": "record_final_answer_emphasis",
+    },
+    "circled_intermediate_result": {
+        "segmentationPolicy": "exclude_visual_strokes",
+        "gradingPolicy": "grade_enclosed_math_if_grouped",
+        "auditPolicy": "record_intermediate_emphasis",
+    },
+    "crossed_out": {
+        "segmentationPolicy": "exclude_visual_strokes",
+        "gradingPolicy": "ignore_crossed_out_work",
+        "auditPolicy": "record_discarded_attempt",
+    },
+    "scratch_work": {
+        "segmentationPolicy": "candidate_only",
+        "gradingPolicy": "ignore_unselected_scratch",
+        "auditPolicy": "record_scratch_context",
+    },
+    "detached_operation_annotation": {
+        "segmentationPolicy": "exclude_visual_strokes",
+        "gradingPolicy": "contextual_operation_only",
+        "auditPolicy": "record_side_operation_intent",
+    },
+    "underline": {
+        "segmentationPolicy": "exclude_visual_strokes",
+        "gradingPolicy": "ignore_emphasis_line",
+        "auditPolicy": "record_operation_alignment",
+    },
+    "boxed_answer": {
+        "segmentationPolicy": "preserve_enclosed_expression_context",
+        "gradingPolicy": "grade_enclosed_problem_or_answer",
+        "auditPolicy": "record_boxed_expression_emphasis",
+    },
+}
+
 METRIC_KEYS = (
     "stroke_count",
     "line_count",
@@ -364,6 +467,57 @@ def build_calibration_report(
     }
 
 
+def build_harness_dashboard_report(
+    generated_fixtures: Sequence[dict[str, Any]],
+    *,
+    audit_log_dir: Path = DEFAULT_AUDIT_LOG_DIR,
+    fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR,
+    audit_limit: Optional[int] = None,
+) -> dict[str, Any]:
+    calibration_report = build_calibration_report(
+        audit_log_dir=audit_log_dir,
+        fixture_dir=fixture_dir,
+        audit_limit=audit_limit,
+    )
+    calibration = summarize_distribution(
+        [
+            record.payload
+            for record in load_corpus_records(
+                audit_log_dir=audit_log_dir,
+                fixture_dir=fixture_dir,
+                audit_limit=audit_limit,
+            )
+        ],
+        source_kind=calibration_report["calibration"]["sourceKind"],
+    )
+    generated_summaries = []
+    drift_checks = []
+    for fixture in generated_fixtures:
+        summary = fixture_summary(fixture)
+        validation = validate_fixture_against_calibration(fixture, calibration)
+        generated_summaries.append({
+            **summary,
+            "oracleContracts": fixture.get("oracleContracts") or [],
+            "visualIntentPolicies": fixture.get("visualIntentPolicies") or [],
+        })
+        drift_checks.append({
+            "slug": fixture.get("slug"),
+            "fixtureKind": fixture.get("fixtureKind"),
+            "ok": validation["ok"],
+            "checks": validation["checks"],
+        })
+    return {
+        "schemaVersion": 1,
+        "reportKind": "real-handwriting-generator-dashboard",
+        "calibration": calibration.to_json(),
+        "generatedCount": len(generated_fixtures),
+        "generatedSummaries": generated_summaries,
+        "driftChecks": drift_checks,
+        "packNames": sorted(HARNESS_PACKS),
+        "visualIntentPolicyKinds": sorted(VISUAL_INTENT_POLICIES),
+    }
+
+
 def summarize_distribution(payloads: Sequence[dict[str, Any]], *, source_kind: str) -> CalibrationSummary:
     metric_values: dict[str, list[float]] = {key: [] for key in METRIC_KEYS}
     feature_counts = {key: 0 for key in FEATURE_KEYS}
@@ -562,6 +716,8 @@ def build_hybrid_linear_equation_fixture(
         })
 
     finish_generated_fixture(fixture)
+    fixture["oracleContracts"] = build_oracle_contracts(("segmentation", "ocr", "semantic", "grading"))
+    attach_visual_intent_policies(fixture)
     fixture["sourceStats"] = {
         **fixture.get("sourceStats", {}),
         "catalogPath": relative_path_for_report(catalog_path),
@@ -613,6 +769,148 @@ def build_random_hybrid_linear_equation_fixture(
     fixture["problemMetadata"]["sampledParameters"] = params.to_json()
     fixture["sourceStats"]["randomLinearSampler"] = params.to_json()
     return fixture
+
+
+def build_oracle_contracts(
+    contract_names: Sequence[str],
+    *,
+    expected_failure_modes: Sequence[str] = (),
+    problem_input: bool = False,
+) -> list[dict[str, Any]]:
+    descriptions = {
+        "segmentation": "Selected stroke groups should match reviewed expectedLineGroups.",
+        "ocr": "Recognized LaTeX should preserve the intended handwritten line content.",
+        "semantic": "Semantic candidate scoring may promote a better valid candidate over the top OCR candidate.",
+        "grading": "Grading should use accepted lines and visual policies to decide problem status.",
+        "audit": "Audit payload should preserve discrepancy and visual-intent context.",
+        "visual-intent": "Visual-only marks should inform context without becoming graded math lines.",
+        "problem-input-recognition": "Problem input handwriting should be recognized as source problem context.",
+    }
+    contracts = []
+    for name in contract_names:
+        contracts.append({
+            "name": name,
+            "description": descriptions.get(name, name),
+            "expectedFailureModes": list(expected_failure_modes),
+            "problemInput": problem_input,
+        })
+    return contracts
+
+
+def attach_visual_intent_policies(fixture: dict[str, Any]) -> None:
+    seen: set[str] = set()
+    policies: list[dict[str, Any]] = []
+    for mark in fixture.get("visualMarks") or []:
+        mark_type = str(mark.get("type") or "")
+        if mark_type in VISUAL_INTENT_POLICIES and mark_type not in seen:
+            seen.add(mark_type)
+            policies.append({
+                "type": mark_type,
+                **VISUAL_INTENT_POLICIES[mark_type],
+            })
+    source_labels = {str(stroke.get("sourceAtomLabel") or "") for stroke in fixture.get("strokes") or []}
+    if "underline" in source_labels and "underline" not in seen:
+        policies.append({"type": "underline", **VISUAL_INTENT_POLICIES["underline"]})
+    fixture["visualIntentPolicies"] = policies
+
+
+def apply_nonsequential_timing(fixture: dict[str, Any], *, seed: int) -> None:
+    rng = random.Random(seed)
+    groups = fixture.get("expectedLineGroups") or []
+    if len(groups) < 2:
+        return
+    offsets = [index * 1600.0 for index in reversed(range(len(groups)))]
+    strokes_by_id = {str(stroke.get("id")): stroke for stroke in fixture.get("strokes") or []}
+    for group, offset in zip(groups, offsets):
+        line_strokes = [strokes_by_id[str(stroke_id)] for stroke_id in group.get("strokeIds") or [] if str(stroke_id) in strokes_by_id]
+        if not line_strokes:
+            continue
+        base = min(number_or_zero(stroke.get("startTime")) for stroke in line_strokes)
+        for stroke in line_strokes:
+            duration = max(1.0, number_or_zero(stroke.get("endTime")) - number_or_zero(stroke.get("startTime")))
+            start = offset + max(0.0, number_or_zero(stroke.get("startTime")) - base) + rng.uniform(0.0, 20.0)
+            stroke["startTime"] = round_float(start, 1)
+            stroke["endTime"] = round_float(start + duration, 1)
+
+
+def build_log_observed_pack_fixture(
+    pack_name: str,
+    *,
+    seed: int = 0,
+    fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR,
+) -> dict[str, Any]:
+    if pack_name not in HARNESS_PACKS:
+        known = ", ".join(sorted(HARNESS_PACKS))
+        raise KeyError(f"Unknown real-handwriting harness pack {pack_name!r}. Known packs: {known}")
+    pack = HARNESS_PACKS[pack_name]
+    rng = random.Random(seed)
+    fixtures_by_slug = {fixture["slug"]: fixture for fixture in load_real_handwriting_fixtures(fixture_dir)}
+    selected = [fixtures_by_slug[slug] for slug in pack["slugs"] if slug in fixtures_by_slug]
+    if not selected:
+        raise FileNotFoundError(f"No source fixtures found for harness pack {pack_name!r}")
+
+    composite = empty_generated_fixture(f"log-observed-{pack_name}", seed)
+    composite["fixtureKind"] = "hybrid-real-stroke-log-observed-pack"
+    composite["slug"] = f"hybrid-log-pack-{pack_name}-seed-{seed}"
+    composite["description"] = str(pack["description"])
+    composite["sourceAuditId"] = "generated-from-log-observed-real-fixture-pack"
+    composite["problemMetadata"] = {
+        "scenario": "log-observed-pack",
+        "packName": pack_name,
+        "seed": seed,
+        "focus": list(pack.get("focus") or []),
+        "sourceSlugs": [fixture["slug"] for fixture in selected],
+        "problemInputMode": "problem-input-recognition" in pack.get("contracts", ()),
+    }
+    composite["oracleContracts"] = build_oracle_contracts(
+        pack.get("contracts") or (),
+        expected_failure_modes=pack.get("focus") or (),
+        problem_input="problem-input-recognition" in pack.get("contracts", ()),
+    )
+
+    x_start = 86.0
+    y_cursor = 78.0
+    time_offsets = scenario_time_offsets("non-sequential" if pack.get("nonSequential") else pack_name, len(selected))
+    for source_index, source in enumerate(selected):
+        scale = rng.uniform(0.72, 0.92)
+        origin = bbox_origin(source.get("answerBox")) or bbox_origin(bbox_for_strokes(source.get("strokes") or [])) or {"x": 0, "y": 0}
+        dx = x_start - origin["x"] + rng.uniform(-5.0, 5.0)
+        dy = y_cursor - origin["y"] + rng.uniform(-4.0, 4.0)
+        append_transformed_source(
+            composite,
+            source,
+            source_index=source_index,
+            dx=dx,
+            dy=dy,
+            scale=scale,
+            time_offset=time_offsets[source_index],
+            rng=rng,
+        )
+        source_box = bbox_for_strokes(source.get("strokes") or []) or {"xMin": 0, "yMin": 0, "xMax": 260, "yMax": 160}
+        y_cursor += max(180.0, (source_box["yMax"] - source_box["yMin"]) * scale + 90.0)
+
+    if pack.get("nonSequential"):
+        apply_nonsequential_timing(composite, seed=seed + 991)
+    finish_generated_fixture(composite)
+    attach_visual_intent_policies(composite)
+    return composite
+
+
+def default_dashboard_fixtures(
+    *,
+    seed: int = 0,
+    fixture_dir: Path = DEFAULT_REAL_FIXTURE_DIR,
+    catalog_path: Path = DEFAULT_HANDWRITING_CATALOG,
+) -> list[dict[str, Any]]:
+    fixtures = [
+        build_random_hybrid_linear_equation_fixture(seed=seed + 31, fixture_dir=fixture_dir, catalog_path=catalog_path),
+        build_hybrid_complex_math_fixture(seed=seed + 41, fixture_dir=fixture_dir, catalog_path=catalog_path, include_crossout=True),
+    ]
+    fixtures.extend(
+        build_log_observed_pack_fixture(pack_name, seed=seed + index + 101, fixture_dir=fixture_dir)
+        for index, pack_name in enumerate(sorted(HARNESS_PACKS))
+    )
+    return fixtures
 
 
 def build_hybrid_complex_math_fixture(
@@ -758,6 +1056,10 @@ def build_hybrid_complex_math_fixture(
         })
 
     finish_generated_fixture(fixture)
+    fixture["oracleContracts"] = build_oracle_contracts(
+        ("segmentation", "ocr", "semantic", "grading", "visual-intent"),
+    )
+    attach_visual_intent_policies(fixture)
     fixture["sourceStats"] = {
         **fixture.get("sourceStats", {}),
         "catalogPath": relative_path_for_report(catalog_path),
@@ -1699,6 +2001,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--audit-limit", type=int, default=None)
     parser.add_argument("--hybrid-linear", action="store_true", help="Generate a hybrid real-stroke linear-equation fixture.")
     parser.add_argument("--hybrid-complex-math", action="store_true", help="Generate a hybrid real-stroke complex-math fixture.")
+    parser.add_argument("--hybrid-pack", choices=sorted(HARNESS_PACKS), default=None, help="Generate a log-observed real-handwriting harness pack.")
     parser.add_argument("--random-linear", action="store_true", help="Sample a new seeded linear equation instead of using explicit coefficients.")
     parser.add_argument("--linear-a", type=int, default=3)
     parser.add_argument("--linear-b", type=int, default=2)
@@ -1730,6 +2033,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=None,
         help="Write the Phase 1 corpus and distribution report to this JSON path.",
     )
+    parser.add_argument(
+        "--dashboard-output",
+        type=Path,
+        default=None,
+        help="Write a generated-vs-real handwriting dashboard report to this JSON path.",
+    )
+    parser.add_argument("--dashboard-only", action="store_true", help="Print only the generated-vs-real dashboard report.")
     parser.add_argument("--output", type=Path, default=None, help="Write generated fixture JSON to this path.")
     parser.add_argument("--include-fixture", action="store_true", help="Print the full generated fixture JSON.")
     parser.add_argument("--print-calibration", action="store_true")
@@ -1753,6 +2063,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.calibration_only:
         print(json.dumps(calibration_report, indent=2, sort_keys=True))
         return 0
+    if args.dashboard_output or args.dashboard_only:
+        dashboard = build_harness_dashboard_report(
+            default_dashboard_fixtures(seed=args.seed, fixture_dir=args.fixture_dir, catalog_path=args.catalog_path),
+            audit_log_dir=args.audit_log_dir,
+            fixture_dir=args.fixture_dir,
+            audit_limit=args.audit_limit,
+        )
+        if args.dashboard_output:
+            args.dashboard_output.parent.mkdir(parents=True, exist_ok=True)
+            args.dashboard_output.write_text(json.dumps(dashboard, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if args.dashboard_only:
+            print(json.dumps(dashboard, indent=2, sort_keys=True))
+            return 0
 
     if args.hybrid_complex_math:
         fixture = build_hybrid_complex_math_fixture(
@@ -1762,6 +2085,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             include_circle=not args.no_circle,
             include_detached_annotations=not args.no_detached_annotations,
             include_crossout=args.include_crossout,
+        )
+    elif args.hybrid_pack:
+        fixture = build_log_observed_pack_fixture(
+            args.hybrid_pack,
+            seed=args.seed,
+            fixture_dir=args.fixture_dir,
         )
     elif args.hybrid_linear:
         if args.random_linear:
@@ -1806,14 +2135,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ],
         source_kind=calibration_report["calibration"]["sourceKind"],
     )
+    required_features = ["has_pressure", "has_multi_stroke_symbols"]
+    if fixture.get("visualOnlyStrokeIds") or any(stroke.get("visualOnly") for stroke in fixture.get("strokes") or []):
+        required_features.append("has_visual_only_marks")
     report = validate_fixture_against_calibration(
         fixture,
         calibration,
-        required_features=[
-            "has_pressure",
-            "has_multi_stroke_symbols",
-            "has_visual_only_marks",
-        ],
+        required_features=required_features,
     )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

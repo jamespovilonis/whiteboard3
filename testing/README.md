@@ -133,6 +133,35 @@ detached annotations and optional cross-out/circle marks are visual-only stroke
 groups, so the segmentation tests can verify the answer lines without grading
 the scratch marks as student work.
 
+Generate log-observed harness packs when a test needs real failure-mode shape
+rather than a newly solved equation:
+
+```sh
+npm run handwriting:hybrid-pack -- \
+  --hybrid-pack failure-modes \
+  --seed 5 \
+  --output testing/results/hybrid_handwriting/failure-modes.json
+```
+
+Available packs cover known discrepancy templates, handwritten problem-input
+OCR, ambiguous fraction structures, visual-intent marks, non-sequential writing,
+and bad handwriting that still represents valid math. Each pack emits
+`oracleContracts`, so end-to-end tests can assert recognition, segmentation,
+visual-intent, and grading behavior independently instead of collapsing every
+failure into a final-answer mismatch.
+
+Write a generated-vs-real dashboard report to compare fixture distributions
+against local audit `input.json` records:
+
+```sh
+npm run handwriting:dashboard -- \
+  --dashboard-output testing/results/hybrid_handwriting/generator-dashboard.json
+```
+
+The dashboard summarizes generated stroke, timing, pressure, visual-mark, and
+line-layout features beside the real audit calibration bands. It also lists the
+harness packs and visual-intent policy taxonomy used by the generator.
+
 Regenerate the curated seed drafts from the local audit log directory:
 
 ```sh

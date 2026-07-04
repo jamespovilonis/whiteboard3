@@ -19,10 +19,13 @@ from realistic_handwriting import (
     DEFAULT_AUDIT_LOG_DIR,
     build_calibration_report,
     build_calibration_summary,
+    build_harness_dashboard_report,
     build_hybrid_complex_math_fixture,
     build_hybrid_linear_equation_fixture,
+    build_log_observed_pack_fixture,
     build_random_hybrid_linear_equation_fixture,
     build_realistic_fixture,
+    default_dashboard_fixtures,
     classify_features,
     fixture_metrics,
     fixture_summary,
@@ -334,6 +337,108 @@ class RealisticHandwritingHarnessTests(unittest.TestCase):
 
         self.assertEqual(result["strokeCount"], len(fixture["strokes"]))
         self.assertEqual(actual_keys, expected_keys, json.dumps(result["selected"], indent=2))
+
+    def test_log_observed_harness_packs_expose_contracts_and_discrepancy_focus(self):
+        expectations = {
+            "failure-modes": "audit",
+            "problem-input": "problem-input-recognition",
+            "ambiguous-fractions": "segmentation",
+            "visual-intent": "visual-intent",
+            "non-sequential": "grading",
+            "bad-handwriting-valid-math": "semantic",
+        }
+        for pack_name, expected_contract in expectations.items():
+            fixture = build_log_observed_pack_fixture(pack_name, seed=13)
+            contract_names = {contract["name"] for contract in fixture["oracleContracts"]}
+
+            self.assertEqual(fixture["fixtureKind"], "hybrid-real-stroke-log-observed-pack")
+            self.assertEqual(fixture["problemMetadata"]["packName"], pack_name)
+            self.assertIn(expected_contract, contract_names)
+            self.assertGreater(len(fixture["expectedLineGroups"]), 0)
+            self.assertGreater(len(fixture["knownDiscrepancyTypes"]), 0)
+            self.assertTrue(fixture["problemMetadata"]["focus"])
+            self.assertTrue(classify_features(fixture)["has_pressure"])
+
+    def test_problem_input_pack_marks_problem_input_contract_separately_from_answer_grading(self):
+        fixture = build_log_observed_pack_fixture("problem-input", seed=15)
+
+        self.assertTrue(fixture["problemMetadata"]["problemInputMode"])
+        contracts = {contract["name"]: contract for contract in fixture["oracleContracts"]}
+        self.assertIn("problem-input-recognition", contracts)
+        self.assertTrue(contracts["problem-input-recognition"]["problemInput"])
+        self.assertTrue(any("problem-input" in slug for slug in fixture["problemMetadata"]["sourceSlugs"]))
+
+    def test_visual_intent_pack_attaches_policy_taxonomy(self):
+        fixture = build_log_observed_pack_fixture("visual-intent", seed=17)
+        policy_types = {policy["type"] for policy in fixture.get("visualIntentPolicies") or []}
+
+        self.assertIn("circled_answer", policy_types)
+        self.assertIn("crossed_out", policy_types)
+        self.assertIn("detached_operation_annotation", policy_types)
+        for policy in fixture["visualIntentPolicies"]:
+            self.assertIn("segmentationPolicy", policy)
+            self.assertIn("gradingPolicy", policy)
+            self.assertIn("auditPolicy", policy)
+
+    def test_non_sequential_pack_has_temporal_inversions(self):
+        fixture = build_log_observed_pack_fixture("non-sequential", seed=19)
+        metrics = fixture_metrics(fixture)
+
+        self.assertGreater(metrics["non_sequential_inversions"], 0)
+        self.assertTrue(classify_features(fixture)["has_non_sequential_writing"])
+
+    def test_generator_dashboard_compares_generated_fixtures_to_real_distribution(self):
+        fixtures = default_dashboard_fixtures(seed=2)
+        report = build_harness_dashboard_report(
+            fixtures,
+            audit_log_dir=Path("/path/that/does/not/exist"),
+        )
+
+        self.assertEqual(report["reportKind"], "real-handwriting-generator-dashboard")
+        self.assertGreaterEqual(report["generatedCount"], 8)
+        self.assertIn("problem-input", report["packNames"])
+        self.assertIn("detached_operation_annotation", report["visualIntentPolicyKinds"])
+        self.assertEqual(len(report["generatedSummaries"]), report["generatedCount"])
+        self.assertEqual(len(report["driftChecks"]), report["generatedCount"])
+        self.assertTrue(any(summary["oracleContracts"] for summary in report["generatedSummaries"]))
+
+    def test_log_pack_and_dashboard_cli_surfaces_emit_json(self):
+        pack = subprocess.run(
+            [
+                "python3",
+                "testing/realistic_handwriting.py",
+                "--hybrid-pack",
+                "problem-input",
+                "--seed",
+                "5",
+                "--include-fixture",
+            ],
+            cwd=str(ROOT),
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        pack_payload = json.loads(pack.stdout)
+        self.assertEqual(pack_payload["fixture"]["problemMetadata"]["packName"], "problem-input")
+        self.assertTrue(pack_payload["fixture"]["oracleContracts"])
+
+        dashboard = subprocess.run(
+            [
+                "python3",
+                "testing/realistic_handwriting.py",
+                "--dashboard-only",
+                "--seed",
+                "5",
+                "--audit-log-dir",
+                "/path/that/does/not/exist",
+            ],
+            cwd=str(ROOT),
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        dashboard_payload = json.loads(dashboard.stdout)
+        self.assertEqual(dashboard_payload["reportKind"], "real-handwriting-generator-dashboard")
 
     def test_linear_sampler_is_reproducible_and_respects_bounds(self):
         first = sample_linear_equation_parameters(seed=77, max_coefficient=5, max_constant=4, max_solution=6)
