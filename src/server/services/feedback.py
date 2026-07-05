@@ -98,15 +98,21 @@ class MathFeedbackService:
         }
 
         if status == "correct":
+            prompt_context = build_prompt_context(payload, grading)
             return {
                 **base,
                 "source": "deterministic",
                 "text": correct_feedback_text(),
                 "skippedReason": "correct",
+                "rejectionReason": None,
+                "promptContext": prompt_context,
+                **feedback_target_fields(prompt_context),
             }
 
         prompt_context = build_prompt_context(payload, grading)
         user_prompt = build_feedback_prompt(prompt_context)
+        target_fields = feedback_target_fields(prompt_context)
+        rejection_reason = None
         try:
             raw = self.llm_client.complete(system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt)
             text = trim_feedback_text(extract_chat_content(raw))
@@ -117,7 +123,9 @@ class MathFeedbackService:
                 **base,
                 "source": "ollama",
                 "text": text,
+                "rejectionReason": None,
                 "promptContext": prompt_context,
+                **target_fields,
             }
         except Exception as exc:
             return {
@@ -125,7 +133,9 @@ class MathFeedbackService:
                 "source": "fallback",
                 "text": deterministic_fallback_feedback(prompt_context),
                 "error": str(exc),
+                "rejectionReason": rejection_reason,
                 "promptContext": prompt_context,
+                **target_fields,
             }
 
 
@@ -393,7 +403,7 @@ def safe_int(value: Any) -> int | None:
 def deterministic_fallback_feedback(context: dict[str, Any]) -> str:
     status = str(context.get("problemStatus") or "")
     first_invalid = context.get("firstInvalidLine") or {}
-    target_line = str(context.get("targetLine") or "").strip()
+    target_line = format_feedback_math_line(context.get("targetLine") or "")
     reason = str(context.get("targetLineReason") or "").strip()
     reason_sentence = f" {reason}" if reason else ""
     if status == "incorrect" and first_invalid.get("studentLatex"):
@@ -404,6 +414,25 @@ def deterministic_fallback_feedback(context: dict[str, Any]) -> str:
     if status == "not_started":
         return f"Start with: {target_line or 'the original problem'}.{reason_sentence}"
     return f"Use this line: {target_line or 'the next valid line'}.{reason_sentence}"
+
+
+def format_feedback_math_line(value: Any) -> str:
+    text = str(value or "").strip()
+
+    def compact_decimal(match: re.Match[str]) -> str:
+        left = re.sub(r"\s+", "", match.group(1))
+        right = re.sub(r"\s+", "", match.group(2))
+        return f"{left}.{right}"
+
+    return re.sub(r"(?<![A-Za-z])((?:\d\s*)+)\.\s*((?:\d\s*)+)(?![A-Za-z])", compact_decimal, text)
+
+
+def feedback_target_fields(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "targetLine": format_feedback_math_line(context.get("targetLine") or ""),
+        "targetLineSource": context.get("targetLineSource") or "",
+        "targetLineReason": context.get("targetLineReason") or "",
+    }
 
 
 def acceptable_llm_feedback(text: str, context: dict[str, Any]) -> bool:
@@ -491,6 +520,7 @@ __all__ = [
     "correct_feedback_text",
     "deterministic_fallback_feedback",
     "extract_chat_content",
+    "format_feedback_math_line",
     "llm_feedback_rejection_reason",
     "trim_feedback_text",
 ]

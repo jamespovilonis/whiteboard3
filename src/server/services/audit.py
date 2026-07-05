@@ -382,6 +382,7 @@ class RecognitionAuditService:
             artifact_paths.update({key: str(path) for key, path in crops.items()})
             prompt = build_vlm_prompt(payload)
             attached_images = attached_image_names_for_payload(payload, crops)
+            ensure_sent_images_are_clean(crops, attached_images)
             failure_stage = "requesting_vlm"
             self._raise_if_vlm_circuit_open()
             stage_started = time.perf_counter()
@@ -508,6 +509,7 @@ class RecognitionAuditService:
                 prompt_version=prompt_version,
                 attempts=audit_attempts,
                 attached_images=attached_images,
+                settings=self.settings,
                 queued_at=queued_at,
                 started_at=started_at,
                 completed_at=completed_at,
@@ -821,8 +823,8 @@ def build_vlm_prompt(payload: dict[str, Any]) -> str:
         "Read the student's handwritten math answer from the attached images. "
         "The printed problem is not rendered in the image; it is provided here as LaTeX. "
         "Attached image 1 is the answer crop. Attached image 2 is wider answer context for interpreting detached operation marks.\n\n"
-        "The attached VLM images are intended to be clean handwriting crops. If any diagnostic red boxes or rectangles are visible, "
-        "treat them as app overlays and do not report them as boxed_answer or visualMarks.\n\n"
+        "The attached VLM images contain black student handwriting on a white background. "
+        "Report only marks made in black student ink; do not report crop boundaries or app diagnostics as boxed_answer or visualMarks.\n\n"
         f"Problem LaTeX: {problem_latex}\n"
         f"Audit trigger reasons: {', '.join(map(str, trigger_reasons)) or 'none'}\n\n"
         f"{attachment_context}"
@@ -850,7 +852,7 @@ def build_problem_input_vlm_prompt(payload: dict[str, Any]) -> str:
         "Read the user's handwritten math problem input from the attached images. "
         "This is the problem-entry box, not a student's answer to a printed problem. "
         "Attached image 1 is the handwritten input crop. Attached image 2 is the full problem-input crop.\n"
-        "Ignore any diagnostic red boxes or rectangles if visible; they are app overlays, not user handwriting.\n"
+        "Report only marks made in black student ink; do not report crop boundaries or app diagnostics as visualMarks.\n"
         "The app's fast OCR thought the input was: "
         f"{json.dumps(fast_lines, sort_keys=True)}\n"
         f"Audit trigger reasons: {', '.join(map(str, trigger_reasons)) or 'none'}\n\n"
@@ -1258,7 +1260,11 @@ def failure_comparison(
             "status": "skipped",
             "fastProblemStatus": nested_get(fast_result.get("grading") or {}, ["result", "problemStatus"]),
             "vlmProblemStatus": None,
-            "discrepancies": [],
+            "discrepancies": [{
+                "type": kind,
+                "source": source,
+                "description": error,
+            }],
             "observations": [],
             "observation_only_discrepancies": [],
             "description": error,
@@ -1297,6 +1303,7 @@ def build_event_summary(
     attempts: list[dict[str, Any]],
     attached_images: list[str],
     feedback: Optional[dict[str, Any]],
+    settings: ServerSettings,
     queued_at: datetime,
     started_at: datetime,
     completed_at: datetime,
@@ -1351,6 +1358,8 @@ def build_event_summary(
         "inference_ms": last_attempt.get("inference_ms"),
         "attached_images": list(attached_images),
         "vlmRequestProfile": vlm_request_profile,
+        "effectiveNormalSampleRate": effective_normal_sample_rate(settings),
+        "effective_normal_sample_rate": effective_normal_sample_rate(settings),
         "latency": latency or {},
         "latencyBudgetFailureCount": int((latency or {}).get("budgetFailureCount") or 0),
         "circuitState": (circuit_health or {}).get("state"),
@@ -1384,12 +1393,17 @@ def build_audit_metadata(
     circuit_health: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     last_attempt = attempts[-1] if attempts else {}
+    discrepancies = comparison.get("discrepancies") or []
+    observations = comparison.get("observations") or []
     flattened_attachments = flatten_annotation_attachments((normalized or {}).get("annotationAttachments") or [], source="vlm")
     return {
         "auditId": audit_id,
         "auditIdTimestamp": audit_id_timestamp(audit_id),
+        "createdAt": completed_at.isoformat().replace("+00:00", "Z"),
         "model": settings.vlm_audit_model,
         "timeoutSeconds": settings.vlm_audit_timeout_seconds,
+        "effectiveNormalSampleRate": effective_normal_sample_rate(settings),
+        "effective_normal_sample_rate": effective_normal_sample_rate(settings),
         "attempts": attempts,
         "vlmElapsedSeconds": sum(
             float(attempt.get("elapsedSeconds") or 0)
@@ -1405,7 +1419,12 @@ def build_audit_metadata(
         "queueMs": round((started_at - queued_at).total_seconds() * 1000, 1),
         "runElapsedSeconds": round((completed_at - started_at).total_seconds(), 3),
         "comparisonStatus": comparison.get("status"),
-        "observations": comparison.get("observations") or [],
+        "discrepancyCount": len(discrepancies),
+        "discrepancyTypes": [item.get("type") for item in discrepancies if isinstance(item, dict)],
+        "discrepancySources": [item.get("source") for item in discrepancies if isinstance(item, dict)],
+        "observations": observations,
+        "observationCount": len(observations),
+        "observationTypes": [item.get("type") for item in observations if isinstance(item, dict)],
         "observation_only_discrepancies": comparison.get("observation_only_discrepancies") or [],
         "problemId": payload.get("problemId"),
         "inputSignature": payload.get("inputSignature"),
@@ -1446,9 +1465,42 @@ def audit_artifact_metadata(artifact_paths: dict[str, str], attached_images: lis
         name: {
             "diagnosticOverlay": name == "fastOverlay",
             "sentToVlm": name in sent,
+            "redPixelCount": red_pixel_count(Path(path)),
         }
-        for name in sorted(artifact_paths.keys())
+        for name, path in sorted(artifact_paths.items())
     }
+
+
+def ensure_sent_images_are_clean(crops: dict[str, Path], attached_images: list[str]) -> None:
+    leaked: dict[str, int] = {}
+    for name in attached_images:
+        if name not in crops:
+            continue
+        count = red_pixel_count(crops[name])
+        if count > 0:
+            leaked[name] = count
+    if leaked:
+        raise RuntimeError(f"VLM audit clean crop contained diagnostic red pixels: {leaked}")
+
+
+def red_pixel_count(path: Path) -> int:
+    try:
+        image = Image.open(path).convert("RGB")
+    except Exception:
+        return 0
+    count = 0
+    for red, green, blue in image.getdata():
+        if red > 180 and green < 100 and blue < 100:
+            count += 1
+    return count
+
+
+def effective_normal_sample_rate(settings: ServerSettings) -> float:
+    try:
+        rate = float(settings.vlm_audit_normal_sample_rate)
+    except (TypeError, ValueError):
+        rate = 0.10
+    return max(0.0, min(1.0, rate))
 
 
 def record_latency_sample(
@@ -1751,16 +1803,21 @@ def safe_int(value: Any) -> Optional[int]:
 
 
 def vlm_confidence_is_low(normalized: dict[str, Any]) -> bool:
-    overall = normalized.get("overallConfidence")
-    if isinstance(overall, (int, float)) and overall < 0.5:
-        return True
+    line_confidences: list[float] = []
     for observation in normalized.get("lineObservations") or []:
         confidence = observation.get("confidence") if isinstance(observation, dict) else None
         try:
-            if float(confidence) < 0.5:
-                return True
+            line_confidences.append(float(confidence))
         except (TypeError, ValueError):
             continue
+    overall = normalized.get("overallConfidence")
+    if isinstance(overall, (int, float)) and overall < 0.5 and not (
+        line_confidences and all(confidence >= 0.5 for confidence in line_confidences)
+    ):
+        return True
+    for confidence in line_confidences:
+        if confidence < 0.5:
+            return True
     return False
 
 

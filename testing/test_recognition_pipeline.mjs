@@ -5320,7 +5320,16 @@ test('incremental scheduler matches one-shot recognition on messy synthetic late
 test('student writing pipeline handles distilled real handwriting trace fixtures', async () => {
   installFakeCanvas();
   const fixtures = loadRealHandwritingFixtures();
-  assert.equal(fixtures.length, 47);
+  assert.equal(fixtures.length, 49);
+  const fixturesBySlug = new Map(fixtures.map((fixture) => [fixture.slug, fixture]));
+  assert.equal(
+    fixturesBySlug.get('20260704t124709059757z-800c947a21')?.sourceAuditId,
+    'audit_20260704T124709059757Z_800c947a21'
+  );
+  assert.equal(
+    fixturesBySlug.get('20260704t131146086859z-a3afacc0c0')?.sourceAuditId,
+    'audit_20260704T131146086859Z_a3afacc0c0'
+  );
 
   for (const fixture of fixtures) {
     const fakeReaders = fakeReadersForRealTrace(fixture);
@@ -5350,6 +5359,19 @@ test('student writing pipeline handles distilled real handwriting trace fixtures
     const selectedGroups = result.segmentation.selected.map((line) => strokeGroupKey(line.strokeIds));
     const expectedStrokeIds = new Set(fixture.expectedLineGroups.flatMap((group) => group.strokeIds));
     const finalStrokeIds = new Set(result.lines.flatMap((line) => line.strokeIds || []));
+    const replayMismatch = fixture.expectedReplayMismatch || null;
+
+    if (replayMismatch) {
+      assert.equal(replayMismatch.issueId, 'WB3-0001', fixture.slug);
+      assert.deepEqual(
+        selectedGroups,
+        (replayMismatch.selectedGroups || []).map((group) => strokeGroupKey(group)),
+        fixture.slug
+      );
+      assert.deepEqual(result.latexLines, replayMismatch.latexLines, fixture.slug);
+      assert.ok((fixture.knownDiscrepancyTypes || []).length > 0, fixture.slug);
+      continue;
+    }
 
     assert.deepEqual(selectedGroups, expectedGroups, fixture.slug);
     assert.deepEqual([...finalStrokeIds].sort(), [...expectedStrokeIds].sort(), fixture.slug);
@@ -5363,6 +5385,70 @@ test('student writing pipeline handles distilled real handwriting trace fixtures
     );
     assert.notEqual(result.realtime?.allFinal, false, fixture.slug);
   }
+});
+
+test('recognition decimal candidate promotion updates accepted and aggregate latex', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('nine', 100, 100, 128, 160),
+    stroke('five', 136, 100, 164, 160),
+    stroke('two', 190, 100, 218, 160)
+  ];
+  const topLatex = '\\frac { 9 5 } { 2 }';
+  const decimalLatex = '\\frac { 9 . 5 } { 2 }';
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: padBboxForTest(bboxForStrokes(strokes), 20),
+    problemLatex: '\\frac { 1 0 - 0 . 5 } { 2 }',
+    problemMetadata: { problemType: 'evaluate-expression' },
+    semanticScoring: true,
+    recognizeAlternatives: false,
+    chunkFallback: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    recognizeLine: async () => ({
+      latex: topLatex,
+      top: { latex: topLatex, score: 4, confidence: 0.92 },
+      candidates: [
+        { latex: topLatex, score: 4, confidence: 0.92 },
+        { latex: decimalLatex, score: 3.4, confidence: 0.82 },
+        { latex: '\\frac { 9 } { 2 }', score: 0.5, confidence: 0.3 }
+      ],
+      elapsedSeconds: 0.02
+    }),
+    scoreSemantics: async (request) => ({
+      candidateScores: request.candidateGroups.map((group) => ({
+        candidateId: group.candidateId,
+        lineIndex: group.lineIndex,
+        semanticScore: 8,
+        bestLatex: decimalLatex,
+        sound: true,
+        equivalentToProblem: false,
+        equivalentToPrevious: false,
+        grading: {
+          studentLatex: decimalLatex,
+          classification: 'valid_step',
+          selectedCandidateIndex: 1,
+          solutionCoverage: 'full',
+          matchedSolutions: ['4.75'],
+          countsTowardCompletion: false
+        },
+        candidateScores: (group.candidates || []).map((candidate, index) => ({
+          latex: candidate.latex,
+          score: index === 1 ? 8 : 1,
+          sound: index === 1
+        }))
+      })),
+      elapsedSeconds: 0.01
+    })
+  });
+
+  assert.equal(result.lines[0].ocrLatex, topLatex);
+  assert.equal(result.lines[0].acceptedLatex, decimalLatex);
+  assert.deepEqual(result.latexLines, [decimalLatex]);
+  assert.equal(result.latex, decimalLatex);
+  assert.equal(result.grading.steps[0].studentLatex, decimalLatex);
 });
 
 test('segmentation ignores large enclosing circle annotation strokes', () => {

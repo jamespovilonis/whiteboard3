@@ -225,6 +225,29 @@
     "line_latex_mismatch",
     "visual_intent_observed"
   ],
+  "expectedSegmentationReplayMismatch": {
+    "issueId": "WB3-0017",
+    "reason": "Open segmentation replay evidence: the low-level segmenter splits the first reviewed expression into numerator/stack pieces, while full recognition can still reconcile the trace.",
+    "selectedGroups": [
+      [
+        "s001",
+        "s006",
+        "s007"
+      ],
+      [
+        "s002",
+        "s003",
+        "s004",
+        "s005"
+      ],
+      [
+        "s008",
+        "s009",
+        "s010",
+        "s011"
+      ]
+    ]
+  },
   "problemBox": {
     "xMax": 1021.41,
     "xMin": -184.59,

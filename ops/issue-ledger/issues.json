@@ -24,30 +24,76 @@
           "path": "",
           "source": "app_discrepancy_diagnostic",
           "summary": "Candidate/grading path overtrusts ambiguous final-answer OCR"
+        },
+        {
+          "audit_id": "audit_20260704T124709059757Z_800c947a21",
+          "discrepancy_types": [
+            "line_latex_mismatch",
+            "problem_status_mismatch",
+            "visual_intent_observed"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-04/audit_20260704T124709059757Z_800c947a21/comparison.json",
+          "summary": "VLM audit raised: problem_status_mismatch, line_latex_mismatch; fast=incomplete vlm=incorrect; types=line_latex_mismatch,problem_status_mismatch,visual_intent_observed"
         }
       ],
       "first_seen": "2026-07-02T13:23:49.515005Z",
       "fix_commits": [],
-      "fixtures": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-05T11:42:31Z",
+          "note": "Live audit replay for visible wrong final 5/8 after equivalent intermediate fraction work.",
+          "path": "testing/fixtures/real_handwriting/20260704t124709059757z-800c947a21.json"
+        }
+      ],
       "id": "WB3-0001",
       "key": "candidate-selection-ambiguous-final-answer-overtrust",
-      "last_seen": "2026-07-02T13:34:25.159495Z",
-      "next_action": "Keep candidateSelectionSafeForGrading and restricted Python candidate payload behavior. Maintain replay tests for the ambiguous final-answer audits before marking resolved.",
+      "last_seen": "2026-07-05T11:42:45Z",
+      "next_action": "Use the July 4 replay fixture to design a targeted fraction/final-answer selection fix.",
       "notes": [
         {
           "text": "Aligned with app discrepancy diagnostic replay verification status.",
           "timestamp": "2026-07-03T22:02:25Z"
+        },
+        {
+          "text": "2026-07-05 daily audit audit_20260704T124709059757Z_800c947a21 shows fast OCR/grading missed a visible wrong final 5/8 and marked incomplete while VLM graded incorrect.",
+          "timestamp": "2026-07-05T11:42:27Z"
+        },
+        {
+          "text": "Replay fixture preserves July 4 ambiguous final-answer/grouping evidence as an explicit expected mismatch; not closed pending a targeted segmentation/OCR fix or comparable live audit.",
+          "timestamp": "2026-07-05T12:00:47Z"
         }
       ],
-      "severity": "P2",
+      "observed_statuses": [
+        "complete"
+      ],
+      "severity": "P1",
       "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Candidate/grading path overtrusts ambiguous final-answer OCR",
-      "updated_at": "2026-07-03T22:02:25Z",
+      "updated_at": "2026-07-05T12:00:47Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "node --test --test-name-pattern \"distilled real handwriting trace fixtures|decimal|VLM audit\" testing/test_recognition_pipeline.mjs",
+            "note": "Distilled real handwriting replay covers July 4 audit fixture; known mismatch remains explicit.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
+          },
+          {
+            "command": "npm run test:segmentation",
+            "note": "Full segmentation suite passes with open replay mismatch metadata.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
+          },
+          {
+            "command": "npm run build",
+            "note": "Production build passed after replay fixture additions.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -572,30 +618,76 @@
           "path": "",
           "source": "app_discrepancy_diagnostic",
           "summary": "Valid semantic OCR candidates are present but not promoted to accepted/final grading lines"
+        },
+        {
+          "audit_id": "audit_20260704T131146086859Z_a3afacc0c0",
+          "discrepancy_types": [
+            "line_latex_mismatch",
+            "visual_intent_observed",
+            "vlm_low_confidence"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-04/audit_20260704T131146086859Z_a3afacc0c0/comparison.json",
+          "summary": "VLM audit raised: line_latex_mismatch, vlm_low_confidence; fast=correct vlm=correct; types=line_latex_mismatch,visual_intent_observed,vlm_low_confidence"
         }
       ],
       "first_seen": "2026-07-02T20:03:47.844501Z",
       "fix_commits": [],
-      "fixtures": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-05T11:42:40Z",
+          "note": "Live audit replay for safe decimal candidate promotion in a fraction row: 9.5/2 over OCR top 95/2.",
+          "path": "testing/fixtures/real_handwriting/20260704t131146086859z-a3afacc0c0.json"
+        }
+      ],
       "id": "WB3-0010",
       "key": "valid-semantic-alternate-not-promoted",
-      "last_seen": "2026-07-03T14:24:16.291076Z",
-      "next_action": "Current worktree now promotes safe grader-selected candidates consistently; add or keep a regression asserting a top-five `9` candidate replaces an OCR top `q` when gradeWork selects the numeric solution, then wait for post-fix audit evidence before marking resolved.",
+      "last_seen": "2026-07-05T11:42:50Z",
+      "next_action": "Watch next live handwriting audit for decimal 9.5/2-style corrections before closing.",
       "notes": [
         {
           "text": "Aligned with app discrepancy diagnostic replay verification status.",
           "timestamp": "2026-07-03T22:02:25Z"
+        },
+        {
+          "text": "2026-07-05 daily audit audit_20260704T131146086859Z_a3afacc0c0 shows a grader-supported decimal candidate 9.5/2 while accepted/displayed line stayed 95/2; final 4.75 was correct.",
+          "timestamp": "2026-07-05T11:42:36Z"
+        },
+        {
+          "text": "Replay verification covers top-five decimal candidate promotion into acceptedLatex, latexLines, aggregate latex, and grading studentLatex.",
+          "timestamp": "2026-07-05T12:00:47Z"
         }
       ],
-      "severity": "P2",
+      "observed_statuses": [
+        "complete"
+      ],
+      "severity": "P1",
       "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Valid semantic OCR candidates are present but not promoted to accepted/final grading lines",
-      "updated_at": "2026-07-03T22:02:25Z",
+      "updated_at": "2026-07-05T12:00:47Z",
       "verification": {
-        "commands": [],
+        "commands": [
+          {
+            "command": "node --test --test-name-pattern \"distilled real handwriting trace fixtures|decimal|VLM audit\" testing/test_recognition_pipeline.mjs",
+            "note": "Decimal top-five candidate promotion replay test passed.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
+          },
+          {
+            "command": "npm run test:segmentation",
+            "note": "Full recognition and segmentation regression suite passed.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
+          },
+          {
+            "command": "npm run build",
+            "note": "Production build passed after recognition candidate promotion.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
+          }
+        ],
         "live_audit": "missing",
-        "replay": "missing"
+        "replay": "passed"
       }
     },
     {
@@ -1260,7 +1352,7 @@
     {
       "acceptance_criteria": [],
       "area": [],
-      "category": "audit-infra",
+      "category": "recognition",
       "evidence": [
         {
           "audit_id": "audit_20260703T223159069590Z_8543e95e26",
@@ -1277,6 +1369,14 @@
           ],
           "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T144456547842Z_a8394ed135/comparison.json",
           "summary": "VLM audit circuit open after repeated timeouts; retry in 300s; types=vlm_unavailable"
+        },
+        {
+          "audit_id": "audit_20260704T132042116096Z_47e6686c30",
+          "discrepancy_types": [
+            "vlm_timeout"
+          ],
+          "path": "/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-04/audit_20260704T132042116096Z_47e6686c30/comparison.json",
+          "summary": "timed out; fast=incomplete vlm=None; types=vlm_timeout"
         }
       ],
       "first_seen": "2026-07-04T12:13:30Z",
@@ -1284,12 +1384,20 @@
       "fixtures": [],
       "id": "WB3-0021",
       "key": "vlm-audit-timeouts-and-circuit-open",
-      "last_seen": "2026-07-04T12:13:30Z",
-      "next_action": "Monitor comparable live audit evidence for timeout/circuit-open recurrence before reopening.",
+      "last_seen": "2026-07-05T11:42:13Z",
+      "next_action": "Watch next daily audit for live circuit-open telemetry before closing.",
       "notes": [
         {
           "text": "Replay verification passed for timeout/circuit-open audit metadata and suppression behavior.",
           "timestamp": "2026-07-04T13:14:27Z"
+        },
+        {
+          "text": "2026-07-05 daily audit found live timeout/circuit recurrence after replay verification: audits audit_20260704T124947313468Z_e0fa22951b, audit_20260704T125122486124Z_b44d975a8f, audit_20260704T132023333469Z_d11192cd6a, audit_20260704T132042116096Z_47e6686c30 timed out; subsequent audits skipped with vlm_circuit_open.",
+          "timestamp": "2026-07-05T11:42:09Z"
+        },
+        {
+          "text": "Replay/unit verification covers circuit-open audit-unavailable discrepancy counting and metadata; await comparable live audit before closure.",
+          "timestamp": "2026-07-05T12:00:47Z"
         }
       ],
       "observed_statuses": [
@@ -1299,7 +1407,7 @@
       "status": "verified_by_replay",
       "suspected_files": [],
       "title": "VLM audit timeouts and circuit-open skips",
-      "updated_at": "2026-07-04T13:14:27Z",
+      "updated_at": "2026-07-05T12:00:47Z",
       "verification": {
         "commands": [
           {
@@ -1307,6 +1415,24 @@
             "note": "Covers timeout/circuit-open metadata, suppressed audit events, retry accounting, and audit artifact metadata.",
             "result": "passed",
             "timestamp": "2026-07-04T13:14:11Z"
+          },
+          {
+            "command": "python3 -m unittest testing.test_audit_service testing.test_feedback_service testing.test_issue_ledger",
+            "note": "Audit circuit-open discrepancy and metadata tests passed.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
+          },
+          {
+            "command": "node --test --test-name-pattern \"distilled real handwriting trace fixtures|decimal|VLM audit\" testing/test_recognition_pipeline.mjs",
+            "note": "VLM audit client decision tests passed.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
+          },
+          {
+            "command": "npm run build",
+            "note": "Production build passed after audit telemetry changes.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
           }
         ],
         "live_audit": "missing",
@@ -1395,11 +1521,19 @@
       "id": "WB3-0023",
       "key": "audit-overlay-visual-mark-false-positive",
       "last_seen": "2026-07-04T12:13:48Z",
-      "next_action": "Monitor live audit artifacts for diagnostic overlay false positives before reopening.",
+      "next_action": "Watch next daily audit for absence of overlay visual-mark false positives before closing.",
       "notes": [
         {
           "text": "Replay verification passed for clean VLM crops and overlay categorization.",
           "timestamp": "2026-07-04T13:14:32Z"
+        },
+        {
+          "text": "2026-07-05 daily audit found VLM still reporting crop/diagnostic rectangles as boxed_answer visualMarks in completed audits despite clean sent image intent; tighten prompt/normalization and red-pixel guarantees.",
+          "timestamp": "2026-07-05T11:42:18Z"
+        },
+        {
+          "text": "Replay/unit verification covers clean sent images, red-pixel metadata, and prompt wording that excludes app diagnostics.",
+          "timestamp": "2026-07-05T12:00:47Z"
         }
       ],
       "observed_statuses": [
@@ -1409,7 +1543,7 @@
       "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Audit overlay boxes are reported as visual marks",
-      "updated_at": "2026-07-04T13:14:32Z",
+      "updated_at": "2026-07-05T12:00:47Z",
       "verification": {
         "commands": [
           {
@@ -1417,6 +1551,24 @@
             "note": "Covers clean VLM crops, diagnostic overlay metadata, prompt instruction, and audit_overlay_visual_mark categorization.",
             "result": "passed",
             "timestamp": "2026-07-04T13:14:11Z"
+          },
+          {
+            "command": "python3 -m unittest testing.test_audit_service testing.test_feedback_service testing.test_issue_ledger",
+            "note": "Clean sent-image and overlay prompt/filter tests passed.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
+          },
+          {
+            "command": "node --test --test-name-pattern \"distilled real handwriting trace fixtures|decimal|VLM audit\" testing/test_recognition_pipeline.mjs",
+            "note": "VLM audit payload and decision tests passed.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
+          },
+          {
+            "command": "npm run build",
+            "note": "Production build passed after audit prompt changes.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
           }
         ],
         "live_audit": "missing",
@@ -1459,7 +1611,7 @@
       "id": "WB3-0024",
       "key": "tutor-feedback-prompt-leak-and-literal-feedback",
       "last_seen": "2026-07-04T12:13:48Z",
-      "next_action": "Monitor live feedback artifacts for prompt leakage or non-actionable literal feedback recurrence.",
+      "next_action": "Watch live feedback artifacts for missing-target and decimal-format behavior before closing.",
       "notes": [
         {
           "text": "Daily audit personal notes: audit_20260703T213955419107Z_1abc4a8529 says tutor output still includes raw prompt instructions; audit_20260703T174233152665Z_de476ff2a5 says feedback was too literal; audit_20260703T174901022130Z_232e0fa7c8 says tutor identified the line error but only said to fix the error.",
@@ -1468,6 +1620,14 @@
         {
           "text": "Replay verification passed for tutor-feedback output contract and fallback rejection handling.",
           "timestamp": "2026-07-04T13:14:28Z"
+        },
+        {
+          "text": "2026-07-05 daily audit found multiple feedback artifacts where the feedback LLM missed the exact target line and fallback output exposed spacing issues such as 4. 75; add target-line/rejection telemetry and decimal-safe fallback formatting.",
+          "timestamp": "2026-07-05T11:42:22Z"
+        },
+        {
+          "text": "Replay/unit verification covers target metadata, rejectionReason, missing_target_line tracking, and decimal formatting.",
+          "timestamp": "2026-07-05T12:00:47Z"
         }
       ],
       "observed_statuses": [
@@ -1478,7 +1638,7 @@
       "status": "verified_by_replay",
       "suspected_files": [],
       "title": "Tutor feedback leaks prompt text or gives literal fixes",
-      "updated_at": "2026-07-04T13:14:28Z",
+      "updated_at": "2026-07-05T12:00:47Z",
       "verification": {
         "commands": [
           {
@@ -1486,6 +1646,18 @@
             "note": "Covers prompt leakage, literal fix-the-error feedback, raw/rules echoes, target-line enforcement, and fallback rejection reasons.",
             "result": "passed",
             "timestamp": "2026-07-04T13:14:11Z"
+          },
+          {
+            "command": "python3 -m unittest testing.test_audit_service testing.test_feedback_service testing.test_issue_ledger",
+            "note": "Feedback target metadata, rejection reason, and decimal formatting tests passed.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
+          },
+          {
+            "command": "npm run build",
+            "note": "Production build passed after feedback metadata changes.",
+            "result": "passed",
+            "timestamp": "2026-07-05T12:00:35Z"
           }
         ],
         "live_audit": "missing",

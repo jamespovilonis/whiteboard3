@@ -4166,7 +4166,13 @@ function safeSemanticAlternateForGrading(entry = {}, grading = null, selectedLat
   if (!nearTieConfidence && !nearTieScore) return false;
 
   const safeVisualCorrection = alternateLooksLikeSafeVisualCorrection(topLatex, selectedLatex);
-  if (grading?.countsTowardCompletion !== true && !operatorOnlyCorrection(topLatex, selectedLatex)) return false;
+  if (
+    grading?.countsTowardCompletion !== true &&
+    !operatorOnlyCorrection(topLatex, selectedLatex) &&
+    !decimalPointInsertionCorrection(topLatex, selectedLatex)
+  ) {
+    return false;
+  }
   return safeVisualCorrection;
 }
 
@@ -4179,6 +4185,7 @@ function alternateLooksLikeSafeVisualCorrection(topLatex = '', selectedLatex = '
   if (singleSqrtRadicandCorrection(top, selected)) return true;
   if (indexedRadicalCorrection(top, selected)) return true;
   if (absoluteValueDelimiterCorrection(top, selected)) return true;
+  if (decimalPointInsertionCorrection(top, selected)) return true;
   if (ambiguousGlyphNumericCorrection(top, selected)) return true;
   return false;
 }
@@ -4262,6 +4269,13 @@ function ambiguousGlyphNumericCorrection(topLatex = '', selectedLatex = '') {
     .replace(/[lLI|]/g, '1')
     .replace(/[zZ]/g, '2');
   return top === selected;
+}
+
+function decimalPointInsertionCorrection(topLatex = '', selectedLatex = '') {
+  const top = compactLatexForGrading(topLatex);
+  const selected = compactLatexForGrading(selectedLatex);
+  if (!top || !selected || top.includes('.') || !/\d\.\d/.test(selected)) return false;
+  return selected.replace(/\./g, '') === top;
 }
 
 function markGradingIncompleteAfterOcrTimeout(grading = {}) {

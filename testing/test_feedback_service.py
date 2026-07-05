@@ -19,6 +19,7 @@ from src.server.services.feedback import (
     build_feedback_prompt,
     build_prompt_context,
     extract_chat_content,
+    format_feedback_math_line,
 )
 
 
@@ -61,6 +62,9 @@ class MathFeedbackServiceTests(unittest.TestCase):
 
         self.assertEqual(result["source"], "ollama")
         self.assertIn("Line 2", result["text"])
+        self.assertEqual(result["targetLine"], "x = 4")
+        self.assertEqual(result["targetLineSource"], "linear_divide_coefficient")
+        self.assertIsNone(result["rejectionReason"])
         self.assertEqual(len(client.calls), 1)
         self.assertIn("The correct target line is exactly: x = 4", client.calls[0]["user_prompt"])
         self.assertNotIn("Give one valid correction or next step", client.calls[0]["user_prompt"])
@@ -81,6 +85,10 @@ class MathFeedbackServiceTests(unittest.TestCase):
         self.assertIn("x = 4", result["text"])
         self.assertNotIn("Give one valid correction or next step", result["text"])
         self.assertEqual(result["attemptId"], "attempt_a")
+        self.assertEqual(result["targetLine"], "x = 4")
+        self.assertEqual(result["targetLineSource"], "linear_divide_coefficient")
+        self.assertEqual(result["targetLineReason"], "Divide both sides by the coefficient of the variable.")
+        self.assertIsNone(result["rejectionReason"])
 
     def test_llm_json_echo_falls_back_to_concrete_target_line(self):
         service = service_with(FakeTextClient('{"targetLine":"x = 4"}'))
@@ -100,6 +108,17 @@ class MathFeedbackServiceTests(unittest.TestCase):
         self.assertFalse(acceptable_llm_feedback("Rules: include the exact target line x = 4.", context))
         self.assertTrue(acceptable_llm_feedback("A good next line is: x = 4.", context))
 
+    def test_missing_target_line_rejection_is_tracked(self):
+        service = service_with(FakeTextClient("A good next line is x=4."))
+
+        result = service.generate(feedback_payload(problem_status="incomplete"))
+
+        self.assertEqual(result["source"], "fallback")
+        self.assertEqual(result["rejectionReason"], "missing_target_line")
+        self.assertIn("x = 4", result["text"])
+        self.assertEqual(result["targetLine"], "x = 4")
+        self.assertEqual(result["targetLineSource"], "linear_divide_coefficient")
+
     def test_prompt_leak_and_literal_feedback_fall_back(self):
         cases = [
             "Student line to respond to: 2x = 8. The correct target line is exactly: x = 4.",
@@ -112,9 +131,29 @@ class MathFeedbackServiceTests(unittest.TestCase):
                 result = service.generate(feedback_payload(problem_status="incomplete"))
 
                 self.assertEqual(result["source"], "fallback")
+                self.assertEqual(result["rejectionReason"], "prompt_or_literal_feedback")
                 self.assertIn("Feedback LLM rejected", result["error"])
                 self.assertIn("x = 4", result["text"])
                 self.assertNotIn("fix the error", result["text"].lower())
+
+    def test_decimal_target_formatting_keeps_decimal_together(self):
+        self.assertEqual(format_feedback_math_line("4 . 7 5"), "4.75")
+        self.assertEqual(format_feedback_math_line("x = 4 . 7 5"), "x = 4.75")
+        payload = feedback_payload(
+            problem_latex=r"\frac{9.5}{2}",
+            problem_status="incomplete",
+            solution="4 . 7 5",
+            steps=[],
+        )
+        payload["problemMetadata"] = {"problemType": "evaluate-expression"}
+        service = service_with(FakeTextClient('{"targetLine":"4 . 7 5"}'))
+
+        result = service.generate(payload)
+
+        self.assertEqual(result["source"], "fallback")
+        self.assertEqual(result["targetLine"], "4.75")
+        self.assertIn("4.75", result["text"])
+        self.assertNotIn("4. 75", result["text"])
 
     def test_feedback_prompt_is_not_raw_json(self):
         context = build_prompt_context(feedback_payload(problem_status="incomplete"))

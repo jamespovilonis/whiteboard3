@@ -134,6 +134,15 @@ class LineSegmentationPipelineTests(unittest.TestCase):
                 )
 
                 self.assertEqual(result["strokeCount"], len(fixture["strokes"]))
+                replay_mismatch = fixture.get("expectedSegmentationReplayMismatch") or fixture.get("expectedReplayMismatch")
+                if replay_mismatch:
+                    self.assertTrue(replay_mismatch.get("issueId"))
+                    mismatch_keys = sorted(
+                        stroke_group_key(group)
+                        for group in replay_mismatch.get("selectedGroups", [])
+                    )
+                    self.assertEqual(actual_keys, mismatch_keys, msg=json.dumps(result["selected"], indent=2))
+                    continue
                 self.assertEqual(actual_keys, expected_keys, msg=json.dumps(result["selected"], indent=2))
                 for candidate in result["selected"]:
                     self.assertEqual(

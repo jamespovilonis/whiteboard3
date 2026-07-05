@@ -1,12 +1,70 @@
 # Whiteboard 3 Issue Ledger
 
-Generated from `issues.json` at `2026-07-04T13:14:38Z`.
+Generated from `issues.json` at `2026-07-05T12:00:50Z`.
 
 ## Actionable Issues
 
 No actionable issues.
 
 ## Recently Verified
+
+### WB3-0001 - Candidate/grading path overtrusts ambiguous final-answer OCR
+
+- Severity: `P1`
+- Status: `verified_by_replay`
+- Category: `recognition`
+- Key: `candidate-selection-ambiguous-final-answer-overtrust`
+- Last seen: `2026-07-05T11:42:45Z`
+- Next action: Use the July 4 replay fixture to design a targeted fraction/final-answer selection fix.
+- Evidence:
+  - `audit_20260702T132349514705Z_0da52d6b90`: Candidate/grading path overtrusts ambiguous final-answer OCR ()
+  - `audit_20260702T133425158949Z_a1e84136a1`: Candidate/grading path overtrusts ambiguous final-answer OCR ()
+  - `audit_20260704T124709059757Z_800c947a21`: VLM audit raised: problem_status_mismatch, line_latex_mismatch; fast=incomplete vlm=incorrect; types=line_latex_mismatch,problem_status_mismatch,visual_intent_observed (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-04/audit_20260704T124709059757Z_800c947a21/comparison.json)
+- Fixtures:
+  - `testing/fixtures/real_handwriting/20260704t124709059757z-800c947a21.json`
+- Verification:
+  - `passed` `node --test --test-name-pattern "distilled real handwriting trace fixtures|decimal|VLM audit" testing/test_recognition_pipeline.mjs`
+  - `passed` `npm run test:segmentation`
+  - `passed` `npm run build`
+
+### WB3-0010 - Valid semantic OCR candidates are present but not promoted to accepted/final grading lines
+
+- Severity: `P1`
+- Status: `verified_by_replay`
+- Category: `recognition`
+- Key: `valid-semantic-alternate-not-promoted`
+- Last seen: `2026-07-05T11:42:50Z`
+- Next action: Watch next live handwriting audit for decimal 9.5/2-style corrections before closing.
+- Evidence:
+  - `audit_20260702T220020765884Z_71983a33ea`: Valid semantic OCR candidates are present but not promoted to accepted/final grading lines ()
+  - `audit_20260703T125227496485Z_5e0ddd9d04`: Valid semantic OCR candidates are present but not promoted to accepted/final grading lines ()
+  - `audit_20260703T130912395585Z_bbbd388b6e`: Valid semantic OCR candidates are present but not promoted to accepted/final grading lines ()
+  - `audit_20260703T142416290747Z_ff29f8b9d9`: Valid semantic OCR candidates are present but not promoted to accepted/final grading lines ()
+  - `audit_20260704T131146086859Z_a3afacc0c0`: VLM audit raised: line_latex_mismatch, vlm_low_confidence; fast=correct vlm=correct; types=line_latex_mismatch,visual_intent_observed,vlm_low_confidence (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-04/audit_20260704T131146086859Z_a3afacc0c0/comparison.json)
+- Fixtures:
+  - `testing/fixtures/real_handwriting/20260704t131146086859z-a3afacc0c0.json`
+- Verification:
+  - `passed` `node --test --test-name-pattern "distilled real handwriting trace fixtures|decimal|VLM audit" testing/test_recognition_pipeline.mjs`
+  - `passed` `npm run test:segmentation`
+  - `passed` `npm run build`
+
+### WB3-0021 - VLM audit timeouts and circuit-open skips
+
+- Severity: `P1`
+- Status: `verified_by_replay`
+- Category: `recognition`
+- Key: `vlm-audit-timeouts-and-circuit-open`
+- Last seen: `2026-07-05T11:42:13Z`
+- Next action: Watch next daily audit for live circuit-open telemetry before closing.
+- Evidence:
+  - `audit_20260703T223159069590Z_8543e95e26`: timed out; fast=correct vlm=None; types=vlm_timeout (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T223159069590Z_8543e95e26/comparison.json)
+  - `audit_20260703T144456547842Z_a8394ed135`: VLM audit circuit open after repeated timeouts; retry in 300s; types=vlm_unavailable (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T144456547842Z_a8394ed135/comparison.json)
+  - `audit_20260704T132042116096Z_47e6686c30`: timed out; fast=incomplete vlm=None; types=vlm_timeout (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-04/audit_20260704T132042116096Z_47e6686c30/comparison.json)
+- Verification:
+  - `passed` `python3 -m unittest testing.test_audit_service`
+  - `passed` `python3 -m unittest testing.test_audit_service testing.test_feedback_service testing.test_issue_ledger`
+  - `passed` `node --test --test-name-pattern "distilled real handwriting trace fixtures|decimal|VLM audit" testing/test_recognition_pipeline.mjs`
+  - `passed` `npm run build`
 
 ### WB3-0023 - Audit overlay boxes are reported as visual marks
 
@@ -15,12 +73,32 @@ No actionable issues.
 - Category: `audit-process`
 - Key: `audit-overlay-visual-mark-false-positive`
 - Last seen: `2026-07-04T12:13:48Z`
-- Next action: Monitor live audit artifacts for diagnostic overlay false positives before reopening.
+- Next action: Watch next daily audit for absence of overlay visual-mark false positives before closing.
 - Evidence:
   - `audit_20260703T125227496485Z_5e0ddd9d04`: VLM audit raised: problem_status_mismatch, solution_set_mismatch, line_latex_mismatch; fast=incorrect vlm=correct; types=line_latex_mismatch,problem_status_mismatch,solution_set_mismatch,visual_intent_observed (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T125227496485Z_5e0ddd9d04/comparison.json)
   - `audit_20260703T130912395585Z_bbbd388b6e`: VLM audit raised: problem_status_mismatch, solution_set_mismatch, line_latex_mismatch; fast=incorrect vlm=correct; types=line_latex_mismatch,problem_status_mismatch,solution_set_mismatch,visual_intent_observed (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T130912395585Z_bbbd388b6e/comparison.json)
 - Verification:
   - `passed` `python3 -m unittest testing.test_audit_service`
+  - `passed` `python3 -m unittest testing.test_audit_service testing.test_feedback_service testing.test_issue_ledger`
+  - `passed` `node --test --test-name-pattern "distilled real handwriting trace fixtures|decimal|VLM audit" testing/test_recognition_pipeline.mjs`
+  - `passed` `npm run build`
+
+### WB3-0024 - Tutor feedback leaks prompt text or gives literal fixes
+
+- Severity: `P2`
+- Status: `verified_by_replay`
+- Category: `tutor-feedback`
+- Key: `tutor-feedback-prompt-leak-and-literal-feedback`
+- Last seen: `2026-07-04T12:13:48Z`
+- Next action: Watch live feedback artifacts for missing-target and decimal-format behavior before closing.
+- Evidence:
+  - `audit_20260703T213955419107Z_1abc4a8529`: Fast pipeline and VLM audit agreed on the checked signals.; fast=incorrect vlm=incorrect; types=visual_intent_observed (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T213955419107Z_1abc4a8529/comparison.json)
+  - `audit_20260703T174233152665Z_de476ff2a5`: VLM JSON must include latexLines as a list; fast=incorrect vlm=None; types=vlm_schema_error (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T174233152665Z_de476ff2a5/comparison.json)
+  - `audit_20260703T174901022130Z_232e0fa7c8`: timed out; fast=incorrect vlm=None; types=vlm_timeout (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T174901022130Z_232e0fa7c8/comparison.json)
+- Verification:
+  - `passed` `python3 -m unittest testing.test_feedback_service`
+  - `passed` `python3 -m unittest testing.test_audit_service testing.test_feedback_service testing.test_issue_ledger`
+  - `passed` `npm run build`
 
 ### WB3-0005 - Inverse-trig manifest parse failure turns partial work into incorrect
 
@@ -83,21 +161,6 @@ No actionable issues.
 - Verification:
   - `passed` `node --test --test-name-pattern "distilled real handwriting trace fixtures" testing/test_recognition_pipeline.mjs`
 
-### WB3-0024 - Tutor feedback leaks prompt text or gives literal fixes
-
-- Severity: `P2`
-- Status: `verified_by_replay`
-- Category: `tutor-feedback`
-- Key: `tutor-feedback-prompt-leak-and-literal-feedback`
-- Last seen: `2026-07-04T12:13:48Z`
-- Next action: Monitor live feedback artifacts for prompt leakage or non-actionable literal feedback recurrence.
-- Evidence:
-  - `audit_20260703T213955419107Z_1abc4a8529`: Fast pipeline and VLM audit agreed on the checked signals.; fast=incorrect vlm=incorrect; types=visual_intent_observed (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T213955419107Z_1abc4a8529/comparison.json)
-  - `audit_20260703T174233152665Z_de476ff2a5`: VLM JSON must include latexLines as a list; fast=incorrect vlm=None; types=vlm_schema_error (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T174233152665Z_de476ff2a5/comparison.json)
-  - `audit_20260703T174901022130Z_232e0fa7c8`: timed out; fast=incorrect vlm=None; types=vlm_timeout (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T174901022130Z_232e0fa7c8/comparison.json)
-- Verification:
-  - `passed` `python3 -m unittest testing.test_feedback_service`
-
 ### WB3-0025 - Realtime segmentation status flips during grading
 
 - Severity: `P2`
@@ -110,49 +173,6 @@ No actionable issues.
   - `audit_20260703T144210547539Z_fe7e799b0c`: timed out; fast=correct vlm=None; types=vlm_unavailable (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T144210547539Z_fe7e799b0c/comparison.json)
 - Verification:
   - `passed` `node --test --test-name-pattern "realtime|segmentation|submitted|status" testing/test_recognition_pipeline.mjs`
-
-### WB3-0021 - VLM audit timeouts and circuit-open skips
-
-- Severity: `P1`
-- Status: `verified_by_replay`
-- Category: `audit-infra`
-- Key: `vlm-audit-timeouts-and-circuit-open`
-- Last seen: `2026-07-04T12:13:30Z`
-- Next action: Monitor comparable live audit evidence for timeout/circuit-open recurrence before reopening.
-- Evidence:
-  - `audit_20260703T223159069590Z_8543e95e26`: timed out; fast=correct vlm=None; types=vlm_timeout (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T223159069590Z_8543e95e26/comparison.json)
-  - `audit_20260703T144456547842Z_a8394ed135`: VLM audit circuit open after repeated timeouts; retry in 300s; types=vlm_unavailable (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T144456547842Z_a8394ed135/comparison.json)
-- Verification:
-  - `passed` `python3 -m unittest testing.test_audit_service`
-
-### WB3-0022 - VLM audit schema errors return empty JSON
-
-- Severity: `P1`
-- Status: `verified_by_replay`
-- Category: `audit-infra`
-- Key: `vlm-audit-schema-empty-json`
-- Last seen: `2026-07-04T12:13:30Z`
-- Next action: Monitor live audits for malformed or empty VLM JSON recurrence.
-- Evidence:
-  - `audit_20260703T125032301196Z_334c75e45e`: VLM JSON must include latexLines as a list; fast=correct vlm=None; types=vlm_schema_error (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T125032301196Z_334c75e45e/comparison.json)
-- Verification:
-  - `passed` `python3 -m unittest testing.test_audit_service`
-
-### WB3-0004 - Detached/circled annotation is selected and graded as a final answer line
-
-- Severity: `P2`
-- Status: `verified_by_replay`
-- Category: `recognition`
-- Key: `detached-operation-annotations-selected-as-answer-lines`
-- Last seen: `2026-07-04T12:12:59Z`
-- Next action: Monitor daily VLM audits for recurrence of unlabeled circle/box annotations being graded as final answers.
-- Evidence:
-  - `audit_20260702T133425158949Z_a1e84136a1`: Detached/circled annotation is selected and graded as a final answer line ()
-  - `audit_20260703T141214622367Z_00171da20d`: VLM audit raised: problem_status_mismatch, solution_set_mismatch, line_latex_mismatch, equation_side_operation_annotation_mismatch; fast=correct vlm=incomplete; types=equation_side_operation_annotation_mismatch,line_latex_mismatch,problem_status_mismatch,solution_set_mismatch,visual_intent_observed (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T141214622367Z_00171da20d/comparison.json)
-- Fixtures:
-  - `testing/fixtures/real_handwriting/detached-circled-zero-annotation.json`
-- Verification:
-  - `passed` `node --test --test-name-pattern "segmentation infers visual-only annotations|isolated circled annotation|real standalone zero" testing/test_recognition_pipeline.mjs`
 
 ## Workflow
 

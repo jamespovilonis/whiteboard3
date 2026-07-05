@@ -18,7 +18,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.grading import grade_equation_payload, grade_math_payload
 from src.server.config import ServerSettings
-from src.server.services.audit import RecognitionAuditService, normalize_vlm_response
+from src.server.services.audit import (
+    RecognitionAuditService,
+    ensure_sent_images_are_clean,
+    normalize_vlm_response,
+)
 
 
 class FakeVlmClient:
@@ -67,6 +71,12 @@ class AuditServiceTests(unittest.TestCase):
             self.assertTrue((Path(directory) / "audit_events.jsonl").exists())
             metadata = json.loads((audit_dir / "audit_metadata.json").read_text())
             self.assertEqual(metadata["comparisonStatus"], "complete")
+            self.assertIn("createdAt", metadata)
+            self.assertEqual(metadata["discrepancyCount"], 0)
+            self.assertEqual(metadata["discrepancyTypes"], [])
+            self.assertEqual(metadata["discrepancySources"], [])
+            self.assertAlmostEqual(metadata["effectiveNormalSampleRate"], 0.10)
+            self.assertAlmostEqual(metadata["effective_normal_sample_rate"], 0.10)
             self.assertIn("answerContext", metadata["artifactTypes"])
             self.assertIn("answerContext", metadata["cropBoxes"])
             self.assertEqual(metadata["prompt_version"], "recognition-audit-v2")
@@ -74,8 +84,10 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(metadata["vlmRequestProfile"], "answer-local-compact")
             self.assertTrue(metadata["artifactMetadata"]["fastOverlay"]["diagnosticOverlay"])
             self.assertFalse(metadata["artifactMetadata"]["fastOverlay"]["sentToVlm"])
+            self.assertGreater(metadata["artifactMetadata"]["fastOverlay"]["redPixelCount"], 0)
             self.assertFalse(metadata["artifactMetadata"]["answerContext"]["diagnosticOverlay"])
             self.assertTrue(metadata["artifactMetadata"]["answerContext"]["sentToVlm"])
+            self.assertEqual(metadata["artifactMetadata"]["answerContext"]["redPixelCount"], 0)
             self.assertEqual(metadata["attempts"][0]["attachedImages"], ["answerCrop", "answerContext"])
             self.assertEqual(metadata["attempts"][0]["vlmRequestProfile"], "answer-local-compact")
             self.assertEqual(metadata["attempts"][0]["attemptIndex"], 0)
@@ -95,6 +107,11 @@ class AuditServiceTests(unittest.TestCase):
             self.assertIn("vlmAuditRequest", metadata["latency"]["stages"])
             self.assertIsInstance(metadata["latencyBudgetFailureCount"], int)
             self.assertEqual(summary["comparisonStatus"], "complete")
+            self.assertEqual(summary["discrepancyCount"], 0)
+            self.assertEqual(summary["discrepancyTypes"], [])
+            self.assertEqual(summary["discrepancySources"], [])
+            self.assertAlmostEqual(summary["effectiveNormalSampleRate"], 0.10)
+            self.assertAlmostEqual(summary["effective_normal_sample_rate"], 0.10)
             self.assertIn("answerContext", summary["artifactTypes"])
             self.assertEqual(summary["attached_images"], ["answerCrop", "answerContext"])
             self.assertEqual(summary["vlmRequestProfile"], "answer-local-compact")
@@ -108,7 +125,10 @@ class AuditServiceTests(unittest.TestCase):
             )
             self.assertEqual(red_pixel_count(audit_dir / "answer_context.png"), 0)
             self.assertGreater(red_pixel_count(audit_dir / "fast_overlay.png"), 0)
-            self.assertIn("diagnostic red boxes", service.vlm_client.calls[0]["prompt"])
+            prompt = service.vlm_client.calls[0]["prompt"]
+            self.assertIn("black student handwriting", prompt)
+            self.assertIn("Report only marks made in black student ink", prompt)
+            self.assertNotIn("diagnostic red boxes", prompt)
 
     def test_disagreement_records_status_and_solution_discrepancies(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -164,6 +184,46 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(summary["observationTypes"], ["audit_overlay_visual_mark"])
             comparison = json.loads((Path(summary["auditDir"]) / "comparison.json").read_text())
             self.assertEqual(comparison["observations"][0]["type"], "audit_overlay_visual_mark")
+
+    def test_clean_sent_image_guard_rejects_red_overlay_pixels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clean_path = Path(directory) / "clean.png"
+            red_path = Path(directory) / "red.png"
+            Image.new("RGB", (4, 4), "white").save(clean_path)
+            red_image = Image.new("RGB", (4, 4), "white")
+            red_image.putpixel((1, 1), (255, 0, 0))
+            red_image.save(red_path)
+
+            ensure_sent_images_are_clean({"answerCrop": clean_path}, ["answerCrop"])
+            with self.assertRaisesRegex(RuntimeError, "diagnostic red pixels"):
+                ensure_sent_images_are_clean({"answerCrop": red_path}, ["answerCrop"])
+
+    def test_low_overall_confidence_is_ignored_when_lines_are_confident(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": ["x = 4"],
+                "lineObservations": [{"lineIndex": 0, "latex": "x = 4", "confidence": 0.95}],
+                "visualMarks": [],
+                "overallConfidence": 0.2,
+                "notes": "overall low but line is clear",
+            })
+            summary = service.run_audit(audit_payload(), "audit_low_overall_confident_lines")
+
+            self.assertEqual(summary["discrepancyCount"], 0)
+            self.assertNotIn("vlm_low_confidence", summary["discrepancyTypes"])
+
+    def test_low_line_confidence_still_records_quality_discrepancy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = service_for(directory, {
+                "latexLines": ["x = 4"],
+                "lineObservations": [{"lineIndex": 0, "latex": "x = 4", "confidence": 0.4}],
+                "visualMarks": [],
+                "overallConfidence": 0.95,
+                "notes": "line confidence is low",
+            })
+            summary = service.run_audit(audit_payload(), "audit_low_line_confidence")
+
+            self.assertEqual(summary["discrepancyTypes"], ["vlm_low_confidence"])
 
     def test_evaluate_expression_vlm_transcript_uses_math_grader(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -258,10 +318,17 @@ class AuditServiceTests(unittest.TestCase):
             self.assertEqual(second["failureKind"], "vlm_timeout")
             self.assertEqual(third["comparisonStatus"], "skipped")
             self.assertEqual(third["failureKind"], "vlm_circuit_open")
-            self.assertEqual(third["discrepancyTypes"], [])
+            self.assertEqual(third["discrepancyCount"], 1)
+            self.assertEqual(third["discrepancyTypes"], ["vlm_circuit_open"])
+            self.assertEqual(third["discrepancySources"], ["requesting_vlm"])
             self.assertIn("retryAfterSeconds", third)
             self.assertEqual(third["circuitState"], "open")
             self.assertGreaterEqual(third["circuitFailureCount"], 2)
+            metadata = json.loads((Path(third["auditDir"]) / "audit_metadata.json").read_text())
+            self.assertEqual(metadata["comparisonStatus"], "skipped")
+            self.assertEqual(metadata["discrepancyCount"], 1)
+            self.assertEqual(metadata["discrepancyTypes"], ["vlm_circuit_open"])
+            self.assertEqual(metadata["discrepancySources"], ["requesting_vlm"])
             self.assertEqual(suppressed["eventStage"], "suppressed")
             self.assertEqual(suppressed["comparisonStatus"], "skipped")
             self.assertEqual(suppressed["suppressedByAuditId"], "audit_timeout_3")
