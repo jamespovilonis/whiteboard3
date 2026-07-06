@@ -146,6 +146,13 @@ class RecognitionAuditService:
 
     def enqueue(self, payload: dict[str, Any]) -> dict[str, Any]:
         audit_id = build_audit_id(payload)
+        queue_depth_before = self._audit_queue_depth()
+        queued_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        queue_telemetry = {
+            "queueDepthBeforeEnqueue": queue_depth_before,
+            "queueDepthAfterEnqueue": queue_depth_before + (1 if self.settings.audit_enabled else 0),
+            "queuedAt": queued_at,
+        }
         if not self.settings.audit_enabled:
             status_payload = {
                 "auditId": audit_id,
@@ -156,9 +163,10 @@ class RecognitionAuditService:
                 "problemId": payload.get("problemId"),
                 "inputSignature": payload.get("inputSignature"),
                 "attemptId": payload.get("attemptId"),
+                "queueTelemetry": queue_telemetry,
             }
             self._set_status(audit_id, status_payload)
-            return {"auditId": audit_id, "queued": False, "disabled": True}
+            return {"auditId": audit_id, "queued": False, "disabled": True, "queueTelemetry": queue_telemetry}
         self._set_status(audit_id, {
             "auditId": audit_id,
             "status": "queued",
@@ -168,10 +176,11 @@ class RecognitionAuditService:
             "inputSignature": payload.get("inputSignature"),
             "attemptId": payload.get("attemptId"),
             "triggerReasons": payload.get("triggerReasons") or [],
-            "queuedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "queuedAt": queued_at,
+            "queueTelemetry": queue_telemetry,
         })
         self.executor.submit(self.run_audit, payload, audit_id)
-        return {"auditId": audit_id, "queued": True}
+        return {"auditId": audit_id, "queued": True, "queueTelemetry": queue_telemetry}
 
     def status(self, audit_id: str) -> dict[str, Any]:
         with self._status_lock:
@@ -286,12 +295,19 @@ class RecognitionAuditService:
         audit_id = audit_id or build_audit_id(payload)
         started_at = datetime.now(timezone.utc)
         queued_at = self._queued_at_for(audit_id) or started_at
+        queue_telemetry = self._queue_telemetry_for(audit_id)
+        queue_telemetry.update({
+            "queueDepthAtStart": self._audit_queue_depth(),
+            "startedAt": started_at.isoformat().replace("+00:00", "Z"),
+            "queueMs": round((started_at - queued_at).total_seconds() * 1000, 1),
+        })
         if self._should_suppress_circuit_duplicate(payload):
             summary = self._write_suppressed_circuit_event(
                 audit_id=audit_id,
                 payload=payload,
                 queued_at=queued_at,
                 started_at=started_at,
+                queue_telemetry=queue_telemetry,
             )
             self._set_status(audit_id, {
                 "auditId": audit_id,
@@ -306,6 +322,7 @@ class RecognitionAuditService:
                 "failureKind": "vlm_circuit_open",
                 "retryAfterSeconds": summary.get("retryAfterSeconds"),
                 "suppressedByAuditId": summary.get("suppressedByAuditId"),
+                "queueTelemetry": queue_telemetry,
             })
             return summary
 
@@ -323,6 +340,7 @@ class RecognitionAuditService:
             "auditDir": str(audit_dir),
             "queuedAt": queued_at.isoformat().replace("+00:00", "Z"),
             "startedAt": started_at.isoformat().replace("+00:00", "Z"),
+            "queueTelemetry": queue_telemetry,
         })
 
         input_payload = sanitize_json(payload)
@@ -366,6 +384,7 @@ class RecognitionAuditService:
             latency_samples,
             "vlmAuditQueue",
             (started_at - queued_at).total_seconds() * 1000,
+            queue_telemetry,
         )
 
         try:
@@ -493,6 +512,7 @@ class RecognitionAuditService:
                 retry_after_seconds=retry_after_seconds,
                 latency=latency_summary,
                 circuit_health=circuit_health,
+                queue_telemetry=queue_telemetry,
             ))
             summary = build_event_summary(
                 audit_id=audit_id,
@@ -517,6 +537,7 @@ class RecognitionAuditService:
                 retry_after_seconds=retry_after_seconds,
                 latency=latency_summary,
                 circuit_health=circuit_health,
+                queue_telemetry=queue_telemetry,
             )
             append_jsonl(self.log_dir / "audit_events.jsonl", summary)
         except Exception as exc:
@@ -536,6 +557,7 @@ class RecognitionAuditService:
                 "startedAt": started_at.isoformat().replace("+00:00", "Z"),
                 "completedAt": completed_at.isoformat().replace("+00:00", "Z"),
                 "runElapsedSeconds": round((completed_at - started_at).total_seconds(), 3),
+                "queueTelemetry": queue_telemetry,
             }
             append_jsonl(self.log_dir / "audit_events.jsonl", summary)
         self._set_status(audit_id, {
@@ -554,6 +576,7 @@ class RecognitionAuditService:
             **feedback_summary_fields(feedback),
             "completedAt": summary.get("completedAt"),
             "latency": summary.get("latency"),
+            "queueTelemetry": queue_telemetry,
         })
         return summary
 
@@ -606,6 +629,19 @@ class RecognitionAuditService:
         except ValueError:
             return None
 
+    def _queue_telemetry_for(self, audit_id: str) -> dict[str, Any]:
+        with self._status_lock:
+            telemetry = self._statuses.get(audit_id, {}).get("queueTelemetry") or {}
+        return dict(telemetry) if isinstance(telemetry, dict) else {}
+
+    def _audit_queue_depth(self) -> int:
+        with self._status_lock:
+            return sum(
+                1
+                for status in self._statuses.values()
+                if status.get("queued") and not status.get("done")
+            )
+
     def _should_suppress_circuit_duplicate(self, payload: dict[str, Any]) -> bool:
         if self._vlm_circuit_remaining_seconds() <= 0:
             return False
@@ -625,6 +661,7 @@ class RecognitionAuditService:
         payload: dict[str, Any],
         queued_at: datetime,
         started_at: datetime,
+        queue_telemetry: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         completed_at = datetime.now(timezone.utc)
         signature = str(payload.get("inputSignature") or "").strip()
@@ -637,6 +674,10 @@ class RecognitionAuditService:
             "startedAt": started_at.isoformat().replace("+00:00", "Z"),
             "completedAt": completed_at.isoformat().replace("+00:00", "Z"),
             "queueMs": round((started_at - queued_at).total_seconds() * 1000, 1),
+            "queueTelemetry": sanitize_json(queue_telemetry or {}),
+            "queueDepthBeforeEnqueue": (queue_telemetry or {}).get("queueDepthBeforeEnqueue"),
+            "queueDepthAfterEnqueue": (queue_telemetry or {}).get("queueDepthAfterEnqueue"),
+            "queueDepthAtStart": (queue_telemetry or {}).get("queueDepthAtStart"),
             "runElapsedSeconds": round((completed_at - started_at).total_seconds(), 3),
             "eventStage": "suppressed",
             "problemId": payload.get("problemId"),
@@ -1311,6 +1352,7 @@ def build_event_summary(
     retry_after_seconds: float | None,
     latency: Optional[dict[str, Any]] = None,
     circuit_health: Optional[dict[str, Any]] = None,
+    queue_telemetry: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     discrepancies = comparison.get("discrepancies") or []
     observations = comparison.get("observations") or []
@@ -1324,6 +1366,10 @@ def build_event_summary(
         "startedAt": started_at.isoformat().replace("+00:00", "Z"),
         "completedAt": completed_at.isoformat().replace("+00:00", "Z"),
         "queueMs": round((started_at - queued_at).total_seconds() * 1000, 1),
+        "queueTelemetry": sanitize_json(queue_telemetry or {}),
+        "queueDepthBeforeEnqueue": (queue_telemetry or {}).get("queueDepthBeforeEnqueue"),
+        "queueDepthAfterEnqueue": (queue_telemetry or {}).get("queueDepthAfterEnqueue"),
+        "queueDepthAtStart": (queue_telemetry or {}).get("queueDepthAtStart"),
         "runElapsedSeconds": round((completed_at - started_at).total_seconds(), 3),
         "eventStage": "terminal",
         "problemId": payload.get("problemId"),
@@ -1356,6 +1402,7 @@ def build_event_summary(
         "request_id": last_attempt.get("request_id"),
         "queue_ms": last_attempt.get("queue_ms"),
         "inference_ms": last_attempt.get("inference_ms"),
+        "vlmRequestLifecycle": vlm_request_lifecycle(attempts),
         "attached_images": list(attached_images),
         "vlmRequestProfile": vlm_request_profile,
         "effectiveNormalSampleRate": effective_normal_sample_rate(settings),
@@ -1391,6 +1438,7 @@ def build_audit_metadata(
     retry_after_seconds: float | None,
     latency: Optional[dict[str, Any]] = None,
     circuit_health: Optional[dict[str, Any]] = None,
+    queue_telemetry: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     last_attempt = attempts[-1] if attempts else {}
     discrepancies = comparison.get("discrepancies") or []
@@ -1417,6 +1465,10 @@ def build_audit_metadata(
         "startedAt": started_at.isoformat().replace("+00:00", "Z"),
         "completedAt": completed_at.isoformat().replace("+00:00", "Z"),
         "queueMs": round((started_at - queued_at).total_seconds() * 1000, 1),
+        "queueTelemetry": sanitize_json(queue_telemetry or {}),
+        "queueDepthBeforeEnqueue": (queue_telemetry or {}).get("queueDepthBeforeEnqueue"),
+        "queueDepthAfterEnqueue": (queue_telemetry or {}).get("queueDepthAfterEnqueue"),
+        "queueDepthAtStart": (queue_telemetry or {}).get("queueDepthAtStart"),
         "runElapsedSeconds": round((completed_at - started_at).total_seconds(), 3),
         "comparisonStatus": comparison.get("status"),
         "discrepancyCount": len(discrepancies),
@@ -1444,6 +1496,7 @@ def build_audit_metadata(
         "vlm_queue_ms": last_attempt.get("queue_ms"),
         "inferenceMs": last_attempt.get("inference_ms"),
         "inference_ms": last_attempt.get("inference_ms"),
+        "vlmRequestLifecycle": vlm_request_lifecycle(attempts),
         "attachedImages": list(attached_images),
         "attached_images": list(attached_images),
         "vlmRequestProfile": vlm_request_profile,
@@ -1456,6 +1509,31 @@ def build_audit_metadata(
         **({"retryAfterSeconds": retry_after_seconds} if retry_after_seconds is not None else {}),
         "annotationAttachments": flattened_attachments,
         "annotation_attachments": flattened_attachments,
+    }
+
+
+def vlm_request_lifecycle(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    compact_attempts: list[dict[str, Any]] = []
+    for attempt in attempts or []:
+        if not isinstance(attempt, dict):
+            continue
+        compact_attempts.append(sanitize_json({
+            "attemptIndex": attempt.get("attemptIndex"),
+            "attempt": attempt.get("attempt"),
+            "status": attempt.get("status"),
+            "failureKind": attempt.get("failureKind"),
+            "failureStage": attempt.get("failureStage"),
+            "requestId": attempt.get("request_id") or attempt.get("requestId"),
+            "requestStartedAt": attempt.get("requestStartedAt"),
+            "requestCompletedAt": attempt.get("requestCompletedAt"),
+            "requestElapsedMs": attempt.get("requestElapsedMs"),
+            "retryReason": attempt.get("retryReason"),
+            "attachedImages": attempt.get("attachedImages") or [],
+            "vlmRequestProfile": attempt.get("vlmRequestProfile"),
+        }))
+    return {
+        "attemptCount": len(compact_attempts),
+        "attempts": compact_attempts,
     }
 
 

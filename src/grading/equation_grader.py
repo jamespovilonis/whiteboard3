@@ -1587,6 +1587,10 @@ def expression_equals_repair_candidates(text: str) -> list[str]:
         return []
 
     repairs: list[str] = []
+    trailing_equals_repair = expression_trailing_equals_repair_candidate(raw)
+    if trailing_equals_repair:
+        repairs.append(trailing_equals_repair)
+
     for index, char in enumerate(raw):
         if char not in "+-":
             continue
@@ -1597,6 +1601,20 @@ def expression_equals_repair_candidates(text: str) -> list[str]:
             continue
         repairs.append(candidate)
     return list(dict.fromkeys(repairs))
+
+
+def expression_trailing_equals_repair_candidate(text: str) -> Optional[str]:
+    parts = split_top_level_equals(text)
+    if len(parts) != 2:
+        return None
+    left, right = parts
+    if not left.strip() or right.strip():
+        return None
+    try:
+        parse_expression(left)
+    except GradingParseFailure:
+        return None
+    return left.strip()
 
 
 def is_binary_additive_operator(text: str, index: int) -> bool:
@@ -1689,11 +1707,27 @@ def clear_expression_completion_credit(selected_by_line: list[dict[str, Any]]) -
     for step in selected_by_line:
         if step.get("classification") != "valid_step":
             continue
+        finality_fields = not_answer().public_fields()
+        if trailing_equals_setup_repair_step(step):
+            finality_fields = {
+                "answerFinality": "unsimplified",
+                "countsTowardCompletion": False,
+                "finalityReason": step.get("finalityReason") or "answer is equivalent but not fully simplified",
+            }
         step.update({
             "solutionCoverage": "none",
             "_matched_indices": (),
-            **not_answer().public_fields(),
+            **finality_fields,
         })
+
+
+def trailing_equals_setup_repair_step(step: dict[str, Any]) -> bool:
+    source = str((step.get("ocrRepair") or {}).get("source") or "")
+    if source not in {"expression-equals-repair", "simplification-equals-repair"}:
+        return False
+    original = str((step.get("ocrRepair") or {}).get("originalLatex") or step.get("studentLatex") or "").strip()
+    repaired = str((step.get("ocrRepair") or {}).get("repairedLatex") or step.get("repairedLatex") or "").strip()
+    return bool(original.endswith("=") and not original.endswith("==") and repaired)
 
 
 def mark_expression_line_final(

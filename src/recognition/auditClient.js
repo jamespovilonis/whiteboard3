@@ -40,6 +40,16 @@ export function getRecognitionAuditDecision(result = {}, options = {}) {
   }
   if (hasCandidateSelectionConflict(result)) {
     triggerReasons.push('candidate_selection_conflict');
+    triggerReasons.push('candidate_present_not_selected');
+  }
+  if (hasRowFragmentation(result)) {
+    triggerReasons.push('row_fragmentation');
+  }
+  if (hasInlineDigitSpacing(result)) {
+    triggerReasons.push('inline_digit_spacing');
+  }
+  if (hasCrossedOutWork(result)) {
+    triggerReasons.push('crossed_out_work');
   }
 
   if (triggerReasons.length > 0) {
@@ -176,12 +186,15 @@ export function compactRecognitionResult(result = {}) {
     candidatePredictions: (result.candidatePredictions || []).map(compactLine),
     selectionSummary: compactSelectionSummary(result),
     annotationAttachments: compactAnnotationAttachments(result),
+    auditSignals: compactAuditSignals(result),
     segmentation: {
       selected: (result.segmentation?.selected || []).map(compactCandidate),
       candidates: (result.segmentation?.candidates || []).map(compactCandidate),
       partitions: clonePlain(result.segmentation?.partitions || {}),
       parentCandidateId: result.segmentation?.parentCandidateId || null,
-      ocrSelectedCandidateIds: (result.segmentation?.ocrSelectedCandidateIds || []).slice()
+      ocrSelectedCandidateIds: (result.segmentation?.ocrSelectedCandidateIds || []).slice(),
+      history: clonePlain(result.segmentation?.history || result.segmentationHistory || result.realtime?.segmentationHistory || []),
+      phaseHistory: clonePlain(result.segmentation?.phaseHistory || result.realtime?.segmentationPhaseHistory || [])
     }
   };
 }
@@ -310,6 +323,7 @@ function compactLine(line = {}) {
     tightBbox: clonePlain(line.tightBbox || null),
     latex: line.latex || '',
     acceptedLatex: line.acceptedLatex || '',
+    gradingLatex: line.gradingLatex || '',
     ocrLatex: line.ocrLatex || '',
     excludedFromGrading: Boolean(line.excludedFromGrading),
     candidates: (line.candidates || []).slice(0, 5).map(compactOcrCandidate),
@@ -318,6 +332,7 @@ function compactLine(line = {}) {
     contextualSemantic: clonePlain(line.contextualSemantic || null),
     sequentialSemantic: clonePlain(line.sequentialSemantic || null),
     ocrRepair: clonePlain(line.ocrRepair || null),
+    gradingNormalization: clonePlain(line.gradingNormalization || null),
     evidenceScore: Number.isFinite(Number(line.evidenceScore)) ? Number(line.evidenceScore) : null,
     selectedLineIndex: line.selectedLineIndex ?? null,
     discarded: Boolean(line.discarded),
@@ -702,6 +717,55 @@ function hasCandidateSelectionConflict(result = {}) {
   });
 }
 
+function hasRowFragmentation(result = {}) {
+  const lines = (Array.isArray(result.lines) ? result.lines : [])
+    .filter((line) => !line?.excludedFromGrading)
+    .filter((line) => String(line?.acceptedLatex || line?.latex || line?.ocrLatex || '').trim())
+    .filter((line) => normalizedBox(line?.tightBbox || null));
+  if (lines.length < 4) return false;
+
+  const shortFragments = lines.filter((line) => {
+    const compact = String(line?.acceptedLatex || line?.latex || line?.ocrLatex || '').replace(/\s+/g, '');
+    return compact.length <= 2 || /^[=+\-*/]$/.test(compact);
+  });
+  if (shortFragments.length < 3) return false;
+
+  return shortFragments.some((line, index) => (
+    shortFragments.slice(index + 1).some((other) => boxesSameRow(line?.tightBbox, other?.tightBbox))
+  ));
+}
+
+function hasInlineDigitSpacing(result = {}) {
+  const values = [
+    ...(Array.isArray(result.latexLines) ? result.latexLines : []),
+    ...(Array.isArray(result.lines) ? result.lines.map((line) => line?.acceptedLatex || line?.latex || line?.ocrLatex || '') : []),
+  ];
+  return values.some((latex) => /(?:\d\s+\d)|(?:\d\s*\.\s*\d\s+\d)/.test(String(latex || '')));
+}
+
+function hasCrossedOutWork(result = {}) {
+  const values = [
+    ...(Array.isArray(result.lines) ? result.lines : []),
+    ...(Array.isArray(result.candidatePredictions) ? result.candidatePredictions : []),
+  ];
+  return values.some((line) => (
+    line?.ocrRepair?.source === 'crossed-out-work' ||
+    line?.visualIntent === 'crossed_out'
+  )) || (Array.isArray(result.selectionRescue) && result.selectionRescue.some((item) => item?.reason === 'crossed_out_work'));
+}
+
+function compactAuditSignals(result = {}) {
+  return {
+    rowFragmentation: hasRowFragmentation(result),
+    inlineDigitSpacing: hasInlineDigitSpacing(result),
+    crossedOutWork: hasCrossedOutWork(result),
+    candidatePresentNotSelected: hasCandidateSelectionConflict(result),
+    detachedOperationAnnotation: hasDetachedOperationAnnotation(result),
+    unreadOrEmptyLine: hasUnreadLine(result),
+    lowConfidenceLine: hasLowConfidenceLine(result),
+  };
+}
+
 function detachedOperationOperand(latex = '') {
   const normalized = String(latex || '')
     .replace(/\\cdot/g, '*')
@@ -739,6 +803,17 @@ function boxesOverlap(left, right) {
   const overlapArea = (xMax - xMin) * (yMax - yMin);
   const smallerArea = Math.min((a.xMax - a.xMin) * (a.yMax - a.yMin), (b.xMax - b.xMin) * (b.yMax - b.yMin));
   return smallerArea > 0 ? overlapArea / smallerArea : 0;
+}
+
+function boxesSameRow(left, right) {
+  const a = normalizedBox(left);
+  const b = normalizedBox(right);
+  if (!a || !b) return false;
+  const yMin = Math.max(a.yMin, b.yMin);
+  const yMax = Math.min(a.yMax, b.yMax);
+  if (yMax <= yMin) return false;
+  const smallerHeight = Math.min(a.yMax - a.yMin, b.yMax - b.yMin);
+  return smallerHeight > 0 && (yMax - yMin) / smallerHeight >= 0.35;
 }
 
 function normalizedBox(value) {

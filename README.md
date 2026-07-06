@@ -1,33 +1,52 @@
 # Whiteboard 3
 
-Whiteboard 3 is a Vite + React frontend for a large pannable math whiteboard. React owns UI state and composition; plain JavaScript modules own canvas drawing, stroke smoothing, erasing, history, viewport math, and problem-flow geometry.
+Whiteboard 3 is a Vite + React math whiteboard. React owns application state and UI composition; plain JavaScript modules own canvas drawing, stroke smoothing, erasing, undo/redo, viewport math, recognition handoff, and problem-flow geometry. A local FastAPI gateway handles OCR/model proxying, semantic scoring, grading, VLM audit logging, and short math feedback.
+
+## Project Layout
+
+- `src/`: frontend app, whiteboard engine, recognition clients, grading clients, feedback client, and FastAPI backend.
+- `src/whiteboard/`: canvas engine, renderer, stroke store, smoothing, geometry, and viewport helpers.
+- `src/recognition/`: browser recognition pipeline, line segmentation, OCR/semantic/audit clients, rasterization, and latency telemetry.
+- `testing/`: Python and Node regression suites, synthetic and real-handwriting fixtures, live OCR matrix runners, audit summarizers, and feedback/audit service tests.
+- `e2e/`: Playwright flows for mocked recognition, custom problems, real OCR smoke/matrix runs, temporal writing, and real-handwriting traces.
+- `ops/issue-ledger/`: canonical bug ledger used by audit, implementation, verification, and weekly-status work.
+- `scripts/`: local server orchestration and issue-ledger maintenance commands.
 
 ## Run Locally
 
-Install dependencies once:
+Install frontend dependencies once:
 
 ```sh
 npm install
 ```
 
-Start the dev server:
+Install Python test/server dependencies when working on recognition, grading, audit, or feedback:
+
+```sh
+python3 -m pip install -r testing/requirements.txt
+```
+
+Start only the Vite app:
 
 ```sh
 npm run dev
 ```
 
-The app is served by Vite. Open the URL printed in the terminal, usually `http://localhost:5500/`. If another server already uses port `5500`, Vite may choose another port.
+The app is usually served at `http://localhost:5500/`. Vite may choose another port if `5500` is busy.
 
-To start the OCR server, Whiteboard API, and app together while OCR still lives
-in `../whiteboard_2`, run:
+Start the legacy OCR server from `../whiteboard_2`, the Whiteboard FastAPI gateway, and Vite together:
 
 ```sh
 npm run dev:all
 ```
 
-Leave that terminal open. Press `Ctrl+C` there to stop all three processes.
+`dev:all` starts:
 
-If something is already using the local dev ports, stop the old servers with:
+- OCR/DBNet/CoMER upstream on `http://127.0.0.1:8000`
+- Whiteboard API gateway on `http://127.0.0.1:8010`
+- Vite on `http://localhost:5500`
+
+Set `WHITEBOARD_2_DIR=/path/to/whiteboard_2` if the OCR server does not live next to this repo. Stop old local servers with:
 
 ```sh
 npm run dev:stop
@@ -35,9 +54,15 @@ npm run dev:stop
 
 ## Recognition API
 
-OCR, semantic scoring, and grading requests go through a FastAPI backend. During
-local experiments, run the CoMER/DBNet model API on port `8000`, then start the
-whiteboard API on port `8010`:
+The browser defaults to the current page hostname on port `8010`. Override it with:
+
+```sh
+VITE_API_URL=http://127.0.0.1:8010 npm run dev
+```
+
+`VITE_OCR_API_URL` is still accepted as a compatibility fallback.
+
+To run the gateway manually after starting a CoMER/DBNet API on port `8000`:
 
 ```sh
 python3 -m src.server.app \
@@ -46,18 +71,89 @@ python3 -m src.server.app \
   --semantic-timeout 2.5
 ```
 
-The browser defaults to the current page hostname on port `8010`. Set
-`VITE_API_URL` to override it:
+The gateway provides local `/score-latex-candidates`, `/grade-equation-work`, `/grade-math-work`, `/feedback/math-work`, `/audit-recognition`, `/audit-recognition-feedback`, `/audit-recognition-note`, and `/gateway/health` routes. It proxies `/recognize`, `/segment-lines`, `/segment-lines/*`, and `/health` to the configured upstream OCR server.
+
+Audit defaults are configured with `WHITEBOARD_AUDIT_*` and `VLM_AUDIT_*` environment variables. Math feedback defaults to Ollama at `http://127.0.0.1:11434` with model `qwen3:1.7b`; override with `WHITEBOARD_FEEDBACK_BASE_URL`, `WHITEBOARD_FEEDBACK_MODEL`, and `WHITEBOARD_FEEDBACK_TIMEOUT_SECONDS`.
+
+## Math Feedback JSON
+
+When submitted recognition and grading settle, the browser sends this JSON shape to `POST /feedback/math-work`:
+
+```json
+{
+  "problemId": "problem-a",
+  "problemLatex": "2x + 3 = 11",
+  "problemMetadata": {
+    "problemType": "equation-solving"
+  },
+  "inputSignature": "sig-a",
+  "attemptId": "attempt_1234abcd",
+  "grading": {
+    "status": "complete",
+    "failed": false,
+    "problem": {},
+    "steps": [],
+    "result": {
+      "problemStatus": "incorrect"
+    }
+  },
+  "fastResult": {
+    "latex": "2x = 8 \\\\ x = 5",
+    "latexLines": ["2x = 8", "x = 5"],
+    "grading": {},
+    "timing": {},
+    "detection": {},
+    "semantic": {},
+    "realtime": {},
+    "lines": [],
+    "candidatePredictions": [],
+    "selectionSummary": {},
+    "annotationAttachments": [],
+    "segmentation": {
+      "selected": [],
+      "candidates": [],
+      "partitions": {},
+      "parentCandidateId": null,
+      "ocrSelectedCandidateIds": []
+    }
+  }
+}
+```
+
+The feedback service responds with `status`, `source`, `text`, `model`, `promptVersion`, `createdAt`, `targetLine`, `targetLineSource`, `targetLineReason`, and `promptContext`; fallback/error responses also include `error` and `rejectionReason`. Correct submissions are deterministic and skip the LLM.
+
+## Testing
+
+Common checks:
 
 ```sh
-VITE_API_URL=http://127.0.0.1:8010 npm run dev
+npm run build
+npm run test:segmentation
+python3 -m unittest discover testing
+npm run test:e2e
 ```
+
+Real OCR browser tests require the gateway on `8010`:
+
+```sh
+npm run test:e2e:real:smoke
+npm run test:e2e:real:matrix
+npm run test:e2e:real:traces
+```
+
+For live OCR pipeline sweeps:
+
+```sh
+python3 testing/run_live_recognition_matrix.py --api-url http://127.0.0.1:8010
+```
+
+See `testing/README.md` for fixture generation, real-handwriting harnesses, live matrix options, and audit-log summarizers.
 
 ## Chromebook Access On The Same Wi-Fi
 
 The dev script binds Vite to `0.0.0.0`, so another device on the same network can open it.
 
-1. Start the dev server with `npm run dev`.
+1. Start the dev server with `npm run dev` or `npm run dev:all`.
 2. Find the Mac's Wi-Fi IP address:
 
 ```sh
@@ -67,8 +163,6 @@ ipconfig getifaddr en0
 3. On the Chromebook, open `http://<mac-ip>:<vite-port>/`.
 
 Example: if the Mac IP is `192.168.1.156` and Vite is running on `5500`, open `http://192.168.1.156:5500/`.
-
-If the page does not load, confirm the Chromebook is on the same Wi-Fi network and use the exact port printed by Vite.
 
 ## Keyboard Shortcuts
 

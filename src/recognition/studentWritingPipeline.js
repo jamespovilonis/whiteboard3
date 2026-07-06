@@ -616,7 +616,21 @@ export async function recognizeStudentWriting(options = {}) {
     ...candidateRescue.summary,
     ...problemInputMerge.summary
   ];
+  const spacingRepairs = applyExpressionNumericSpacingRepairs(recognizedLines, {
+    problemLatex,
+    problemMetadata
+  });
+  const crossedOutExclusion = excludeCrossedOutWorkLines(recognizedLines, {
+    strokes,
+    problemLatex,
+    problemMetadata
+  });
+  finalSelectionAdjustments.push(
+    ...spacingRepairs.summary,
+    ...crossedOutExclusion.summary
+  );
   const annotationExclusion = excludeDetachedVisualAnnotationLines(recognizedLines, { strokes });
+  finalSelectionAdjustments.push(...annotationExclusion.summary);
   applyFinalCandidateDebugState(candidatePredictions, recognizedLines, pipelineStartedAt);
   semantic = {
     ...semantic,
@@ -649,7 +663,7 @@ export async function recognizeStudentWriting(options = {}) {
         problemMetadata,
         lines: gradableLines.map((line) => ({
           lineIndex: line.lineIndex,
-          latex: line.acceptedLatex || line.latex || '',
+          latex: line.gradingLatex || line.acceptedLatex || line.latex || '',
           candidates: gradingPayloadCandidates(line)
         }))
       }, { apiUrl, timeoutMs: gradingTimeoutMs, signal });
@@ -696,7 +710,9 @@ export async function recognizeStudentWriting(options = {}) {
       }),
       ...(finalizationBudget.check() ? { finalizationBudgetExceeded: true } : {}),
       ...(exhaustedWithInkButNoText ? { ocrTimeoutWithInk: true } : {}),
-      ...(annotationExclusion.summary.length ? { annotationExclusionCount: annotationExclusion.summary.length } : {})
+      ...(annotationExclusion.summary.length ? { annotationExclusionCount: annotationExclusion.summary.length } : {}),
+      ...(spacingRepairs.summary.length ? { inlineDigitSpacingRepairCount: spacingRepairs.summary.length } : {}),
+      ...(crossedOutExclusion.summary.length ? { crossedOutWorkExclusionCount: crossedOutExclusion.summary.length } : {})
     }
   };
 }
@@ -2625,6 +2641,147 @@ function bracesAreBalanced(latex = '') {
   return depth === 0;
 }
 
+function applyExpressionNumericSpacingRepairs(lines = [], { problemLatex = '', problemMetadata = {} } = {}) {
+  const summary = [];
+  if (!isEvaluateNumericSpacingWork({ problemLatex, problemMetadata })) return { lines, summary };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line || line.excludedFromGrading) continue;
+    const originalLatex = String(line.acceptedLatex || line.latex || '').trim();
+    if (!originalLatex) continue;
+    const repairedLatex = normalizeSpacedNumericLatex(originalLatex);
+    if (!repairedLatex || repairedLatex === normalizeLatexWhitespace(originalLatex)) continue;
+
+    line.gradingLatex = repairedLatex;
+    line.gradingNormalization = {
+      source: 'inline-digit-spacing',
+      originalLatex,
+      repairedLatex
+    };
+    summary.push({
+      action: 'repair',
+      candidateId: line.candidateId || null,
+      lineIndex: line.lineIndex ?? index,
+      reason: 'inline_digit_spacing',
+      originalLatex,
+      repairedLatex
+    });
+  }
+  return { lines, summary };
+}
+
+function normalizeSpacedNumericLatex(latex = '') {
+  let output = normalizeLatexWhitespace(latex);
+  if (!output) return output;
+  output = output.replace(/((?:\d\s*)*\d)\s*\.\s*((?:\d\s*)*\d)/g, (_match, left, right) => (
+    `${String(left || '').replace(/\s+/g, '')}.${String(right || '').replace(/\s+/g, '')}`
+  ));
+  output = output.replace(/(\d)\s+(?=\d)/g, '$1');
+  return normalizeLatexWhitespace(output);
+}
+
+function excludeCrossedOutWorkLines(lines = [], { strokes = [], problemLatex = '', problemMetadata = {} } = {}) {
+  const summary = [];
+  if (!isEvaluateOrSimplifyWork({ problemLatex, problemMetadata })) return { lines, summary };
+  if (!Array.isArray(lines) || lines.length < 2) return { lines, summary };
+
+  const allStrokes = Array.isArray(strokes) ? strokes : [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line || line.excludedFromGrading || !line.tightBbox) continue;
+    const laterVisibleLine = lines.slice(index + 1).some((item) => (
+      item &&
+      !item.excludedFromGrading &&
+      String(item.acceptedLatex || item.latex || item.ocrLatex || '').trim()
+    ));
+    if (!laterVisibleLine) continue;
+    if (!lineHasCrossedOutEvidence(line, allStrokes)) continue;
+
+    const originalLatex = String(line.acceptedLatex || line.latex || line.ocrLatex || '').trim();
+    line.excludedFromGrading = true;
+    line.acceptedLatex = '';
+    line.ocrRepair = {
+      ...(line.ocrRepair || {}),
+      source: 'crossed-out-work',
+      originalLatex,
+      repairedLatex: '',
+      annotationBbox: line.tightBbox || null
+    };
+    summary.push({
+      action: 'exclude',
+      candidateId: line.candidateId || null,
+      lineIndex: line.lineIndex ?? index,
+      reason: 'crossed_out_work',
+      originalLatex
+    });
+  }
+  return { lines, summary };
+}
+
+function isEvaluateOrSimplifyWork({ problemLatex = '', problemMetadata = {} } = {}) {
+  const metadata = problemMetadata || {};
+  const type = String(metadata.problemType || metadata.kind || metadata.mode || '').toLowerCase();
+  if (String(metadata.auditSubject || '').toLowerCase() === 'problem-input') return false;
+  if (type.includes('equation')) return false;
+  if (type.includes('evaluate') || type.includes('numeric-expression') || type.includes('simplify')) {
+    return true;
+  }
+  return Boolean(String(problemLatex || '').trim()) && !/[=<>]/.test(String(problemLatex || ''));
+}
+
+function isEvaluateNumericSpacingWork({ problemLatex = '', problemMetadata = {} } = {}) {
+  const metadata = problemMetadata || {};
+  if (String(metadata.auditSubject || '').toLowerCase() === 'problem-input') return false;
+  const type = String(metadata.problemType || metadata.kind || metadata.mode || '').toLowerCase();
+  if (type.includes('equation') || type.includes('simplify')) return false;
+  if (type.includes('evaluate') || type.includes('numeric-expression')) return true;
+  return Boolean(String(problemLatex || '').trim()) && !/[=<>A-Za-z]/.test(String(problemLatex || ''));
+}
+
+function lineHasCrossedOutEvidence(line = {}, strokes = []) {
+  const lineBox = line.tightBbox || line.bbox;
+  if (!lineBox) return false;
+  const candidateStrokes = [
+    ...(Array.isArray(strokes) ? strokes : []),
+    ...(Array.isArray(line.strokes) ? line.strokes : [])
+  ];
+  const evidence = [];
+  for (const stroke of candidateStrokes) {
+    const strokeBox = stroke?.canvasBbox || stroke?.bbox;
+    if (!strokeBox) continue;
+    if (bboxOverlapRatio(strokeBox, lineBox) < 0.18) continue;
+    const sign = crossoutStrokeSlopeSign(stroke, lineBox);
+    if (!sign) continue;
+    evidence.push({ stroke, sign });
+  }
+  const positive = evidence.some((item) => item.sign > 0);
+  const negative = evidence.some((item) => item.sign < 0);
+  return positive && negative;
+}
+
+function crossoutStrokeSlopeSign(stroke = {}, lineBox = {}) {
+  const strokeBox = stroke?.canvasBbox || stroke?.bbox;
+  if (!strokeBox || !lineBox) return 0;
+  const lineWidth = Math.max(1, bboxWidth(lineBox));
+  const lineHeight = Math.max(1, bboxHeight(lineBox));
+  const width = bboxWidth(strokeBox);
+  const height = bboxHeight(strokeBox);
+  if (width < Math.max(24, lineWidth * 0.3)) return 0;
+  if (height < Math.max(18, lineHeight * 0.3)) return 0;
+
+  const points = stroke.rawPoints || stroke.points || [];
+  if (points.length < 2) return 0;
+  const first = points[0];
+  const last = points[points.length - 1];
+  const dx = Number(last?.x) - Number(first?.x);
+  const dy = Number(last?.y) - Number(first?.y);
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return 0;
+  if (Math.abs(dx) < width * 0.55 || Math.abs(dy) < height * 0.55) return 0;
+
+  return dx * dy > 0 ? 1 : -1;
+}
+
 function excludeDetachedVisualAnnotationLines(lines = [], { strokes = [] } = {}) {
   const strokeById = new Map((strokes || []).map((stroke) => [String(stroke.id), stroke]));
   const summary = [];
@@ -4403,11 +4560,11 @@ function buildLiveGradingResult({ problemLatex = '', answerManifest = null, line
   const sawInkButNoText = (lines || []).some((line) => (
     Array.isArray(line?.strokeIds) &&
     line.strokeIds.length > 0 &&
-    !String(line?.acceptedLatex || line?.latex || '').trim()
+    !String(line?.gradingLatex || line?.acceptedLatex || line?.latex || '').trim()
   ));
   const steps = (lines || []).map((line, index) => {
     const grading = safeLineGradingForAggregation(line);
-    const studentLatex = line.acceptedLatex || line.latex || grading?.studentLatex || '';
+    const studentLatex = line.gradingLatex || line.acceptedLatex || line.latex || grading?.studentLatex || '';
     return {
       lineIndex: line.lineIndex ?? index,
       studentLatex,

@@ -1,16 +1,43 @@
-# Synthetic Math Fixtures
+# Testing And Fixture Harnesses
 
-This folder is isolated from the whiteboard app runtime. It contains pure Python
-fixture generation for handwritten-looking math boards and does not import
-frontend, browser, OCR, DBNet, CoMER, server, or model code.
+This folder contains isolated Python and Node test utilities for recognition, grading, audit, feedback, and handwriting fixtures. Runtime app code does not import fixture generators; tests and scripts import app modules where needed.
 
 ## Setup
 
 ```sh
 python3 -m pip install -r testing/requirements.txt
+npm install
 ```
 
-## Render Fixtures
+## Common Checks
+
+Run the broad Python test suite:
+
+```sh
+python3 -m unittest discover testing
+```
+
+Run the focused recognition/segmentation regression suite used before most recognition changes:
+
+```sh
+npm run test:segmentation
+```
+
+That command runs Python unit tests for real-handwriting fixtures, realistic handwriting, line segmentation, LaTeX semantics, and equation grading, then runs the Node recognition pipeline tests in `testing/test_recognition_pipeline.mjs`.
+
+Other useful checks:
+
+```sh
+npm run build
+npm run test:e2e
+npm run test:e2e:real:smoke
+npm run test:e2e:real:matrix
+npm run test:e2e:real:traces
+```
+
+Real OCR E2E commands require the FastAPI gateway on `http://127.0.0.1:8010`.
+
+## Synthetic Math Fixtures
 
 Render a single mixed-spacing multi-step algebra board:
 
@@ -30,39 +57,49 @@ Render all integral fixtures across every spacing profile:
 python3 testing/render_math_fixture.py --family integral --all-spacings
 ```
 
-Generated PNG and JSON files are written only under `testing/results/` and are
-ignored by git.
-
-Each fixture JSON stores the prompt equation as `fixture.problemLatex` and the
-student-written rows as `fixture.expectedLatexLines`. Most fixtures repeat the
-prompt as the first student row, but `algebra_prompt_context` keeps them
-separate to exercise semantic scoring against the actual problem context.
-
-## Tests
-
-```sh
-python3 -m unittest discover testing
-```
+Generated PNG and JSON files are written under `testing/results/` and are ignored by git, except for a few committed demo artifacts. Each fixture JSON stores the prompt equation as `fixture.problemLatex` and the student-written rows as `fixture.expectedLatexLines`. Most fixtures repeat the prompt as the first student row, but `algebra_prompt_context` keeps them separate to exercise semantic scoring against the actual problem context.
 
 ## Real Handwriting Trace Fixtures
 
-The committed fixtures under `testing/fixtures/real_handwriting/` are distilled
-from local VLM audit logs. They preserve anonymized board-space strokes,
-relative timing, reviewed line groups, visual-mark metadata, and both the fast
-pipeline transcript and VLM transcript.
+The committed fixtures under `testing/fixtures/real_handwriting/` are distilled from local VLM audit logs. They preserve anonymized board-space strokes, relative timing, reviewed line groups, visual-mark metadata, and both the fast pipeline transcript and VLM transcript.
 
-For generated stress fixtures that stay calibrated to real user input, use the
-realistic stroke harness instead of the LaTeX-to-contour renderer:
+Regenerate curated seed drafts from the local audit log directory:
+
+```sh
+npm run fixtures:real-handwriting
+```
+
+The distiller reads `WHITEBOARD_AUDIT_LOG_DIR` when set, otherwise it uses the local default audit log path. Review `expectedLineGroups` before committing a new trace; those groups are the CI-gated segmentation expectation. The normal segmentation suite consumes these fixtures directly:
+
+```sh
+npm run test:segmentation
+```
+
+To replay committed traces through the browser with the real OCR gateway:
+
+```sh
+npm run test:e2e:real:traces
+```
+
+To inspect the local audit log corpus without treating stale logged OCR as current behavior:
+
+```sh
+npm run audit:real-handwriting
+```
+
+This command regrades logged fast OCR transcripts and separately runs the current JS segmenter on raw strokes, so mismatches can be sorted into stale OCR, grading-policy, and current-segmentation buckets.
+
+## Realistic And Hybrid Handwriting
+
+For generated stress fixtures calibrated to real user input, use the realistic stroke harness instead of the LaTeX-to-contour renderer:
 
 ```sh
 npm run handwriting:calibration
 ```
 
-This Phase 1 report scans local audit `input.json` records when available and
-falls back to committed distilled traces in CI. It summarizes stroke count,
-point count, pressure, timing gaps, stroke and line geometry, answer/board
-extents, visual-mark rates, and non-sequential writing behavior. To save a
-report for review:
+This Phase 1 report scans local audit `input.json` records when available and falls back to committed distilled traces in CI. It summarizes stroke count, point count, pressure, timing gaps, stroke and line geometry, answer/board extents, visual-mark rates, and non-sequential writing behavior.
+
+Save a calibration report:
 
 ```sh
 python3 testing/realistic_handwriting.py \
@@ -71,7 +108,7 @@ python3 testing/realistic_handwriting.py \
   --calibration-output testing/results/real-handwriting-calibration.json
 ```
 
-To also create a generated stress fixture from real strokes:
+Create a generated stress fixture from real strokes:
 
 ```sh
 python3 testing/realistic_handwriting.py \
@@ -81,24 +118,7 @@ python3 testing/realistic_handwriting.py \
   --output testing/results/generated-mixed-marks.json
 ```
 
-The harness samples and transforms committed real traces, preserving raw point
-trajectories, pressure, timing gaps, multi-stroke groups, visual-only circled or
-crossed-out marks, scratch annotations, and non-sequential writing order. Its
-validation report compares generated per-stroke metrics against local audit
-`input.json` distributions when available, falling back to the committed
-distilled traces for CI.
-
-## Hybrid Real-Stroke Linear Equations
-
-The Phase 2/3 hybrid path starts with a curated catalog manifest:
-
-```text
-testing/fixtures/handwriting_catalog/linear_equation_atoms.json
-```
-
-Each catalog atom points at source fixture stroke IDs, so generated work still
-uses real point trajectories, pressure, timing, and multi-stroke symbol shapes.
-Generate a linear-equation trace from those atoms:
+Generate a linear-equation trace from the curated real-stroke atom catalog:
 
 ```sh
 npm run handwriting:hybrid-linear -- \
@@ -108,17 +128,7 @@ npm run handwriting:hybrid-linear -- \
   --output testing/results/hybrid_handwriting/linear.json
 ```
 
-This samples a seeded positive-integer linear equation, solves it, and emits a
-stroke-level solution using real handwriting atoms. The generated work includes
-subtraction, division, per-character variant cycling, underlined intermediate
-operation rows, a final answer, and optional visual annotations such as a
-circled final answer or crossed-out row. Use `--linear-a`, `--linear-b`, and
-`--linear-x` without `--random-linear` when a fixed equation is needed. The
-normal regression suite validates the catalog, generated fixture schema, exact
-segmentation groups, calibration bands, and a mocked browser E2E flow that
-segments, reads, and grades the generated work.
-
-Generate a broader complex-math trace from the same real-stroke catalog:
+Generate a broader complex-math trace from the same catalog:
 
 ```sh
 npm run handwriting:hybrid-complex -- \
@@ -127,14 +137,7 @@ npm run handwriting:hybrid-complex -- \
   --output testing/results/hybrid_handwriting/complex.json
 ```
 
-The complex fixture covers fractions, exponents, radicals, plus-minus answers,
-multi-line rational equation solving, and detached operation annotations. Its
-detached annotations and optional cross-out/circle marks are visual-only stroke
-groups, so the segmentation tests can verify the answer lines without grading
-the scratch marks as student work.
-
-Generate log-observed harness packs when a test needs real failure-mode shape
-rather than a newly solved equation:
+Generate log-observed harness packs when a test needs real failure-mode shape rather than a newly solved equation:
 
 ```sh
 npm run handwriting:hybrid-pack -- \
@@ -143,56 +146,16 @@ npm run handwriting:hybrid-pack -- \
   --output testing/results/hybrid_handwriting/failure-modes.json
 ```
 
-Available packs cover known discrepancy templates, handwritten problem-input
-OCR, ambiguous fraction structures, visual-intent marks, non-sequential writing,
-and bad handwriting that still represents valid math. Each pack emits
-`oracleContracts`, so end-to-end tests can assert recognition, segmentation,
-visual-intent, and grading behavior independently instead of collapsing every
-failure into a final-answer mismatch.
+Available packs cover known discrepancy templates, handwritten problem-input OCR, ambiguous fraction structures, visual-intent marks, non-sequential writing, and bad handwriting that still represents valid math. Each pack emits `oracleContracts`, so end-to-end tests can assert recognition, segmentation, visual-intent, and grading behavior independently.
 
-Write a generated-vs-real dashboard report to compare fixture distributions
-against local audit `input.json` records:
+Write a generated-vs-real dashboard report:
 
 ```sh
 npm run handwriting:dashboard -- \
   --dashboard-output testing/results/hybrid_handwriting/generator-dashboard.json
 ```
 
-The dashboard summarizes generated stroke, timing, pressure, visual-mark, and
-line-layout features beside the real audit calibration bands. It also lists the
-harness packs and visual-intent policy taxonomy used by the generator.
-
-Regenerate the curated seed drafts from the local audit log directory:
-
-```sh
-npm run fixtures:real-handwriting
-```
-
-The distiller reads `WHITEBOARD_AUDIT_LOG_DIR` when set, otherwise it uses the
-local default audit log path. Review `expectedLineGroups` before committing a
-new trace; those groups are the CI-gated segmentation expectation. The normal
-segmentation suite consumes these fixtures directly:
-
-```sh
-npm run test:segmentation
-```
-
-To replay a committed trace through the browser with the real OCR gateway:
-
-```sh
-npm run test:e2e:real:traces
-```
-
-To inspect the local audit log corpus without treating stale logged OCR as
-current behavior:
-
-```sh
-npm run audit:real-handwriting
-```
-
-This command regrades the logged fast OCR transcript and separately runs the
-current JS segmenter on raw strokes, so remaining mismatches can be sorted into
-stale OCR, grading-policy, and current-segmentation buckets.
+## Offline Segmentation Matrix
 
 Run the broader offline segmentation matrix:
 
@@ -200,12 +163,9 @@ Run the broader offline segmentation matrix:
 npm run test:segmentation:matrix
 ```
 
-The matrix covers every synthetic fixture, spacing profile, stroke order, and a
-small seed set. It is slower than the normal regression suite, but useful before
-changing line-splitting heuristics.
+The matrix covers every synthetic fixture, spacing profile, stroke order, and a small seed set. It is slower than the normal regression suite, but useful before changing line-splitting heuristics.
 
-To stress line segmentation with custom uneven spacing, add named gap patterns
-or an explicit gap list:
+Stress line segmentation with custom uneven spacing:
 
 ```sh
 python3 testing/run_segmentation_matrix.py --all \
@@ -216,8 +176,7 @@ python3 testing/run_segmentation_matrix.py --all \
   --seed 616 --seed 1720
 ```
 
-Use `--line-gaps 4,64,2` for a single selected problem whose line count needs
-exactly three gaps.
+Use `--line-gaps 4,64,2` for a single selected problem whose line count needs exactly three gaps.
 
 ## Live Recognition Matrix
 
@@ -227,48 +186,27 @@ When a CoMER/DBNet API is running, exercise the full detector-to-OCR path:
 python3 testing/run_live_recognition_matrix.py --api-url http://127.0.0.1:8000
 ```
 
+To test through the FastAPI gateway:
+
+```sh
+python3 testing/run_live_recognition_matrix.py --api-url http://127.0.0.1:8010
+```
+
 For a detector-only smoke run:
 
 ```sh
 python3 testing/run_live_recognition_matrix.py --skip-comer --api-url http://127.0.0.1:8000
 ```
 
-The live runner renders varied synthetic boards, posts each board to
-`/segment-lines`, feeds those detections into the JS segmenter, posts candidate
-line alternatives to `/recognize`, then scores the top-five OCR candidates with
-the SymPy semantic helper. By default it re-runs the exact-cover selector with
-those candidate scores and the first geometry-selected cover as a conservative
-baseline before reporting the final OCR lines. Candidate rescoring includes
-same-answer context from earlier line-like candidates, which lets later rows use
-the problem statement and previous student rows during selection. Selected
-candidates whose OCR times out, returns no LaTeX, or looks like a suspicious
-operation annotation are sent at a normalized initial crop height and retried at
-alternate normalized heights. Wide selected lines that still fail are split into
-horizontal chunks, with isolated equals signs classified geometrically, before
-the chunk LaTeX is concatenated. Pass `--geometry-only-selection` to recognize
-only the first geometry-selected crops. Add `--progress` when diagnosing slow
-CoMER reads; it prints each crop before sending it to the model. For broader live sweeps that
-still use semantic rescoring, pass `--max-candidate-alternatives N` or
-`--candidate-time-budget-seconds N` to bound extra non-selected candidate OCR;
-add `--extra-candidate-timeout-seconds N` to shorten each speculative CoMER
-request while keeping the selected geometry candidates on the full timeout. The
-geometry-selected candidates are always recognized first. CoMER request timeout
-arguments are clamped to the API's accepted maximum of 20 seconds, so an overly
-large exploratory timeout does not turn the OCR sweep into validation errors.
-When CoMER is
-enabled, the process fails if any selected line lacks either a matching top
-prediction or a matching semantic-best prediction. Pass `--allow-ocr-misses`
-for exploratory data collection without that failure gate. Client-side CoMER
-socket timeouts are recorded as OCR misses so the suite can still report
-partial results. The live runner accepts the same `--gap-pattern` and
-`--line-gaps` layout options as the offline matrix. It writes PNG/JSON fixtures,
-crops, and a summary under `testing/results/live_recognition/`. During long
-runs, the summary is checkpointed after each completed fixture record and
-marked as `running` until the final `complete` summary is written.
+The live runner renders varied synthetic boards, posts each board to `/segment-lines`, feeds detections into the JS segmenter, posts candidate line alternatives to `/recognize`, then scores top-five OCR candidates with the SymPy semantic helper. By default it re-runs exact-cover selection with those candidate scores and the first geometry-selected cover as a conservative baseline before reporting final OCR lines.
 
-For accuracy-gated sweeps, add explicit minimum rates. For example, this fails
-unless segmentation, final selected-line coverage, accepted strict OCR, and
-accepted OCR all stay perfect on the selected fixtures:
+Selected candidates whose OCR times out, returns no LaTeX, or looks like a suspicious operation annotation are sent at a normalized initial crop height and retried at alternate normalized heights. Wide selected lines that still fail are split into horizontal chunks, with isolated equals signs classified geometrically, before chunk LaTeX is concatenated.
+
+Pass `--geometry-only-selection` to recognize only the first geometry-selected crops. Add `--progress` when diagnosing slow CoMER reads. For broader live sweeps that still use semantic rescoring, pass `--max-candidate-alternatives N` or `--candidate-time-budget-seconds N` to bound extra non-selected candidate OCR; add `--extra-candidate-timeout-seconds N` to shorten speculative CoMER requests while keeping selected geometry candidates on the full timeout. CoMER request timeout arguments are clamped to the API's accepted maximum of 20 seconds.
+
+When CoMER is enabled, the process fails if any selected line lacks either a matching top prediction or a matching semantic-best prediction. Pass `--allow-ocr-misses` for exploratory data collection. Client-side CoMER socket timeouts are recorded as OCR misses so the suite can still report partial results. The live runner accepts the same `--gap-pattern` and `--line-gaps` layout options as the offline matrix. It writes PNG/JSON fixtures, crops, and a checkpointed summary under `testing/results/live_recognition/`.
+
+For accuracy-gated sweeps:
 
 ```sh
 python3 testing/run_live_recognition_matrix.py \
@@ -285,10 +223,17 @@ python3 testing/run_live_recognition_matrix.py \
   --min-accepted-match-rate 1
 ```
 
+## Feedback, Audit, And Ledger Tests
+
+- `testing/test_feedback_service.py` verifies prompt-context construction, target-line selection, Ollama response parsing, LLM rejection rules, and deterministic fallback text.
+- `testing/test_audit_service.py` verifies audit artifacts, VLM normalization, feedback attachment, metadata, latency/circuit behavior, and discrepancy classification.
+- `testing/test_issue_ledger.py` verifies `scripts/issue_ledger.py` behavior for the canonical ledger under `ops/issue-ledger/`.
+
+For P0/P1 bug work, start from an issue ID in `ops/issue-ledger/issues.json`, add or confirm a replay fixture before broad source edits, and record verification commands through `scripts/issue_ledger.py`.
+
 ## Local Recognition API
 
-To exercise OCR, segmentation, and semantic scoring through one browser API URL,
-start the CoMER/DBNet server, then run:
+To exercise OCR, segmentation, semantic scoring, grading, feedback, and audit through one browser API URL, start the CoMER/DBNet server, then run:
 
 ```sh
 python3 -m src.server.app \
@@ -303,8 +248,4 @@ Then start the app with:
 VITE_API_URL=http://127.0.0.1:8010 npm run dev
 ```
 
-The FastAPI backend handles `/score-latex-candidates`, `/grade-equation-work`,
-and `/grade-math-work` directly and proxies `/recognize`, `/segment-lines`,
-`/health`, and `/segment-lines/health` to the upstream model server. The
-semantic timeout keeps malformed or unusually complex CoMER candidates from
-blocking the browser pipeline.
+The FastAPI backend handles `/score-latex-candidates`, `/grade-equation-work`, `/grade-math-work`, `/feedback/math-work`, `/audit-recognition`, `/audit-recognition-feedback`, `/audit-recognition-note`, and `/gateway/health` directly. It proxies `/recognize`, `/segment-lines`, `/segment-lines/*`, `/health`, and `/segment-lines/health` to the upstream model server. The semantic timeout keeps malformed or unusually complex CoMER candidates from blocking the browser pipeline.

@@ -5320,7 +5320,7 @@ test('incremental scheduler matches one-shot recognition on messy synthetic late
 test('student writing pipeline handles distilled real handwriting trace fixtures', async () => {
   installFakeCanvas();
   const fixtures = loadRealHandwritingFixtures();
-  assert.equal(fixtures.length, 49);
+  assert.equal(fixtures.length, 54);
   const fixturesBySlug = new Map(fixtures.map((fixture) => [fixture.slug, fixture]));
   assert.equal(
     fixturesBySlug.get('20260704t124709059757z-800c947a21')?.sourceAuditId,
@@ -5362,7 +5362,7 @@ test('student writing pipeline handles distilled real handwriting trace fixtures
     const replayMismatch = fixture.expectedReplayMismatch || null;
 
     if (replayMismatch) {
-      assert.equal(replayMismatch.issueId, 'WB3-0001', fixture.slug);
+      assert.match(replayMismatch.issueId || '', /^WB3-\d{4}$/, fixture.slug);
       assert.deepEqual(
         selectedGroups,
         (replayMismatch.selectedGroups || []).map((group) => strokeGroupKey(group)),
@@ -5378,9 +5378,12 @@ test('student writing pipeline handles distilled real handwriting trace fixtures
     assert.ok(result.lines.length > 0, fixture.slug);
     assert.ok(result.lines.length <= fixture.expectedLineGroups.length, fixture.slug);
     assert.equal(result.grading.status, 'complete', fixture.slug);
+    if (fixture.expectedReplayLatexLines) {
+      assert.deepEqual(result.latexLines, fixture.expectedReplayLatexLines, fixture.slug);
+    }
     assert.equal(
       result.grading.result?.problemStatus,
-      expectedGrading.result?.problemStatus,
+      fixture.expectedReplayProblemStatus || expectedGrading.result?.problemStatus,
       fixture.slug
     );
     assert.notEqual(result.realtime?.allFinal, false, fixture.slug);
@@ -5448,7 +5451,78 @@ test('recognition decimal candidate promotion updates accepted and aggregate lat
   assert.equal(result.lines[0].acceptedLatex, decimalLatex);
   assert.deepEqual(result.latexLines, [decimalLatex]);
   assert.equal(result.latex, decimalLatex);
-  assert.equal(result.grading.steps[0].studentLatex, decimalLatex);
+  assert.equal(result.lines[0].gradingLatex, '\\frac { 9.5 } { 2 }');
+  assert.equal(result.grading.steps[0].studentLatex, '\\frac { 9.5 } { 2 }');
+});
+
+test('student writing pipeline normalizes spaced multi-digit eval output before grading', async () => {
+  installFakeCanvas();
+  const result = await recognizeStudentWriting({
+    strokes: [stroke('eval-spaced', 0, 0, 240, 70)],
+    answerBox: { xMin: -10, yMin: -10, xMax: 270, yMax: 100 },
+    problemLatex: '2 \\times 36',
+    problemMetadata: { problemType: 'evaluate-expression' },
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    chunkFallback: false,
+    apiUrl: 'http://127.0.0.1:8010',
+    recognizeLine: async () => ({
+      latex: '2 \\times 3 6 = 7 2',
+      top: { latex: '2 \\times 3 6 = 7 2', score: 2, confidence: 0.9 },
+      candidates: [{ latex: '2 \\times 3 6 = 7 2', score: 2, confidence: 0.9 }],
+      elapsedSeconds: 0.02
+    }),
+    gradeWork: async (request) => pythonGradePayload(request)
+  });
+
+  assert.deepEqual(result.latexLines, ['2 \\times 3 6 = 7 2']);
+  assert.equal(result.lines[0].gradingLatex, '2 \\times 36 = 72');
+  assert.equal(result.lines[0].gradingNormalization?.source, 'inline-digit-spacing');
+  assert.equal(result.grading.result?.problemStatus, 'correct');
+});
+
+test('student writing pipeline excludes crossed-out eval setup before final grading', async () => {
+  installFakeCanvas();
+  const strokes = [
+    stroke('old-work', 0, 0, 190, 54),
+    diagonalStroke('cross-a', 0, 0, 190, 54, 'down'),
+    diagonalStroke('cross-b', 0, 0, 190, 54, 'up'),
+    stroke('final', 18, 160, 120, 208),
+  ];
+
+  const result = await recognizeStudentWriting({
+    strokes,
+    answerBox: { xMin: -10, yMin: -10, xMax: 230, yMax: 240 },
+    problemLatex: '0.2 + 0.11',
+    problemMetadata: { problemType: 'evaluate-expression' },
+    detectLineBands: false,
+    semanticScoring: false,
+    recognizeAlternatives: false,
+    retryRasterHeights: [],
+    semanticRetryRasterHeights: [],
+    chunkFallback: false,
+    apiUrl: 'http://127.0.0.1:8010',
+    recognizeLine: async (image) => {
+      const ids = new Set(image.strokeIds);
+      const latex = ids.has('final') ? '0 . 3 1' : '\\phi \\cdot k';
+      return {
+        latex,
+        top: { latex, score: 2, confidence: 0.9 },
+        candidates: [{ latex, score: 2, confidence: 0.9 }],
+        elapsedSeconds: 0.02
+      };
+    },
+    gradeWork: async (request) => pythonGradePayload(request)
+  });
+
+  assert.deepEqual(result.latexLines, ['0 . 3 1']);
+  assert.equal(result.lines[0].excludedFromGrading, true);
+  assert.equal(result.lines[0].ocrRepair?.source, 'crossed-out-work');
+  assert.equal(result.lines[1].gradingLatex, '0.31');
+  assert.equal(result.lines[1].gradingNormalization?.source, 'inline-digit-spacing');
+  assert.equal(result.grading.result?.problemStatus, 'correct');
 });
 
 test('segmentation ignores large enclosing circle annotation strokes', () => {
@@ -7524,6 +7598,68 @@ test('VLM audit decision catches OCR failure, timeout, and low confidence', () =
   assert.ok(decision.triggerReasons.includes('low_confidence'));
 });
 
+test('VLM audit decision catches July audit recognition hardening signals', () => {
+  const lines = [
+    auditLine({
+      lineIndex: 0,
+      candidateId: 'frag-x',
+      latex: 'x',
+      tightBbox: { xMin: 0, yMin: 0, xMax: 25, yMax: 36 },
+    }),
+    auditLine({
+      lineIndex: 1,
+      candidateId: 'frag-plus',
+      latex: '+',
+      tightBbox: { xMin: 30, yMin: 0, xMax: 46, yMax: 36 },
+    }),
+    auditLine({
+      lineIndex: 2,
+      candidateId: 'frag-two',
+      latex: '2',
+      tightBbox: { xMin: 55, yMin: 0, xMax: 78, yMax: 36 },
+    }),
+    auditLine({
+      lineIndex: 3,
+      candidateId: 'spaced-digits',
+      latex: '2 \\times 3 6 = 7 2',
+      tightBbox: { xMin: 0, yMin: 70, xMax: 190, yMax: 110 },
+    }),
+    auditLine({
+      lineIndex: 4,
+      candidateId: 'crossed',
+      latex: '',
+      acceptedLatex: '',
+      ocrRepair: { source: 'crossed-out-work', originalLatex: '\\phi \\cdot k', repairedLatex: '' },
+      excludedFromGrading: true,
+      tightBbox: { xMin: 0, yMin: 130, xMax: 160, yMax: 175 },
+    }),
+  ];
+  const discarded = auditLine({
+    candidateId: 'discarded-final',
+    latex: '72',
+    tightBbox: { xMin: 0, yMin: 70, xMax: 190, yMax: 110 },
+  });
+  discarded.grading = {
+    classification: 'valid_step',
+    solutionCoverage: 'full',
+    matchedSolutions: ['72']
+  };
+
+  const decision = getRecognitionAuditDecision(auditResult({
+    problemStatus: 'correct',
+    latexLines: lines.map((line) => line.acceptedLatex || line.latex || ''),
+    lines,
+    candidatePredictions: [...lines, discarded],
+    selectionRescue: [{ reason: 'crossed_out_work' }]
+  }), { inputSignature: 'sig-july-signals' });
+
+  assert.equal(decision.shouldAudit, true);
+  assert.ok(decision.triggerReasons.includes('row_fragmentation'));
+  assert.ok(decision.triggerReasons.includes('inline_digit_spacing'));
+  assert.ok(decision.triggerReasons.includes('crossed_out_work'));
+  assert.ok(decision.triggerReasons.includes('candidate_present_not_selected'));
+});
+
 test('VLM audit decision catches correct answer set with invalid intermediate step', () => {
   const grading = {
     status: 'complete',
@@ -8349,6 +8485,19 @@ function stroke(id, xMin, yMin, xMax, yMax) {
     ],
     startTime: id.charCodeAt(0) * 100,
     endTime: id.charCodeAt(0) * 100 + 20
+  };
+}
+
+function diagonalStroke(id, xMin, yMin, xMax, yMax, direction = 'down') {
+  const base = stroke(id, xMin, yMin, xMax, yMax);
+  const rawPoints = direction === 'up'
+    ? [{ x: xMin, y: yMax }, { x: xMax, y: yMin }]
+    : [{ x: xMin, y: yMin }, { x: xMax, y: yMax }];
+  return {
+    ...base,
+    rawPoints,
+    points: rawPoints,
+    outlinePoints: rawPoints
   };
 }
 

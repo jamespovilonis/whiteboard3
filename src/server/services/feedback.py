@@ -408,12 +408,12 @@ def deterministic_fallback_feedback(context: dict[str, Any]) -> str:
     reason_sentence = f" {reason}" if reason else ""
     if status == "incorrect" and first_invalid.get("studentLatex"):
         line_number = int(first_invalid.get("lineIndex") or 0) + 1
-        return f"Line {line_number} should be: {target_line or 'a valid next line'}.{reason_sentence}"
+        return f"Revise line {line_number} to {target_line or 'a valid next line'}.{reason_sentence}"
     if status == "incomplete":
-        return f"A good next line is: {target_line or 'the next valid line'}.{reason_sentence}"
+        return f"Continue with {target_line or 'the next valid line'}.{reason_sentence}"
     if status == "not_started":
-        return f"Start with: {target_line or 'the original problem'}.{reason_sentence}"
-    return f"Use this line: {target_line or 'the next valid line'}.{reason_sentence}"
+        return f"Begin by writing {target_line or 'the original problem'}.{reason_sentence}"
+    return f"Use {target_line or 'the next valid line'} as the next math line.{reason_sentence}"
 
 
 def format_feedback_math_line(value: Any) -> str:

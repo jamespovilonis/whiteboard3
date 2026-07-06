@@ -10,7 +10,7 @@ from typing import Any
 
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "real_handwriting"
-EXPECTED_FIXTURE_COUNT = 49
+EXPECTED_FIXTURE_COUNT = 54
 
 
 class RealHandwritingFixtureSchemaTests(unittest.TestCase):

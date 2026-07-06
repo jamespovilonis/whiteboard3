@@ -836,6 +836,62 @@ class ExpressionGraderTests(unittest.TestCase):
         self.assertEqual(result["steps"][0]["countsTowardCompletion"], False)
         self.assertEqual(result["result"]["problemStatus"], "incomplete")
 
+    def test_expression_trailing_equals_is_incomplete_setup_line(self):
+        result = grade_math_payload({
+            "problemType": "evaluate-expression",
+            "problemLatex": "36*2",
+            "lines": [{"latex": "36*2="}],
+        })
+
+        self.assertEqual(result["steps"][0]["classification"], "valid_step")
+        self.assertEqual(result["steps"][0]["answerFinality"], "unsimplified")
+        self.assertEqual(result["steps"][0]["countsTowardCompletion"], False)
+        self.assertEqual(result["steps"][0]["studentLatex"], "36*2=")
+        self.assertEqual(result["steps"][0]["repairedLatex"], "36*2")
+        self.assertEqual(result["steps"][0]["ocrRepair"]["source"], "expression-equals-repair")
+        self.assertEqual(result["result"]["problemStatus"], "incomplete")
+
+    def test_expression_complete_equality_chain_with_trailing_equals_setup(self):
+        horizontal = grade_math_payload({
+            "problemType": "evaluate-expression",
+            "problemLatex": "36*2",
+            "lines": [{"latex": "36*2=72"}],
+        })
+        vertical = grade_math_payload({
+            "problemType": "evaluate-expression",
+            "problemLatex": "36*2",
+            "lines": [
+                {"latex": "36*2="},
+                {"latex": "72"},
+            ],
+        })
+
+        self.assertEqual(horizontal["result"]["problemStatus"], "correct")
+        self.assertEqual(horizontal["steps"][0]["answerFinality"], "final")
+        self.assertEqual(vertical["result"]["problemStatus"], "correct")
+        self.assertEqual(vertical["steps"][0]["answerFinality"], "unsimplified")
+        self.assertEqual(vertical["steps"][1]["answerFinality"], "final")
+
+    def test_expression_trailing_equals_repair_rejects_malformed_chains(self):
+        result = grade_math_payload({
+            "problemType": "evaluate-expression",
+            "problemLatex": "36*2",
+            "lines": [{"latex": "36*2=="}],
+        })
+
+        self.assertNotEqual(result["result"]["problemStatus"], "correct")
+        self.assertNotIn("ocrRepair", result["steps"][0])
+
+    def test_expression_trailing_equals_repair_does_not_apply_to_equations(self):
+        result = grade_math_payload({
+            "problemType": "equation-solving",
+            "problemLatex": "x + 1 = 3",
+            "lines": [{"latex": "x + 1 ="}],
+        })
+
+        self.assertNotEqual(result["result"]["problemStatus"], "correct")
+        self.assertNotIn("ocrRepair", result["steps"][0])
+
     def test_expression_rejects_equation_format(self):
         result = grade_expression_payload({
             "problemLatex": "5 - 2",
@@ -1140,6 +1196,21 @@ class SimplificationGraderTests(unittest.TestCase):
         self.assertEqual(factored["steps"][0]["classification"], "valid_step")
         self.assertEqual(factored["steps"][0]["answerFinality"], "unsimplified")
         self.assertEqual(factored["result"]["problemStatus"], "incomplete")
+
+    def test_simplification_trailing_equals_is_incomplete_setup_line(self):
+        result = grade_math_payload({
+            "problemType": "simplify-expression",
+            "problemLatex": "(x + 1)^2",
+            "lines": [{"latex": "(x+1)^2="}],
+        })
+
+        self.assertEqual(result["steps"][0]["classification"], "valid_step")
+        self.assertEqual(result["steps"][0]["answerFinality"], "unsimplified")
+        self.assertEqual(result["steps"][0]["countsTowardCompletion"], False)
+        self.assertEqual(result["steps"][0]["studentLatex"], "(x+1)^2=")
+        self.assertEqual(result["steps"][0]["repairedLatex"], "(x+1)^2")
+        self.assertEqual(result["steps"][0]["ocrRepair"]["source"], "simplification-equals-repair")
+        self.assertEqual(result["result"]["problemStatus"], "incomplete")
 
     def test_simplification_accepts_cancelled_rational_final_expression(self):
         result = grade_math_payload({

@@ -1,12 +1,44 @@
 # Whiteboard 3 Issue Ledger
 
-Generated from `issues.json` at `2026-07-05T12:00:50Z`.
+Generated from `issues.json` at `2026-07-06T12:37:42Z`.
 
 ## Actionable Issues
 
 No actionable issues.
 
 ## Recently Verified
+
+### WB3-0026 - July VLM audits expose row fragmentation and inline digit OCR gaps
+
+- Severity: `P1`
+- Status: `verified_by_replay`
+- Category: `recognition`
+- Key: `july-vlm-row-fragmentation-inline-digit-ocr`
+- Last seen: `2026-07-06T12:37:14Z`
+- Next action: Use July 5 replay mismatches to fix same-row equation reconstruction and top-OCR 72 vs 12 candidate selection before closure.
+- Evidence:
+  - `audit_20260705T164639168829Z_f969c78965`: Audit comparison evidence (/Users/jpovj/Documents/dev/whiteboard_3/audit_20260705T164639168829Z_f969c78965)
+- Fixtures:
+  - `testing/fixtures/real_handwriting/20260705t163713207519z-5a9b5d0990.json`
+  - `testing/fixtures/real_handwriting/20260705t164226452164z-f8ea64ff06.json`
+  - `testing/fixtures/real_handwriting/20260705t164639168829z-f969c78965.json`
+  - `testing/fixtures/real_handwriting/20260705t165053608505z-ef8a920ac9.json`
+  - `testing/fixtures/real_handwriting/20260705t163518428544z-beef1690ae.json`
+- Verification:
+  - `passed` `npm run test:segmentation`
+  - `passed` `npm run build`
+
+### WB3-0027 - Evaluate and simplify trailing equals setup lines
+
+- Severity: `P1`
+- Status: `verified_by_replay`
+- Category: `grading`
+- Key: `evaluate-simplify-trailing-equals-setup`
+- Last seen: `2026-07-06T12:37:14Z`
+- Next action: Watch live audits for evaluate/simplify rows ending in equals; keep 36*2= and (x+1)^2= replay tests.
+- Verification:
+  - `passed` `python3 -m unittest testing.test_equation_grader testing.test_feedback_service testing.test_audit_service`
+  - `passed` `npm run build`
 
 ### WB3-0001 - Candidate/grading path overtrusts ambiguous final-answer OCR
 
@@ -61,9 +93,10 @@ No actionable issues.
   - `audit_20260703T144456547842Z_a8394ed135`: VLM audit circuit open after repeated timeouts; retry in 300s; types=vlm_unavailable (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T144456547842Z_a8394ed135/comparison.json)
   - `audit_20260704T132042116096Z_47e6686c30`: timed out; fast=incomplete vlm=None; types=vlm_timeout (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-04/audit_20260704T132042116096Z_47e6686c30/comparison.json)
 - Verification:
-  - `passed` `python3 -m unittest testing.test_audit_service`
   - `passed` `python3 -m unittest testing.test_audit_service testing.test_feedback_service testing.test_issue_ledger`
   - `passed` `node --test --test-name-pattern "distilled real handwriting trace fixtures|decimal|VLM audit" testing/test_recognition_pipeline.mjs`
+  - `passed` `npm run build`
+  - `passed` `python3 -m unittest testing.test_equation_grader testing.test_feedback_service testing.test_audit_service`
   - `passed` `npm run build`
 
 ### WB3-0023 - Audit overlay boxes are reported as visual marks
@@ -98,6 +131,8 @@ No actionable issues.
 - Verification:
   - `passed` `python3 -m unittest testing.test_feedback_service`
   - `passed` `python3 -m unittest testing.test_audit_service testing.test_feedback_service testing.test_issue_ledger`
+  - `passed` `npm run build`
+  - `passed` `python3 -m unittest testing.test_equation_grader testing.test_feedback_service testing.test_audit_service`
   - `passed` `npm run build`
 
 ### WB3-0005 - Inverse-trig manifest parse failure turns partial work into incorrect
@@ -145,34 +180,6 @@ No actionable issues.
   - `testing/fixtures/real_handwriting/intermediate-algebra-row-retained.json`
 - Verification:
   - `passed` `node --test --test-name-pattern "distilled real handwriting trace fixtures" testing/test_recognition_pipeline.mjs`
-
-### WB3-0012 - Fractional log bases lose their subscript braces and become multiplied arguments
-
-- Severity: `P2`
-- Status: `verified_by_replay`
-- Category: `recognition`
-- Key: `log-fraction-base-subscript-lost`
-- Last seen: `2026-07-02T21:54:12.999529Z`
-- Next action: Monitor live fractional-log-base audits for comparable recurrence.
-- Evidence:
-  - `audit_20260702T215209128186Z_2c6498c760`: Fractional log bases lose their subscript braces and become multiplied arguments ()
-- Fixtures:
-  - `testing/fixtures/real_handwriting/fractional-log-base-solve-context.json`
-- Verification:
-  - `passed` `node --test --test-name-pattern "distilled real handwriting trace fixtures" testing/test_recognition_pipeline.mjs`
-
-### WB3-0025 - Realtime segmentation status flips during grading
-
-- Severity: `P2`
-- Status: `verified_by_replay`
-- Category: `recognition-ux`
-- Key: `realtime-segmentation-status-flips`
-- Last seen: `2026-07-04T12:13:55Z`
-- Next action: Monitor live recognition telemetry for status flips after correct submissions.
-- Evidence:
-  - `audit_20260703T144210547539Z_fe7e799b0c`: timed out; fast=correct vlm=None; types=vlm_unavailable (/Users/jpovj/Documents/dev/log_whiteboard_3/2026-07-03/audit_20260703T144210547539Z_fe7e799b0c/comparison.json)
-- Verification:
-  - `passed` `node --test --test-name-pattern "realtime|segmentation|submitted|status" testing/test_recognition_pipeline.mjs`
 
 ## Workflow
 

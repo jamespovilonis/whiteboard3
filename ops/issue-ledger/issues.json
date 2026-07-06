@@ -1433,6 +1433,18 @@
             "note": "Production build passed after audit telemetry changes.",
             "result": "passed",
             "timestamp": "2026-07-05T12:00:35Z"
+          },
+          {
+            "command": "python3 -m unittest testing.test_equation_grader testing.test_feedback_service testing.test_audit_service",
+            "note": "Audit service tests cover queueTelemetry and VLM request lifecycle metadata in audit_metadata.json and audit_events summaries.",
+            "result": "passed",
+            "timestamp": "2026-07-06T12:37:42Z"
+          },
+          {
+            "command": "npm run build",
+            "note": "Production build passed after audit telemetry changes.",
+            "result": "passed",
+            "timestamp": "2026-07-06T12:37:42Z"
           }
         ],
         "live_audit": "missing",
@@ -1658,6 +1670,18 @@
             "note": "Production build passed after feedback metadata changes.",
             "result": "passed",
             "timestamp": "2026-07-05T12:00:35Z"
+          },
+          {
+            "command": "python3 -m unittest testing.test_equation_grader testing.test_feedback_service testing.test_audit_service",
+            "note": "Feedback tests cover deterministic fallback wording without old prompt-like templates.",
+            "result": "passed",
+            "timestamp": "2026-07-06T12:37:42Z"
+          },
+          {
+            "command": "npm run build",
+            "note": "Production build passed after feedback fallback wording changes.",
+            "result": "passed",
+            "timestamp": "2026-07-06T12:37:42Z"
           }
         ],
         "live_audit": "missing",
@@ -1715,8 +1739,122 @@
         "live_audit": "missing",
         "replay": "passed"
       }
+    },
+    {
+      "acceptance_criteria": [],
+      "area": [
+        "src/recognition/studentWritingPipeline.js row merging, grading-only numeric spacing, crossed-out work filtering, and audit trigger metadata"
+      ],
+      "category": "recognition",
+      "evidence": [
+        {
+          "audit_id": "audit_20260705T164639168829Z_f969c78965",
+          "discrepancy_types": [],
+          "path": "/Users/jpovj/Documents/dev/whiteboard_3/audit_20260705T164639168829Z_f969c78965",
+          "summary": "Audit comparison evidence"
+        }
+      ],
+      "first_seen": "2026-07-06T12:37:14Z",
+      "fix_commits": [],
+      "fixtures": [
+        {
+          "added_at": "2026-07-06T12:37:26Z",
+          "note": "July 5 row-fragmentation replay: intended x + 2 = 3x row remains an expected full-recognition mismatch.",
+          "path": "testing/fixtures/real_handwriting/20260705t163713207519z-5a9b5d0990.json"
+        },
+        {
+          "added_at": "2026-07-06T12:37:26Z",
+          "note": "July 5 2 \u00d7 36 replay: grading-only digit spacing is covered, but top OCR still reads final 72 as 12.",
+          "path": "testing/fixtures/real_handwriting/20260705t164226452164z-f8ea64ff06.json"
+        },
+        {
+          "added_at": "2026-07-06T12:37:26Z",
+          "note": "July 5 simplification replay: -8 fragment ordering remains an expected mismatch.",
+          "path": "testing/fixtures/real_handwriting/20260705t164639168829z-f969c78965.json"
+        },
+        {
+          "added_at": "2026-07-06T12:37:26Z",
+          "note": "July 5 crossed-out decimal replay now passes as calibration for crossed-out setup exclusion plus grading-only decimal spacing.",
+          "path": "testing/fixtures/real_handwriting/20260705t165053608505z-ef8a920ac9.json"
+        },
+        {
+          "added_at": "2026-07-06T12:37:26Z",
+          "note": "July 5 ambiguous fraction/VLM low-confidence replay retained as calibration evidence rather than a deterministic mismatch.",
+          "path": "testing/fixtures/real_handwriting/20260705t163518428544z-beef1690ae.json"
+        }
+      ],
+      "id": "WB3-0026",
+      "key": "july-vlm-row-fragmentation-inline-digit-ocr",
+      "last_seen": "2026-07-06T12:37:14Z",
+      "next_action": "Use July 5 replay mismatches to fix same-row equation reconstruction and top-OCR 72 vs 12 candidate selection before closure.",
+      "notes": [],
+      "severity": "P1",
+      "status": "verified_by_replay",
+      "suspected_files": [
+        "src/recognition/studentWritingPipeline.js",
+        "src/recognition/auditClient.js"
+      ],
+      "title": "July VLM audits expose row fragmentation and inline digit OCR gaps",
+      "verification": {
+        "commands": [
+          {
+            "command": "npm run test:segmentation",
+            "note": "Full segmentation/recognition suite covers July 5 replay fixtures, expected mismatches, grading-only digit spacing, and crossed-out setup exclusion.",
+            "result": "passed",
+            "timestamp": "2026-07-06T12:37:41Z"
+          },
+          {
+            "command": "npm run build",
+            "note": "Production build passed after recognition/audit metadata changes.",
+            "result": "passed",
+            "timestamp": "2026-07-06T12:37:42Z"
+          }
+        ],
+        "live_audit": "missing",
+        "replay": "passed"
+      }
+    },
+    {
+      "acceptance_criteria": [],
+      "area": [
+        "src/grading/equation_grader.py expression and simplification candidate classification"
+      ],
+      "category": "grading",
+      "evidence": [],
+      "first_seen": "2026-07-06T12:37:14Z",
+      "fix_commits": [],
+      "fixtures": [],
+      "id": "WB3-0027",
+      "key": "evaluate-simplify-trailing-equals-setup",
+      "last_seen": "2026-07-06T12:37:14Z",
+      "next_action": "Watch live audits for evaluate/simplify rows ending in equals; keep 36*2= and (x+1)^2= replay tests.",
+      "notes": [],
+      "severity": "P1",
+      "status": "verified_by_replay",
+      "suspected_files": [
+        "src/grading/equation_grader.py"
+      ],
+      "title": "Evaluate and simplify trailing equals setup lines",
+      "verification": {
+        "commands": [
+          {
+            "command": "python3 -m unittest testing.test_equation_grader testing.test_feedback_service testing.test_audit_service",
+            "note": "Covers 36*2= incomplete setup, 36*2=72 correct, vertical 36*2= then 72 correct, simplify trailing equals, and equation-solving non-repair.",
+            "result": "passed",
+            "timestamp": "2026-07-06T12:37:42Z"
+          },
+          {
+            "command": "npm run build",
+            "note": "Production build passed after trailing-equals grader changes.",
+            "result": "passed",
+            "timestamp": "2026-07-06T12:37:42Z"
+          }
+        ],
+        "live_audit": "missing",
+        "replay": "passed"
+      }
     }
   ],
-  "next_id": 26,
+  "next_id": 28,
   "schema_version": 1
 }
